@@ -55,19 +55,13 @@ def toggle_watchlist(ticker):
         st.toast(f'已收藏 {clean_code}', icon="⭐")
     update_url()
 
-def get_market_index():
-    try:
-        # 僅抓取恒生指數與科技指數
-        df = yf.download(["^HSI", "^HSTECH"], period="2d", progress=False)['Close']
-        return df if not df.empty else None
-    except:
-        return None
+# (已移除 get_market_index 函數)
 
-# --- 3. 側邊欄設計 (極簡化) ---
+# --- 3. 側邊欄設計 ---
 with st.sidebar:
     st.header("HK Stock Analysis")
     
-    # 1. 純淨的搜尋框 (移除預設值)
+    # 1. 純淨的搜尋框
     search_input = st.text_input("輸入股票代號", placeholder="例如: 700 或 00005", key="search_bar")
     
     # 邏輯：有輸入則優先顯示輸入的股票
@@ -96,25 +90,14 @@ with st.sidebar:
 
 # --- 4. 主畫面內容 ---
 
-# 4.1 大市看板 (保留，因為這對港股分析很重要)
-market_df = get_market_index()
-if market_df is not None:
-    try:
-        hsi = market_df['^HSI']
-        tech = market_df['^HSTECH']
-        c1, c2 = st.columns(2)
-        c1.metric("HSI 恒生指數", f"{hsi.iloc[-1]:.0f}", 
-                  f"{(hsi.iloc[-1]-hsi.iloc[-2]):.0f} ({((hsi.iloc[-1]-hsi.iloc[-2])/hsi.iloc[-2])*100:.2f}%)")
-        c2.metric("HSTECH 恒生科技", f"{tech.iloc[-1]:.0f}", 
-                  f"{(tech.iloc[-1]-tech.iloc[-2]):.0f} ({((tech.iloc[-1]-tech.iloc[-2])/tech.iloc[-2])*100:.2f}%)")
-        st.divider()
-    except:
-        st.error("大市數據暫時無法顯示")
+# (已移除大市看板顯示區域)
 
-# 4.2 判斷是否需要顯示分析圖表
+# 4.1 判斷是否需要顯示分析圖表
 current_code = st.session_state.current_view
 
 if not current_code:
+    # 這裡稍微調整版面，因為沒有上面的指數了，顯示一個歡迎標題比較好看
+    st.title("歡迎使用港股 SMA 分析")
     st.info("👈 請在左側輸入代號 (例如 700) 或選擇收藏股以開始分析。")
 else:
     # 準備數據
