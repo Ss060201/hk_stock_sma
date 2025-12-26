@@ -62,7 +62,7 @@ with st.sidebar:
     st.header("HK Stock Analysis")
     
     # 1. 純淨的搜尋框
-    search_input = st.text_input("輸入股票代號", placeholder="例如: 700 或 00005", key="search_bar")
+    search_input = st.text_input("輸入股票代號", placeholder="例如: 0005", key="search_bar")
     
     # 邏輯：有輸入則優先顯示輸入的股票
     if search_input:
@@ -98,7 +98,7 @@ current_code = st.session_state.current_view
 if not current_code:
     # 這裡稍微調整版面，因為沒有上面的指數了，顯示一個歡迎標題比較好看
     st.title("歡迎使用港股 SMA 分析")
-    st.info("👈 請在左側輸入代號 (例如 700) 或選擇收藏股以開始分析。")
+    st.info("👈 請在左側輸入代號 (例如 0005) 或選擇收藏股以開始分析。")
 else:
     # 準備數據
     yahoo_ticker = get_yahoo_ticker(current_code) # 轉成後台用的 0700.HK
@@ -173,3 +173,4 @@ else:
 
         fig.update_layout(height=800, xaxis_rangeslider_visible=False, showlegend=False, template="plotly_white", margin=dict(t=30))
         st.plotly_chart(fig, use_container_width=True)
+
