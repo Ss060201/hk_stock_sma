@@ -2,134 +2,191 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from plotly.subplots import make_subplots
 
-# --- 1. 頁面基礎設定 ---
-st.set_page_config(
-    page_title="港股 SMA 分析工具",
-    page_icon="📈",
-    layout="wide"
-)
+# --- 1. 系統初始化 ---
+st.set_page_config(page_title="港股 SMA 分析", page_icon="📈", layout="wide")
 
-st.title("🇭🇰 港股 SMA 技術分析工具 (No API)")
-st.markdown("數據來源：Yahoo Finance | 架構：Streamlit + GitHub")
+# 讀取 URL 中的 watchlist
+query_params = st.query_params
+url_watchlist = query_params.get("watchlist", "") 
 
-# --- 2. 側邊欄：使用者輸入 ---
-with st.sidebar:
-    st.header("⚙️ 參數設定")
-    
-    # 股票代碼輸入
-    ticker_input = st.text_input("輸入港股代號", value="0700", help="輸入數字即可，例如 700 或 0005")
-    
-    # 日期選擇
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("開始日期", datetime.now() - timedelta(days=365))
-    with col2:
-        end_date = st.date_input("結束日期", datetime.now())
-        
-    # SMA 參數
-    st.subheader("均線設定 (SMA)")
-    sma1 = st.number_input("短期均線 (SMA 1)", min_value=1, value=20)
-    sma2 = st.number_input("長期均線 (SMA 2)", min_value=1, value=50)
-    
-    run_button = st.button("開始分析", type="primary")
+# 初始化 Session State
+if 'watchlist' not in st.session_state:
+    if url_watchlist:
+        st.session_state.watchlist = url_watchlist.split(",")
+    else:
+        st.session_state.watchlist = []
 
-# --- 3. 核心函數：處理代碼與獲取數據 ---
-def format_ticker(symbol):
-    """將輸入的數字轉為 Yahoo Finance 格式 (例如 700 -> 0700.HK)"""
-    symbol = symbol.strip()
-    # 如果是數字，補齊 4 位數並加上 .HK
-    if symbol.isdigit():
-        symbol = symbol.zfill(4) + ".HK"
-    # 如果使用者已經打了 .HK，則轉換為大寫
-    elif not symbol.endswith(".HK"):
-        symbol = symbol.upper()
-        if not symbol.endswith(".HK"):
-             symbol += ".HK"
+if 'current_view' not in st.session_state:
+    st.session_state.current_view = ""
+
+# --- 2. 核心邏輯函數 ---
+def clean_ticker_input(symbol):
+    """
+    處理使用者輸入：
+    1. 移除空白
+    2. 確保只有數字
+    3. 補齊為港股常見格式 (雖然 Yahoo 接受 0700, 但我們保持輸入純淨)
+    """
+    symbol = str(symbol).strip().replace(" ", "").replace(".HK", "").replace(".hk", "")
     return symbol
 
-@st.cache_data(ttl=3600) # 緩存數據 1 小時，避免頻繁請求被 Yahoo 封鎖
-def get_stock_data(symbol, start, end):
+def get_yahoo_ticker(symbol):
+    """將純數字代號轉換為 Yahoo Finance 格式"""
+    # Yahoo Finance 港股格式必須是 4位數 + .HK (例如 0700.HK)
+    # 如果使用者輸入 700 -> 0700.HK
+    if symbol.isdigit():
+        return f"{symbol.zfill(4)}.HK"
+    return symbol
+
+def update_url():
+    watchlist_str = ",".join(st.session_state.watchlist)
+    st.query_params["watchlist"] = watchlist_str
+
+def toggle_watchlist(ticker):
+    # 確保儲存的是純數字代號，不是 Yahoo 格式
+    clean_code = clean_ticker_input(ticker)
+    if clean_code in st.session_state.watchlist:
+        st.session_state.watchlist.remove(clean_code)
+        st.toast(f'已移除 {clean_code}', icon="🗑️")
+    else:
+        st.session_state.watchlist.append(clean_code)
+        st.toast(f'已收藏 {clean_code}', icon="⭐")
+    update_url()
+
+def get_market_index():
     try:
-        # 下載數據，auto_adjust=True 會自動處理除權息，讓技術分析更準確
-        df = yf.download(symbol, start=start, end=end, auto_adjust=False)
-        return df
-    except Exception as e:
+        # 僅抓取恒生指數與科技指數
+        df = yf.download(["^HSI", "^HSTECH"], period="2d", progress=False)['Close']
+        return df if not df.empty else None
+    except:
         return None
 
-# --- 4. 主程式邏輯 ---
-if run_button:
-    target_ticker = format_ticker(ticker_input)
+# --- 3. 側邊欄設計 (極簡化) ---
+with st.sidebar:
+    st.header("HK Stock Analysis")
     
-    with st.spinner(f'正在從 Yahoo Finance 獲取 {target_ticker} 數據...'):
-        df = get_stock_data(target_ticker, start_date, end_date)
+    # 1. 純淨的搜尋框 (移除預設值)
+    search_input = st.text_input("輸入股票代號", placeholder="例如: 700 或 00005", key="search_bar")
+    
+    # 邏輯：有輸入則優先顯示輸入的股票
+    if search_input:
+        cleaned_search = clean_ticker_input(search_input)
+        if cleaned_search:
+            st.session_state.current_view = cleaned_search
 
-    # 檢查數據是否為空
-    if df is None or df.empty:
-        st.error(f"❌ 找不到代碼 **{target_ticker}** 的數據。請確認代碼是否正確，或該股票是否已除牌。")
+    st.divider()
+    
+    # 2. 收藏夾列表
+    st.subheader(f"我的收藏 ({len(st.session_state.watchlist)})")
+    
+    if not st.session_state.watchlist:
+        st.caption("暫無收藏")
     else:
-        # 處理 yfinance 可能返回的 MultiIndex Columns 問題
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        for ticker in st.session_state.watchlist:
+            # 按鈕顯示純代號
+            if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
+                st.session_state.current_view = ticker
 
-        # --- 計算 SMA ---
+    st.divider()
+    st.caption("SMA 參數設定")
+    sma1 = st.number_input("SMA 短線", value=20)
+    sma2 = st.number_input("SMA 長線", value=50)
+
+# --- 4. 主畫面內容 ---
+
+# 4.1 大市看板 (保留，因為這對港股分析很重要)
+market_df = get_market_index()
+if market_df is not None:
+    try:
+        hsi = market_df['^HSI']
+        tech = market_df['^HSTECH']
+        c1, c2 = st.columns(2)
+        c1.metric("HSI 恒生指數", f"{hsi.iloc[-1]:.0f}", 
+                  f"{(hsi.iloc[-1]-hsi.iloc[-2]):.0f} ({((hsi.iloc[-1]-hsi.iloc[-2])/hsi.iloc[-2])*100:.2f}%)")
+        c2.metric("HSTECH 恒生科技", f"{tech.iloc[-1]:.0f}", 
+                  f"{(tech.iloc[-1]-tech.iloc[-2]):.0f} ({((tech.iloc[-1]-tech.iloc[-2])/tech.iloc[-2])*100:.2f}%)")
+        st.divider()
+    except:
+        st.error("大市數據暫時無法顯示")
+
+# 4.2 判斷是否需要顯示分析圖表
+current_code = st.session_state.current_view
+
+if not current_code:
+    st.info("👈 請在左側輸入代號 (例如 700) 或選擇收藏股以開始分析。")
+else:
+    # 準備數據
+    yahoo_ticker = get_yahoo_ticker(current_code) # 轉成後台用的 0700.HK
+    display_ticker = current_code.zfill(5) # 前台顯示漂亮的 00700 格式
+
+    # 標題與收藏按鈕區域
+    col_title, col_star = st.columns([0.85, 0.15])
+
+    with col_title:
+        st.title(f"📊 {display_ticker}")
+
+    with col_star:
+        st.write("") 
+        is_fav = current_code in st.session_state.watchlist
+        if is_fav:
+            if st.button("★ 已收藏", type="primary", use_container_width=True):
+                toggle_watchlist(current_code)
+                st.rerun()
+        else:
+            if st.button("☆ 加入", use_container_width=True):
+                toggle_watchlist(current_code)
+                st.rerun()
+
+    # 抓取數據與繪圖
+    @st.cache_data(ttl=900)
+    def get_stock_data(symbol):
+        try:
+            data = yf.download(symbol, period="2y", auto_adjust=False)
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            return data
+        except:
+            return None
+
+    with st.spinner(f"正在分析 {display_ticker}..."):
+        df = get_stock_data(yahoo_ticker)
+
+    if df is None or df.empty:
+        st.error(f"⚠️ 找不到代號 **{current_code}** 的數據，請確認輸入正確。")
+    else:
+        # SMA & RSI 計算
         df[f'SMA_{sma1}'] = df['Close'].rolling(window=sma1).mean()
         df[f'SMA_{sma2}'] = df['Close'].rolling(window=sma2).mean()
-
-        # --- 顯示摘要數據 ---
-        last_close = df['Close'].iloc[-1]
-        prev_close = df['Close'].iloc[-2]
-        change = last_close - prev_close
-        pct_change = (change / prev_close) * 100
         
-        # 顏色邏輯：港股通常 綠漲 紅跌 (Yahoo 預設)，這裡我們用國際慣例：綠漲(Green) 紅跌(Red)
-        color = "green" if change >= 0 else "red"
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+
+        # 繪圖 (Plotly)
+        display_df = df.iloc[-250:]
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
+                            row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.03,
+                            subplot_titles=("價格 & SMA", "成交量", "RSI (14)"))
+
+        fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'],
+                                     low=display_df['Low'], close=display_df['Close'], name='K線'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma1}'], 
+                                 line=dict(color='orange'), name=f'SMA {sma1}'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma2}'], 
+                                 line=dict(color='blue'), name=f'SMA {sma2}'), row=1, col=1)
         
-        st.markdown(f"### {target_ticker} 最新收盤價")
-        st.metric(label="Close Price", 
-                  value=f"{last_close:.2f}", 
-                  delta=f"{change:.2f} ({pct_change:.2f}%)")
+        colors = ['red' if row['Open'] - row['Close'] >= 0 else 'green' for index, row in display_df.iterrows()]
+        fig.add_trace(go.Bar(x=display_df.index, y=display_df['Volume'], marker_color=colors, name='成交量'), row=2, col=1)
+        
+        fig.add_trace(go.Scatter(x=display_df.index, y=display_df['RSI'], line=dict(color='purple'), name='RSI'), row=3, col=1)
+        
+        # RSI 輔助線
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
 
-        # --- 繪圖 (使用 Plotly) ---
-        fig = go.Figure()
-
-        # 1. K線圖
-        fig.add_trace(go.Candlestick(
-            x=df.index,
-            open=df['Open'], high=df['High'],
-            low=df['Low'], close=df['Close'],
-            name='K線'
-        ))
-
-        # 2. 短期均線
-        fig.add_trace(go.Scatter(
-            x=df.index, y=df[f'SMA_{sma1}'],
-            line=dict(color='orange', width=1.5),
-            name=f'SMA {sma1}'
-        ))
-
-        # 3. 長期均線
-        fig.add_trace(go.Scatter(
-            x=df.index, y=df[f'SMA_{sma2}'],
-            line=dict(color='blue', width=1.5),
-            name=f'SMA {sma2}'
-        ))
-
-        # 圖表版面設定
-        fig.update_layout(
-            title=f'{target_ticker} 股價走勢圖',
-            yaxis_title='價格 (HKD)',
-            xaxis_rangeslider_visible=False, # 隱藏下方的滑動條以節省空間
-            height=600,
-            template="plotly_white" # 白色背景更乾淨
-        )
-
+        fig.update_layout(height=800, xaxis_rangeslider_visible=False, showlegend=False, template="plotly_white", margin=dict(t=30))
         st.plotly_chart(fig, use_container_width=True)
-
-        # --- 顯示原始數據表格 (可選展開) ---
-        with st.expander("查看詳細歷史數據"):
-            st.dataframe(df.sort_index(ascending=False).style.format("{:.2f}"))
-
-else:
-    st.info("👈 請在左側輸入股票代碼並點擊「開始分析」")
