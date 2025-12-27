@@ -41,6 +41,7 @@ def toggle_watchlist(ticker):
 
 def format_large_num(num):
     """將大數字格式化為易讀格式 (K, M, B)"""
+    if pd.isna(num): return "-"
     if num >= 1_000_000_000:
         return f"{num / 1_000_000_000:.2f}B"
     elif num >= 1_000_000:
@@ -151,7 +152,7 @@ else:
             df[v_name] = df['Volume'].rolling(window=p).sum()
             vol_cols.append(v_name)
 
-        # --- B. 平均值計算 (只計算前 5 條) ---
+        # --- B. 平均值計算 (只計算前 5 條: 7, 14, 28, 57, 106) ---
         avg_cols = sma_cols[:5] 
         df['SMA_Avg_5'] = df[avg_cols].mean(axis=1)
 
@@ -174,92 +175,110 @@ else:
         df['Conv_Count'] = df.apply(check_convergence, axis=1)
         signal_mask = df['Conv_Count'] > 2 
 
-        # --- E. 顯示數值列表 (SMA & Volume) ---
+        # --- E. 介面分頁 (Tabs) ---
+        tab1, tab2 = st.tabs(["📈 SMA & Convergence (圖表)", "📊 Turnover Sum (成交量列表)"])
+        
         last_row = df.iloc[-1]
         colors = ['#FF6B6B', '#FFA500', '#FFD700', '#4CAF50', '#2196F3', '#9C27B0']
-        
-        # 1. SMA 列表
-        st.subheader("📋 均線數值 (SMA Values)")
-        cols_sma = st.columns(6)
-        for i, p in enumerate(periods):
-            val = last_row[f'SMA_{p}']
-            with cols_sma[i]:
-                st.metric(f"SMA ({p})", f"{val:.2f}")
-                st.markdown(f'<div style="background-color:{colors[i]};height:4px;border-radius:2px;"></div>', unsafe_allow_html=True)
-        
-        st.divider()
 
-        # 2. 成交量累計列表 (Volume Sum) - 新增部分
-        st.subheader("📊 成交量累計 (Turnover Sum)")
-        cols_vol = st.columns(6)
-        for i, p in enumerate(periods):
-            val_vol = last_row[f'Vol_Sum_{p}']
-            with cols_vol[i]:
-                # 使用 format_large_num 讓數字變短 (例如 1.2B)
-                st.metric(f"Sum ({p})", format_large_num(val_vol), help=f"精確值: {val_vol:,.0f} 股")
+        # === Tab 1: 圖表介面 ===
+        with tab1:
+            # 顯示簡單的 SMA 數值卡片
+            cols_sma = st.columns(6)
+            for i, p in enumerate(periods):
+                val = last_row[f'SMA_{p}']
+                with cols_sma[i]:
+                    st.metric(f"SMA ({p})", f"{val:.2f}")
+                    st.markdown(f'<div style="background-color:{colors[i]};height:4px;border-radius:2px;"></div>', unsafe_allow_html=True)
+            
+            # 繪圖
+            display_df = df.iloc[-250:] 
+            display_signal = signal_mask.iloc[-250:]
 
-        # --- F. 繪圖 ---
-        display_df = df.iloc[-250:] 
-        display_signal = signal_mask.iloc[-250:]
+            fig = make_subplots(
+                rows=4, cols=1, 
+                shared_xaxes=True,
+                vertical_spacing=0.02,
+                row_heights=[0.5, 0.25, 0.15, 0.1],
+                subplot_titles=(f"價格與 6 均線", "均線收斂度 (Convergence)", "成交量", "RSI")
+            )
 
-        fig = make_subplots(
-            rows=4, cols=1, 
-            shared_xaxes=True,
-            vertical_spacing=0.02,
-            row_heights=[0.5, 0.25, 0.15, 0.1],
-            subplot_titles=(f"價格與 6 均線", "均線收斂度 (Convergence)", "成交量", "RSI")
-        )
+            # 1. 主圖
+            fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'],
+                                         low=display_df['Low'], close=display_df['Close'], name='K線'), row=1, col=1)
+            for i, p in enumerate(periods):
+                fig.add_trace(go.Scatter(
+                    x=display_df.index, y=display_df[f'SMA_{p}'], 
+                    line=dict(color=colors[i], width=1), name=f'SMA {p}'
+                ), row=1, col=1)
 
-        # 1. 主圖
-        fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'],
-                                     low=display_df['Low'], close=display_df['Close'], name='K線'), row=1, col=1)
-        for i, p in enumerate(periods):
-            fig.add_trace(go.Scatter(
-                x=display_df.index, y=display_df[f'SMA_{p}'], 
-                line=dict(color=colors[i], width=1), name=f'SMA {p}'
-            ), row=1, col=1)
+            # 2. 收斂圖
+            fig.add_hline(y=0, line_dash="solid", line_color="gray", row=2, col=1)
+            fig.add_hline(y=convergence_threshold, line_dash="dot", line_color="gray", opacity=0.5, row=2, col=1)
+            fig.add_hline(y=-convergence_threshold, line_dash="dot", line_color="gray", opacity=0.5, row=2, col=1)
 
-        # 2. 收斂圖
-        fig.add_hline(y=0, line_dash="solid", line_color="gray", row=2, col=1)
-        fig.add_hline(y=convergence_threshold, line_dash="dot", line_color="gray", opacity=0.5, row=2, col=1)
-        fig.add_hline(y=-convergence_threshold, line_dash="dot", line_color="gray", opacity=0.5, row=2, col=1)
+            for i, c_name in enumerate(conv_cols):
+                p = periods[i]
+                fig.add_trace(go.Scatter(
+                    x=display_df.index, y=display_df[c_name],
+                    line=dict(color=colors[i], width=1.5), name=f'Conv {p}'
+                ), row=2, col=1)
 
-        for i, c_name in enumerate(conv_cols):
-            p = periods[i]
-            fig.add_trace(go.Scatter(
-                x=display_df.index, y=display_df[c_name],
-                line=dict(color=colors[i], width=1.5), name=f'Conv {p}'
-            ), row=2, col=1)
+            converge_dates = display_df[display_signal].index
+            if not converge_dates.empty:
+                fig.add_trace(go.Scatter(
+                    x=converge_dates, y=[0] * len(converge_dates),
+                    mode='markers', marker=dict(symbol='diamond', size=10, color='red'),
+                    name='收斂訊號'
+                ), row=2, col=1)
 
-        converge_dates = display_df[display_signal].index
-        if not converge_dates.empty:
-            fig.add_trace(go.Scatter(
-                x=converge_dates, y=[0] * len(converge_dates),
-                mode='markers', marker=dict(symbol='diamond', size=10, color='red'),
-                name='收斂訊號'
-            ), row=2, col=1)
+            # 3. 成交量
+            vol_colors = ['red' if r['Open'] - r['Close'] >= 0 else 'green' for _, r in display_df.iterrows()]
+            fig.add_trace(go.Bar(x=display_df.index, y=display_df['Volume'], marker_color=vol_colors, name='Volume'), row=3, col=1)
 
-        # 3. 成交量
-        vol_colors = ['red' if r['Open'] - r['Close'] >= 0 else 'green' for _, r in display_df.iterrows()]
-        fig.add_trace(go.Bar(x=display_df.index, y=display_df['Volume'], marker_color=vol_colors, name='Volume'), row=3, col=1)
+            # 4. RSI
+            delta = df['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            display_rsi = rsi.iloc[-250:]
+            
+            fig.add_trace(go.Scatter(x=display_df.index, y=display_rsi, line=dict(color='purple'), name='RSI'), row=4, col=1)
+            fig.add_hline(y=70, line_dash="dash", line_color="red", row=4, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="green", row=4, col=1)
 
-        # 4. RSI
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        display_rsi = rsi.iloc[-250:]
-        
-        fig.add_trace(go.Scatter(x=display_df.index, y=display_rsi, line=dict(color='purple'), name='RSI'), row=4, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=4, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=4, col=1)
+            fig.update_layout(
+                height=900, xaxis_rangeslider_visible=False, showlegend=True,
+                margin=dict(t=30, l=10, r=10, b=10), template="plotly_white"
+            )
+            fig.update_yaxes(range=[-y_scale, y_scale], tickformat=".1%", title="偏離度", row=2, col=1)
+            fig.update_yaxes(title="價格", row=1, col=1)
 
-        fig.update_layout(
-            height=1000, xaxis_rangeslider_visible=False, showlegend=True,
-            margin=dict(t=30, l=10, r=10, b=10), template="plotly_white"
-        )
-        fig.update_yaxes(range=[-y_scale, y_scale], tickformat=".1%", title="偏離度", row=2, col=1)
-        fig.update_yaxes(title="價格", row=1, col=1)
+            st.plotly_chart(fig, use_container_width=True)
 
-        st.plotly_chart(fig, use_container_width=True)
+        # === Tab 2: 列表介面 (成交量累計) ===
+        with tab2:
+            st.subheader("📊 Turnover (Volume) Sum 列表")
+            st.caption("以下顯示各週期內的成交量總和 (Sum of Volume)：")
+            
+            # 使用列表呈現 (卡片式)
+            cols_vol = st.columns(3) # 分3列顯示
+            for i, p in enumerate(periods):
+                val_vol = last_row[f'Vol_Sum_{p}']
+                # 計算行數來分配 (0,1,2 -> row 1; 3,4,5 -> row 2)
+                with cols_vol[i % 3]:
+                    st.container(border=True).metric(
+                        label=f"Sum ({p} Days)", 
+                        value=format_large_num(val_vol),
+                        help=f"精確數值: {val_vol:,.0f} 股"
+                    )
+            
+            st.divider()
+            
+            # 詳細表格數據
+            st.caption("詳細數據表 (最近 5 日):")
+            recent_data = df[[f'Vol_Sum_{p}' for p in periods]].tail(5).sort_index(ascending=False)
+            # 格式化 Dataframe 顯示
+            formatted_df = recent_data.applymap(lambda x: f"{x:,.0f}")
+            st.dataframe(formatted_df, use_container_width=True)
