@@ -1,51 +1,35 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股 SMA 分析", page_icon="📈", layout="wide")
+st.set_page_config(page_title="港股 SMA 矩陣分析", page_icon="📈", layout="wide")
 
-# 讀取 URL 中的 watchlist
+# URL 狀態管理
 query_params = st.query_params
 url_watchlist = query_params.get("watchlist", "") 
-
-# 初始化 Session State
 if 'watchlist' not in st.session_state:
-    if url_watchlist:
-        st.session_state.watchlist = url_watchlist.split(",")
-    else:
-        st.session_state.watchlist = []
-
+    st.session_state.watchlist = url_watchlist.split(",") if url_watchlist else []
 if 'current_view' not in st.session_state:
     st.session_state.current_view = ""
 
-# --- 2. 核心邏輯函數 ---
+# --- 2. 輔助函數 ---
 def clean_ticker_input(symbol):
-    """
-    處理使用者輸入：
-    1. 移除空白
-    2. 確保只有數字
-    3. 補齊為港股常見格式 (雖然 Yahoo 接受 0700, 但我們保持輸入純淨)
-    """
     symbol = str(symbol).strip().replace(" ", "").replace(".HK", "").replace(".hk", "")
     return symbol
 
 def get_yahoo_ticker(symbol):
-    """將純數字代號轉換為 Yahoo Finance 格式"""
-    # Yahoo Finance 港股格式必須是 4位數 + .HK (例如 0700.HK)
-    # 如果使用者輸入 700 -> 0700.HK
     if symbol.isdigit():
         return f"{symbol.zfill(4)}.HK"
     return symbol
 
 def update_url():
-    watchlist_str = ",".join(st.session_state.watchlist)
-    st.query_params["watchlist"] = watchlist_str
+    st.query_params["watchlist"] = ",".join(st.session_state.watchlist)
 
 def toggle_watchlist(ticker):
-    # 確保儲存的是純數字代號，不是 Yahoo 格式
     clean_code = clean_ticker_input(ticker)
     if clean_code in st.session_state.watchlist:
         st.session_state.watchlist.remove(clean_code)
@@ -55,16 +39,12 @@ def toggle_watchlist(ticker):
         st.toast(f'已收藏 {clean_code}', icon="⭐")
     update_url()
 
-# (已移除 get_market_index 函數)
-
-# --- 3. 側邊欄設計 ---
+# --- 3. 側邊欄設定 ---
 with st.sidebar:
-    st.header("HK Stock Analysis")
+    st.header("HK Stock Matrix")
     
-    # 1. 純淨的搜尋框
-    search_input = st.text_input("輸入股票代號", placeholder="例如: 0005", key="search_bar")
-    
-    # 邏輯：有輸入則優先顯示輸入的股票
+    # 搜尋框
+    search_input = st.text_input("輸入股票代號", placeholder="例如: 700", key="search_bar")
     if search_input:
         cleaned_search = clean_ticker_input(search_input)
         if cleaned_search:
@@ -72,48 +52,56 @@ with st.sidebar:
 
     st.divider()
     
-    # 2. 收藏夾列表
+    # 收藏夾
     st.subheader(f"我的收藏 ({len(st.session_state.watchlist)})")
-    
-    if not st.session_state.watchlist:
-        st.caption("暫無收藏")
-    else:
+    if st.session_state.watchlist:
         for ticker in st.session_state.watchlist:
-            # 按鈕顯示純代號
             if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
                 st.session_state.current_view = ticker
+    else:
+        st.caption("暫無收藏")
 
     st.divider()
-    st.caption("SMA 參數設定")
-    sma1 = st.number_input("SMA 短線", value=20)
-    sma2 = st.number_input("SMA 長線", value=50)
+    st.header("⚙️ 矩陣參數設定")
+    
+    # 6條 SMA 設定
+    st.caption("SMA 週期 (Days)")
+    c1, c2 = st.columns(2)
+    with c1:
+        p1 = st.number_input("SMA 1", value=7)
+        p3 = st.number_input("SMA 3", value=28)
+        p5 = st.number_input("SMA 5", value=106)
+    with c2:
+        p2 = st.number_input("SMA 2", value=14)
+        p4 = st.number_input("SMA 4", value=57)
+        p6 = st.number_input("SMA 6", value=212)
+    
+    periods = [p1, p2, p3, p4, p5, p6]
+    
+    st.divider()
+    st.caption("收斂偵測設定")
+    # 收斂圖的 Y 軸範圍 (Adjustable Scale)
+    y_scale = st.slider("收斂圖 Y 軸範圍 (%)", 1.0, 20.0, 5.0, 0.5) / 100
+    # 判定為「趨近於 0」的閾值
+    convergence_threshold = st.slider("收斂判定閾值 (%)", 0.1, 2.0, 0.5, 0.1) / 100
 
-# --- 4. 主畫面內容 ---
-
-# (已移除大市看板顯示區域)
-
-# 4.1 判斷是否需要顯示分析圖表
+# --- 4. 主程式邏輯 ---
 current_code = st.session_state.current_view
 
 if not current_code:
-    # 這裡稍微調整版面，因為沒有上面的指數了，顯示一個歡迎標題比較好看
-    st.title("歡迎使用港股 SMA 分析")
-    st.info("👈 請在左側輸入代號 (例如 0005) 或選擇收藏股以開始分析。")
+    st.title("均線矩陣分析系統")
+    st.info("👈 請輸入代號開始分析")
 else:
-    # 準備數據
-    yahoo_ticker = get_yahoo_ticker(current_code) # 轉成後台用的 0700.HK
-    display_ticker = current_code.zfill(5) # 前台顯示漂亮的 00700 格式
+    yahoo_ticker = get_yahoo_ticker(current_code)
+    display_ticker = current_code.zfill(5)
 
-    # 標題與收藏按鈕區域
-    col_title, col_star = st.columns([0.85, 0.15])
-
-    with col_title:
+    # 標題區
+    c_title, c_btn = st.columns([0.85, 0.15])
+    with c_title:
         st.title(f"📊 {display_ticker}")
-
-    with col_star:
-        st.write("") 
-        is_fav = current_code in st.session_state.watchlist
-        if is_fav:
+    with c_btn:
+        st.write("")
+        if current_code in st.session_state.watchlist:
             if st.button("★ 已收藏", type="primary", use_container_width=True):
                 toggle_watchlist(current_code)
                 st.rerun()
@@ -122,55 +110,150 @@ else:
                 toggle_watchlist(current_code)
                 st.rerun()
 
-    # 抓取數據與繪圖
+    # 獲取數據
     @st.cache_data(ttl=900)
-    def get_stock_data(symbol):
+    def get_data(symbol):
         try:
-            data = yf.download(symbol, period="2y", auto_adjust=False)
-            if isinstance(data.columns, pd.MultiIndex):
-                data.columns = data.columns.get_level_values(0)
-            return data
-        except:
-            return None
+            # 抓取足夠長的數據以計算 SMA 212
+            df = yf.download(symbol, period="2y", auto_adjust=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            return df
+        except: return None
 
-    with st.spinner(f"正在分析 {display_ticker}..."):
-        df = get_stock_data(yahoo_ticker)
+    with st.spinner("正在進行矩陣運算..."):
+        df = get_data(yahoo_ticker)
 
     if df is None or df.empty:
-        st.error(f"⚠️ 找不到代號 **{current_code}** 的數據，請確認輸入正確。")
+        st.error(f"無法獲取 {display_ticker} 數據")
     else:
-        # SMA & RSI 計算
-        df[f'SMA_{sma1}'] = df['Close'].rolling(window=sma1).mean()
-        df[f'SMA_{sma2}'] = df['Close'].rolling(window=sma2).mean()
+        # --- A. SMA 計算 ---
+        sma_cols = []
+        for p in periods:
+            col_name = f'SMA_{p}'
+            df[col_name] = df['Close'].rolling(window=p).mean()
+            sma_cols.append(col_name)
+
+        # --- B. 平均值計算 (只計算前 5 條: 7, 14, 28, 57, 106) ---
+        # 根據你的公式：Avg(SMA7...SMA106)
+        avg_cols = sma_cols[:5] 
+        df['SMA_Avg_5'] = df[avg_cols].mean(axis=1)
+
+        # --- C. 收斂度計算 (Convergence) ---
+        # 公式：(SMA_n - Avg) / Avg
+        conv_cols = []
+        for i, col in enumerate(avg_cols): # 只針對前 5 條做收斂分析
+            p = periods[i]
+            c_name = f'Conv_{p}'
+            df[c_name] = (df[col] - df['SMA_Avg_5']) / df['SMA_Avg_5']
+            conv_cols.append(c_name)
+
+        # --- D. 偵測收斂訊號 ---
+        # 邏輯：檢查同一天有多少條線的絕對值小於閾值
+        def check_convergence(row):
+            count = 0
+            for c in conv_cols:
+                if abs(row[c]) <= convergence_threshold:
+                    count += 1
+            return count
+
+        df['Conv_Count'] = df.apply(check_convergence, axis=1)
+        # 標記訊號：當有超過 2 條線 (即 > 2) 趨近 0 時
+        signal_mask = df['Conv_Count'] > 2 
+
+        # --- E. 顯示數值列表 (Sum List) ---
+        last_row = df.iloc[-1]
+        st.subheader("📋 SMA 數值列表 (Latest)")
         
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
+        # 建立 6 個 metric 顯示各 SMA 的最新值
+        cols = st.columns(6)
+        colors = ['#FF6B6B', '#FFA500', '#FFD700', '#4CAF50', '#2196F3', '#9C27B0'] # 彩虹色系
+        
+        for i, p in enumerate(periods):
+            val = last_row[f'SMA_{p}']
+            with cols[i]:
+                st.metric(f"SMA ({p})", f"{val:.2f}", border=True)
+                # 小色塊標記顏色
+                st.markdown(f'<div style="background-color:{colors[i]};height:4px;border-radius:2px;"></div>', unsafe_allow_html=True)
 
-        # 繪圖 (Plotly)
-        display_df = df.iloc[-250:]
-        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
-                            row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.03,
-                            subplot_titles=("價格 & SMA", "成交量", "RSI (14)"))
+        # --- F. 繪圖 (4層圖表) ---
+        display_df = df.iloc[-250:] # 顯示最近一年交易日
+        display_signal = signal_mask.iloc[-250:]
 
+        fig = make_subplots(
+            rows=4, cols=1, 
+            shared_xaxes=True,
+            vertical_spacing=0.02,
+            row_heights=[0.5, 0.25, 0.15, 0.1],
+            subplot_titles=(f"價格與 6 均線", "均線收斂度 (Convergence)", "成交量", "RSI")
+        )
+
+        # 1. 主圖：K線 + 6條 SMA
         fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'],
                                      low=display_df['Low'], close=display_df['Close'], name='K線'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma1}'], 
-                                 line=dict(color='orange'), name=f'SMA {sma1}'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma2}'], 
-                                 line=dict(color='blue'), name=f'SMA {sma2}'), row=1, col=1)
         
-        colors = ['red' if row['Open'] - row['Close'] >= 0 else 'green' for index, row in display_df.iterrows()]
-        fig.add_trace(go.Bar(x=display_df.index, y=display_df['Volume'], marker_color=colors, name='成交量'), row=2, col=1)
-        
-        fig.add_trace(go.Scatter(x=display_df.index, y=display_df['RSI'], line=dict(color='purple'), name='RSI'), row=3, col=1)
-        
-        # RSI 輔助線
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+        for i, p in enumerate(periods):
+            fig.add_trace(go.Scatter(
+                x=display_df.index, y=display_df[f'SMA_{p}'], 
+                line=dict(color=colors[i], width=1), name=f'SMA {p}'
+            ), row=1, col=1)
 
-        fig.update_layout(height=800, xaxis_rangeslider_visible=False, showlegend=False, template="plotly_white", margin=dict(t=30))
+        # 2. 收斂圖 (Convergence Graph)
+        # 畫 0 軸線
+        fig.add_hline(y=0, line_dash="solid", line_color="gray", row=2, col=1)
+        # 畫閾值線 (虛線)
+        fig.add_hline(y=convergence_threshold, line_dash="dot", line_color="gray", opacity=0.5, row=2, col=1)
+        fig.add_hline(y=-convergence_threshold, line_dash="dot", line_color="gray", opacity=0.5, row=2, col=1)
+
+        for i, c_name in enumerate(conv_cols):
+            p = periods[i]
+            fig.add_trace(go.Scatter(
+                x=display_df.index, y=display_df[c_name],
+                line=dict(color=colors[i], width=1.5), name=f'Conv {p}'
+            ), row=2, col=1)
+
+        # 標記高度收斂的時刻 (畫豎線背景)
+        # 這裡我們找出符合條件的日期，畫出垂直形狀
+        converge_dates = display_df[display_signal].index
+        # 為了不讓圖表太亂，我們用 Markers 標記在 0 軸上
+        if not converge_dates.empty:
+            fig.add_trace(go.Scatter(
+                x=converge_dates, 
+                y=[0] * len(converge_dates),
+                mode='markers',
+                marker=dict(symbol='diamond', size=10, color='red'),
+                name='高度收斂訊號 (>2條)'
+            ), row=2, col=1)
+
+        # 3. 成交量
+        vol_colors = ['red' if r['Open'] - r['Close'] >= 0 else 'green' for _, r in display_df.iterrows()]
+        fig.add_trace(go.Bar(x=display_df.index, y=display_df['Volume'], marker_color=vol_colors, name='Volume'), row=3, col=1)
+
+        # 4. RSI (簡單計算)
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        display_rsi = rsi.iloc[-250:]
+        
+        fig.add_trace(go.Scatter(x=display_df.index, y=display_rsi, line=dict(color='purple'), name='RSI'), row=4, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=4, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=4, col=1)
+
+        # --- G. 圖表佈局調整 ---
+        fig.update_layout(
+            height=1000, 
+            xaxis_rangeslider_visible=False, 
+            showlegend=True,
+            margin=dict(t=30, l=10, r=10, b=10),
+            template="plotly_white"
+        )
+        
+        # 設定收斂圖的 Y 軸範圍 (Adjustable Scale)
+        fig.update_yaxes(range=[-y_scale, y_scale], tickformat=".1%", title="偏離度", row=2, col=1)
+        fig.update_yaxes(title="價格", row=1, col=1)
+
         st.plotly_chart(fig, use_container_width=True)
 
+        st.caption("ℹ️ 收斂圖說明：Y軸代表各均線與「前5條均線平均值」的距離百分比。當紅鑽石出現時，代表有超過2條均線進入了您設定的閾值範圍（即均線糾結）。")
