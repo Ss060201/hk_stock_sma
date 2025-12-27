@@ -3,10 +3,11 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 
 # --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股 SMA 矩陣分析", page_icon="📈", layout="wide")
+st.set_page_config(page_title="港股 Volume Ratio 分析", page_icon="📊", layout="wide")
 
 # URL 狀態管理
 query_params = st.query_params
@@ -39,11 +40,37 @@ def toggle_watchlist(ticker):
         st.toast(f'已收藏 {clean_code}', icon="⭐")
     update_url()
 
+def filter_data_by_interval(df, interval):
+    """根據選擇的時間區間篩選數據"""
+    if df.empty: return df
+    
+    end_date = df.index[-1]
+    start_date = end_date # Default
+    
+    if interval == '1D':
+        # 1D 對於日線圖來說就是最後一行，但為了畫圖通常至少回傳 2 筆，或只顯示當天
+        return df.iloc[-1:] 
+    elif interval == '5D':
+        start_date = end_date - timedelta(days=5)
+    elif interval == '1M':
+        start_date = end_date - relativedelta(months=1)
+    elif interval == '3M':
+        start_date = end_date - relativedelta(months=3)
+    elif interval == '6M':
+        start_date = end_date - relativedelta(months=6)
+    elif interval == '1Y':
+        start_date = end_date - relativedelta(years=1)
+    elif interval == '3Y':
+        start_date = end_date - relativedelta(years=3)
+    else:
+        return df # Max
+        
+    return df[df.index >= start_date]
+
 # --- 3. 側邊欄設定 ---
 with st.sidebar:
-    st.header("HK Stock Matrix")
+    st.header("HK Stock Analysis")
     
-    # 搜尋框
     search_input = st.text_input("輸入股票代號", placeholder="例如: 700", key="search_bar")
     if search_input:
         cleaned_search = clean_ticker_input(search_input)
@@ -52,7 +79,6 @@ with st.sidebar:
 
     st.divider()
     
-    # 收藏夾
     st.subheader(f"我的收藏 ({len(st.session_state.watchlist)})")
     if st.session_state.watchlist:
         for ticker in st.session_state.watchlist:
@@ -62,42 +88,25 @@ with st.sidebar:
         st.caption("暫無收藏")
 
     st.divider()
-    st.header("⚙️ 矩陣參數設定")
-    
-    # 6條 SMA 設定
-    st.caption("SMA 週期 (Days)")
-    c1, c2 = st.columns(2)
-    with c1:
-        p1 = st.number_input("SMA 1", value=7)
-        p3 = st.number_input("SMA 3", value=28)
-        p5 = st.number_input("SMA 5", value=106)
-    with c2:
-        p2 = st.number_input("SMA 2", value=14)
-        p4 = st.number_input("SMA 4", value=57)
-        p6 = st.number_input("SMA 6", value=212)
-    
-    periods = [p1, p2, p3, p4, p5, p6]
-    
-    st.divider()
-    st.caption("收斂偵測設定")
-    y_scale = st.slider("收斂圖 Y 軸範圍 (%)", 1.0, 20.0, 5.0, 0.5) / 100
-    convergence_threshold = st.slider("收斂判定閾值 (%)", 0.1, 2.0, 0.5, 0.1) / 100
+    st.caption("基礎 SMA 設定 (用於主圖)")
+    sma1 = st.number_input("SMA 1", value=20)
+    sma2 = st.number_input("SMA 2", value=50)
 
 # --- 4. 主程式邏輯 ---
 current_code = st.session_state.current_view
 
 if not current_code:
-    st.title("均線矩陣分析系統")
+    st.title("港股 Volume Ratio 分析系統")
     st.info("👈 請輸入代號開始分析")
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
     display_ticker = current_code.zfill(5)
 
-    # 標題區
-    c_title, c_btn = st.columns([0.85, 0.15])
-    with c_title:
+    # 標題與收藏
+    col_t, col_b = st.columns([0.85, 0.15])
+    with col_t:
         st.title(f"📊 {display_ticker}")
-    with c_btn:
+    with col_b:
         st.write("")
         if current_code in st.session_state.watchlist:
             if st.button("★ 已收藏", type="primary", use_container_width=True):
@@ -108,186 +117,144 @@ else:
                 toggle_watchlist(current_code)
                 st.rerun()
 
-    # --- 數據獲取 (包含基本面資料以計算換手率) ---
+    # 獲取數據 (抓 4 年以確保 3Y 顯示正常)
     @st.cache_data(ttl=900)
-    def get_stock_data_and_info(symbol):
+    def get_data(symbol):
         try:
-            # 1. 下載歷史數據
-            df = yf.download(symbol, period="2y", auto_adjust=False)
+            df = yf.download(symbol, period="4y", auto_adjust=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
-            
-            # 2. 下載基本面資料 (為了獲取流通股數 sharesOutstanding)
-            # 注意：Ticker.info 有時會比較慢，所以放在 cache 裡
-            ticker_obj = yf.Ticker(symbol)
-            info = ticker_obj.info
-            shares_outstanding = info.get('sharesOutstanding', None)
-            
-            return df, shares_outstanding
-        except Exception as e:
-            return None, None
+            return df
+        except: return None
 
-    with st.spinner("正在進行矩陣運算與數據下載..."):
-        df, shares_outstanding = get_stock_data_and_info(yahoo_ticker)
+    with st.spinner("計算成交量比率模型中..."):
+        df = get_data(yahoo_ticker)
 
     if df is None or df.empty:
         st.error(f"無法獲取 {display_ticker} 數據")
     else:
-        # --- A. SMA & Volume Sum 計算 ---
-        sma_cols = []
-        vol_cols = []
-        
+        # --- A. 基礎計算 ---
+        # 1. 計算所需的 Rolling Sum
+        # 需要的週期: 7, 14, 28, 57
+        periods = [7, 14, 28, 57]
         for p in periods:
-            # SMA
-            col_name = f'SMA_{p}'
-            df[col_name] = df['Close'].rolling(window=p).mean()
-            sma_cols.append(col_name)
-            
-            # Volume Sum (成交量累計)
-            v_name = f'Vol_Sum_{p}'
-            df[v_name] = df['Volume'].rolling(window=p).sum()
-            vol_cols.append(v_name)
+            df[f'Sum_{p}'] = df['Volume'].rolling(window=p).sum()
 
-        # --- B. 平均值計算 (只計算前 5 條) ---
-        avg_cols = sma_cols[:5] 
-        df['SMA_Avg_5'] = df[avg_cols].mean(axis=1)
-
-        # --- C. 收斂度計算 (Convergence) ---
-        conv_cols = []
-        for i, col in enumerate(avg_cols): 
-            p = periods[i]
-            c_name = f'Conv_{p}'
-            df[c_name] = (df[col] - df['SMA_Avg_5']) / df['SMA_Avg_5']
-            conv_cols.append(c_name)
-
-        # --- D. 偵測收斂訊號 ---
-        def check_convergence(row):
-            count = 0
-            for c in conv_cols:
-                if abs(row[c]) <= convergence_threshold:
-                    count += 1
-            return count
-
-        df['Conv_Count'] = df.apply(check_convergence, axis=1)
-        signal_mask = df['Conv_Count'] > 2 
-
-        # --- E. 介面分頁 (Tabs) ---
-        tab1, tab2 = st.tabs(["📈 SMA & Convergence (圖表)", "📊 Turnover Rate (換手率列表)"])
+        # 2. 計算使用者指定的 5 個 Ratio 公式
+        # R1: Sum(7)/sum(28)
+        df['R1'] = df['Sum_7'] / df['Sum_28']
         
-        last_row = df.iloc[-1]
-        colors = ['#FF6B6B', '#FFA500', '#FFD700', '#4CAF50', '#2196F3', '#9C27B0']
+        # R2: sum(7)/(sum(14)+sum(28))
+        df['R2'] = df['Sum_7'] / (df['Sum_14'] + df['Sum_28'])
+        
+        # R3: Sum(14)/sum(28)
+        df['R3'] = df['Sum_14'] / df['Sum_28']
+        
+        # R4: Sum(14)/(sum(14)+sum(28))
+        df['R4'] = df['Sum_14'] / (df['Sum_14'] + df['Sum_28'])
+        
+        # R5: Sum(14)/(sum(14)+sum(28)+sum(57))
+        df['R5'] = df['Sum_14'] / (df['Sum_14'] + df['Sum_28'] + df['Sum_57'])
 
-        # === Tab 1: 圖表介面 ===
+        # 基礎 SMA (給 Tab1 用)
+        df[f'SMA_{sma1}'] = df['Close'].rolling(window=sma1).mean()
+        df[f'SMA_{sma2}'] = df['Close'].rolling(window=sma2).mean()
+
+        # --- B. 介面呈現 ---
+        
+        # 時間區間選擇器 (放在最上面，控制所有圖表)
+        st.write("⏱️ **選擇觀察區間 (Time Interval):**")
+        interval_options = ['1D', '5D', '1M', '3M', '6M', '1Y', '3Y']
+        selected_interval = st.select_slider("滑動選擇時間跨度", options=interval_options, value='6M', label_visibility="collapsed")
+
+        # 根據選擇篩選數據
+        display_df = filter_data_by_interval(df, selected_interval)
+
+        tab1, tab2 = st.tabs(["📉 Price & SMA (主圖)", "📊 Volume Ratio Curves (比率分析)"])
+
+        # === Tab 1: 價格主圖 (保留基本功能) ===
         with tab1:
-            # 顯示 SMA 數值
-            cols_sma = st.columns(6)
-            for i, p in enumerate(periods):
-                val = last_row[f'SMA_{p}']
-                with cols_sma[i]:
-                    st.metric(f"SMA ({p})", f"{val:.2f}")
-                    st.markdown(f'<div style="background-color:{colors[i]};height:4px;border-radius:2px;"></div>', unsafe_allow_html=True)
-            
-            # 繪圖
-            display_df = df.iloc[-250:] 
-            display_signal = signal_mask.iloc[-250:]
-
-            fig = make_subplots(
-                rows=4, cols=1, 
-                shared_xaxes=True,
-                vertical_spacing=0.02,
-                row_heights=[0.5, 0.25, 0.15, 0.1],
-                subplot_titles=(f"價格與 6 均線", "均線收斂度 (Convergence)", "成交量", "RSI")
-            )
-
-            # 1. 主圖
-            fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'],
-                                         low=display_df['Low'], close=display_df['Close'], name='K線'), row=1, col=1)
-            for i, p in enumerate(periods):
-                fig.add_trace(go.Scatter(
-                    x=display_df.index, y=display_df[f'SMA_{p}'], 
-                    line=dict(color=colors[i], width=1), name=f'SMA {p}'
-                ), row=1, col=1)
-
-            # 2. 收斂圖
-            fig.add_hline(y=0, line_dash="solid", line_color="gray", row=2, col=1)
-            fig.add_hline(y=convergence_threshold, line_dash="dot", line_color="gray", opacity=0.5, row=2, col=1)
-            fig.add_hline(y=-convergence_threshold, line_dash="dot", line_color="gray", opacity=0.5, row=2, col=1)
-
-            for i, c_name in enumerate(conv_cols):
-                p = periods[i]
-                fig.add_trace(go.Scatter(
-                    x=display_df.index, y=display_df[c_name],
-                    line=dict(color=colors[i], width=1.5), name=f'Conv {p}'
-                ), row=2, col=1)
-
-            converge_dates = display_df[display_signal].index
-            if not converge_dates.empty:
-                fig.add_trace(go.Scatter(
-                    x=converge_dates, y=[0] * len(converge_dates),
-                    mode='markers', marker=dict(symbol='diamond', size=10, color='red'),
-                    name='收斂訊號'
-                ), row=2, col=1)
-
-            # 3. 成交量
-            vol_colors = ['red' if r['Open'] - r['Close'] >= 0 else 'green' for _, r in display_df.iterrows()]
-            fig.add_trace(go.Bar(x=display_df.index, y=display_df['Volume'], marker_color=vol_colors, name='Volume'), row=3, col=1)
-
-            # 4. RSI
-            delta = df['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            display_rsi = rsi.iloc[-250:]
-            
-            fig.add_trace(go.Scatter(x=display_df.index, y=display_rsi, line=dict(color='purple'), name='RSI'), row=4, col=1)
-            fig.add_hline(y=70, line_dash="dash", line_color="red", row=4, col=1)
-            fig.add_hline(y=30, line_dash="dash", line_color="green", row=4, col=1)
-
-            fig.update_layout(
-                height=900, xaxis_rangeslider_visible=False, showlegend=True,
-                margin=dict(t=30, l=10, r=10, b=10), template="plotly_white"
-            )
-            fig.update_yaxes(range=[-y_scale, y_scale], tickformat=".1%", title="偏離度", row=2, col=1)
-            fig.update_yaxes(title="價格", row=1, col=1)
-
-            st.plotly_chart(fig, use_container_width=True)
-
-        # === Tab 2: 列表介面 (換手率) ===
-        with tab2:
-            st.subheader("📊 區間換手率 (Turnover Rate %)")
-            
-            if shares_outstanding:
-                st.caption(f"已發行流通股數: **{shares_outstanding:,.0f}** | 換手率 = (區間成交量 / 流通股數) * 100%")
-                
-                cols_vol = st.columns(3) 
-                for i, p in enumerate(periods):
-                    vol_sum = last_row[f'Vol_Sum_{p}']
-                    # 計算換手率
-                    turnover_rate = (vol_sum / shares_outstanding) * 100
-                    
-                    with cols_vol[i % 3]:
-                        st.container(border=True).metric(
-                            label=f"Sum ({p} Days)", 
-                            value=f"{turnover_rate:.3f}%",  # 格式化為 0.099%
-                            help=f"累積成交量: {vol_sum:,.0f}"
-                        )
-                
-                st.divider()
-                st.caption("詳細換手率數據表 (最近 5 日):")
-                # 建立一個臨時 DataFrame 來顯示換手率
-                recent_vol_sum = df[[f'Vol_Sum_{p}' for p in periods]].tail(5).sort_index(ascending=False)
-                recent_turnover = recent_vol_sum.apply(lambda x: (x / shares_outstanding) * 100)
-                # 格式化顯示
-                formatted_df = recent_turnover.applymap(lambda x: f"{x:.3f}%")
-                st.dataframe(formatted_df, use_container_width=True)
-                
+            if display_df.empty:
+                st.warning("選定區間無數據")
             else:
-                st.warning("⚠️ 無法獲取該公司的流通股數數據 (Shares Outstanding)，因此無法計算百分比換手率。以下顯示原始累積成交量：")
+                fig_price = go.Figure()
+                fig_price.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'],
+                                             low=display_df['Low'], close=display_df['Close'], name='K線'))
+                fig_price.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma1}'], 
+                                         line=dict(color='orange', width=1), name=f'SMA {sma1}'))
+                fig_price.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma2}'], 
+                                         line=dict(color='blue', width=1), name=f'SMA {sma2}'))
                 
-                # Fallback: 如果抓不到股本，顯示原始數據
-                cols_vol = st.columns(3)
-                for i, p in enumerate(periods):
-                    vol_sum = last_row[f'Vol_Sum_{p}']
-                    with cols_vol[i % 3]:
-                         st.metric(f"Sum ({p} Days)", f"{vol_sum:,.0f}")
+                fig_price.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_white",
+                                        title=f"股價走勢 ({selected_interval})")
+                st.plotly_chart(fig_price, use_container_width=True)
+
+        # === Tab 2: 成交量比率分析 (核心需求) ===
+        with tab2:
+            last_row = df.iloc[-1]
+            
+            # 1. 列表顯示 (List Display)
+            st.subheader("📋 最新比率數值 (Latest Ratios)")
+            
+            # 定義公式名稱與顏色
+            ratio_configs = [
+                {"id": "R1", "label": "Sum(7) / Sum(28)", "color": "#FF6B6B"},
+                {"id": "R2", "label": "Sum(7) / (Sum(14)+Sum(28))", "color": "#FFA500"},
+                {"id": "R3", "label": "Sum(14) / Sum(28)", "color": "#FFD700"},
+                {"id": "R4", "label": "Sum(14) / (Sum(14)+Sum(28))", "color": "#4CAF50"},
+                {"id": "R5", "label": "Sum(14) / (S(14)+S(28)+S(57))", "color": "#2196F3"},
+            ]
+
+            # 顯示 Metrics
+            cols = st.columns(5)
+            for i, conf in enumerate(ratio_configs):
+                val = last_row[conf['id']]
+                with cols[i]:
+                    st.metric(label=conf['id'], value=f"{val:.4f}")
+                    st.caption(conf['label'])
+                    st.markdown(f'<div style="background-color:{conf["color"]};height:4px;border-radius:2px;"></div>', unsafe_allow_html=True)
+            
+            st.divider()
+
+            # 2. 曲線圖 (Curve Graph)
+            st.subheader(f"📈 比率收斂趨勢圖 ({selected_interval})")
+            
+            if display_df.empty:
+                st.warning("選定區間無數據，請切換至更長的時間範圍 (例如 3M 或 1Y)。")
+            elif selected_interval == '1D':
+                st.info("⚠️ '1D' 模式下僅顯示單點數據，無法繪製曲線，請選擇 5D 以上區間。")
+            else:
+                fig_ratio = go.Figure()
+                
+                # 繪製 5 條曲線
+                for conf in ratio_configs:
+                    fig_ratio.add_trace(go.Scatter(
+                        x=display_df.index, 
+                        y=display_df[conf['id']],
+                        mode='lines',
+                        name=conf['id'], # Legend 顯示簡稱
+                        line=dict(color=conf['color'], width=2),
+                        hovertemplate=f"<b>{conf['label']}</b><br>Value: %{{y:.4f}}<extra></extra>"
+                    ))
+
+                fig_ratio.update_layout(
+                    height=600,
+                    xaxis_title="Date",
+                    yaxis_title="Ratio Value",
+                    hovermode="x unified", # 統一顯示 tooltip，方便比較收斂
+                    template="plotly_white",
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    )
+                )
+                
+                st.plotly_chart(fig_ratio, use_container_width=True)
+                
+                st.caption("ℹ️ **操作提示**：\n"
+                           "- 上方滑桿可切換時間區間 (1D - 3Y)。\n"
+                           "- 點擊圖例 (Legend) 可隱藏/顯示特定曲線。\n"
+                           "- 當多條曲線數值接近時，即為「收斂」現象。")
