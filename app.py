@@ -39,6 +39,17 @@ def toggle_watchlist(ticker):
         st.toast(f'已收藏 {clean_code}', icon="⭐")
     update_url()
 
+def format_large_num(num):
+    """將大數字格式化為易讀格式 (K, M, B)"""
+    if num >= 1_000_000_000:
+        return f"{num / 1_000_000_000:.2f}B"
+    elif num >= 1_000_000:
+        return f"{num / 1_000_000:.2f}M"
+    elif num >= 1_000:
+        return f"{num / 1_000:.2f}K"
+    else:
+        return f"{num:.0f}"
+
 # --- 3. 側邊欄設定 ---
 with st.sidebar:
     st.header("HK Stock Matrix")
@@ -80,9 +91,7 @@ with st.sidebar:
     
     st.divider()
     st.caption("收斂偵測設定")
-    # 收斂圖的 Y 軸範圍 (Adjustable Scale)
     y_scale = st.slider("收斂圖 Y 軸範圍 (%)", 1.0, 20.0, 5.0, 0.5) / 100
-    # 判定為「趨近於 0」的閾值
     convergence_threshold = st.slider("收斂判定閾值 (%)", 0.1, 2.0, 0.5, 0.1) / 100
 
 # --- 4. 主程式邏輯 ---
@@ -127,29 +136,34 @@ else:
     if df is None or df.empty:
         st.error(f"無法獲取 {display_ticker} 數據")
     else:
-        # --- A. SMA 計算 ---
+        # --- A. SMA & Volume Sum 計算 ---
         sma_cols = []
+        vol_cols = []
+        
         for p in periods:
+            # SMA
             col_name = f'SMA_{p}'
             df[col_name] = df['Close'].rolling(window=p).mean()
             sma_cols.append(col_name)
+            
+            # Volume Sum (成交量累計)
+            v_name = f'Vol_Sum_{p}'
+            df[v_name] = df['Volume'].rolling(window=p).sum()
+            vol_cols.append(v_name)
 
-        # --- B. 平均值計算 (只計算前 5 條: 7, 14, 28, 57, 106) ---
-        # 根據你的公式：Avg(SMA7...SMA106)
+        # --- B. 平均值計算 (只計算前 5 條) ---
         avg_cols = sma_cols[:5] 
         df['SMA_Avg_5'] = df[avg_cols].mean(axis=1)
 
         # --- C. 收斂度計算 (Convergence) ---
-        # 公式：(SMA_n - Avg) / Avg
         conv_cols = []
-        for i, col in enumerate(avg_cols): # 只針對前 5 條做收斂分析
+        for i, col in enumerate(avg_cols): 
             p = periods[i]
             c_name = f'Conv_{p}'
             df[c_name] = (df[col] - df['SMA_Avg_5']) / df['SMA_Avg_5']
             conv_cols.append(c_name)
 
         # --- D. 偵測收斂訊號 ---
-        # 邏輯：檢查同一天有多少條線的絕對值小於閾值
         def check_convergence(row):
             count = 0
             for c in conv_cols:
@@ -158,26 +172,34 @@ else:
             return count
 
         df['Conv_Count'] = df.apply(check_convergence, axis=1)
-        # 標記訊號：當有超過 2 條線 (即 > 2) 趨近 0 時
         signal_mask = df['Conv_Count'] > 2 
 
-        # --- E. 顯示數值列表 (Sum List) ---
+        # --- E. 顯示數值列表 (SMA & Volume) ---
         last_row = df.iloc[-1]
-        st.subheader("📋 SMA 數值列表 (Latest)")
+        colors = ['#FF6B6B', '#FFA500', '#FFD700', '#4CAF50', '#2196F3', '#9C27B0']
         
-        # 建立 6 個 metric 顯示各 SMA 的最新值
-        cols = st.columns(6)
-        colors = ['#FF6B6B', '#FFA500', '#FFD700', '#4CAF50', '#2196F3', '#9C27B0'] # 彩虹色系
-        
+        # 1. SMA 列表
+        st.subheader("📋 均線數值 (SMA Values)")
+        cols_sma = st.columns(6)
         for i, p in enumerate(periods):
             val = last_row[f'SMA_{p}']
-            with cols[i]:
-                st.metric(f"SMA ({p})", f"{val:.2f}", border=True)
-                # 小色塊標記顏色
+            with cols_sma[i]:
+                st.metric(f"SMA ({p})", f"{val:.2f}")
                 st.markdown(f'<div style="background-color:{colors[i]};height:4px;border-radius:2px;"></div>', unsafe_allow_html=True)
+        
+        st.divider()
 
-        # --- F. 繪圖 (4層圖表) ---
-        display_df = df.iloc[-250:] # 顯示最近一年交易日
+        # 2. 成交量累計列表 (Volume Sum) - 新增部分
+        st.subheader("📊 成交量累計 (Turnover Sum)")
+        cols_vol = st.columns(6)
+        for i, p in enumerate(periods):
+            val_vol = last_row[f'Vol_Sum_{p}']
+            with cols_vol[i]:
+                # 使用 format_large_num 讓數字變短 (例如 1.2B)
+                st.metric(f"Sum ({p})", format_large_num(val_vol), help=f"精確值: {val_vol:,.0f} 股")
+
+        # --- F. 繪圖 ---
+        display_df = df.iloc[-250:] 
         display_signal = signal_mask.iloc[-250:]
 
         fig = make_subplots(
@@ -188,20 +210,17 @@ else:
             subplot_titles=(f"價格與 6 均線", "均線收斂度 (Convergence)", "成交量", "RSI")
         )
 
-        # 1. 主圖：K線 + 6條 SMA
+        # 1. 主圖
         fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'],
                                      low=display_df['Low'], close=display_df['Close'], name='K線'), row=1, col=1)
-        
         for i, p in enumerate(periods):
             fig.add_trace(go.Scatter(
                 x=display_df.index, y=display_df[f'SMA_{p}'], 
                 line=dict(color=colors[i], width=1), name=f'SMA {p}'
             ), row=1, col=1)
 
-        # 2. 收斂圖 (Convergence Graph)
-        # 畫 0 軸線
+        # 2. 收斂圖
         fig.add_hline(y=0, line_dash="solid", line_color="gray", row=2, col=1)
-        # 畫閾值線 (虛線)
         fig.add_hline(y=convergence_threshold, line_dash="dot", line_color="gray", opacity=0.5, row=2, col=1)
         fig.add_hline(y=-convergence_threshold, line_dash="dot", line_color="gray", opacity=0.5, row=2, col=1)
 
@@ -212,24 +231,19 @@ else:
                 line=dict(color=colors[i], width=1.5), name=f'Conv {p}'
             ), row=2, col=1)
 
-        # 標記高度收斂的時刻 (畫豎線背景)
-        # 這裡我們找出符合條件的日期，畫出垂直形狀
         converge_dates = display_df[display_signal].index
-        # 為了不讓圖表太亂，我們用 Markers 標記在 0 軸上
         if not converge_dates.empty:
             fig.add_trace(go.Scatter(
-                x=converge_dates, 
-                y=[0] * len(converge_dates),
-                mode='markers',
-                marker=dict(symbol='diamond', size=10, color='red'),
-                name='高度收斂訊號 (>2條)'
+                x=converge_dates, y=[0] * len(converge_dates),
+                mode='markers', marker=dict(symbol='diamond', size=10, color='red'),
+                name='收斂訊號'
             ), row=2, col=1)
 
         # 3. 成交量
         vol_colors = ['red' if r['Open'] - r['Close'] >= 0 else 'green' for _, r in display_df.iterrows()]
         fig.add_trace(go.Bar(x=display_df.index, y=display_df['Volume'], marker_color=vol_colors, name='Volume'), row=3, col=1)
 
-        # 4. RSI (簡單計算)
+        # 4. RSI
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -241,19 +255,11 @@ else:
         fig.add_hline(y=70, line_dash="dash", line_color="red", row=4, col=1)
         fig.add_hline(y=30, line_dash="dash", line_color="green", row=4, col=1)
 
-        # --- G. 圖表佈局調整 ---
         fig.update_layout(
-            height=1000, 
-            xaxis_rangeslider_visible=False, 
-            showlegend=True,
-            margin=dict(t=30, l=10, r=10, b=10),
-            template="plotly_white"
+            height=1000, xaxis_rangeslider_visible=False, showlegend=True,
+            margin=dict(t=30, l=10, r=10, b=10), template="plotly_white"
         )
-        
-        # 設定收斂圖的 Y 軸範圍 (Adjustable Scale)
         fig.update_yaxes(range=[-y_scale, y_scale], tickformat=".1%", title="偏離度", row=2, col=1)
         fig.update_yaxes(title="價格", row=1, col=1)
 
         st.plotly_chart(fig, use_container_width=True)
-
-        st.caption("ℹ️ 收斂圖說明：Y軸代表各均線與「前5條均線平均值」的距離百分比。當紅鑽石出現時，代表有超過2條均線進入了您設定的閾值範圍（即均線糾結）。")
