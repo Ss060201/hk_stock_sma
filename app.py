@@ -39,18 +39,6 @@ def toggle_watchlist(ticker):
         st.toast(f'已收藏 {clean_code}', icon="⭐")
     update_url()
 
-def format_large_num(num):
-    """將大數字格式化為易讀格式 (K, M, B)"""
-    if pd.isna(num): return "-"
-    if num >= 1_000_000_000:
-        return f"{num / 1_000_000_000:.2f}B"
-    elif num >= 1_000_000:
-        return f"{num / 1_000_000:.2f}M"
-    elif num >= 1_000:
-        return f"{num / 1_000:.2f}K"
-    else:
-        return f"{num:.0f}"
-
 # --- 3. 側邊欄設定 ---
 with st.sidebar:
     st.header("HK Stock Matrix")
@@ -120,19 +108,27 @@ else:
                 toggle_watchlist(current_code)
                 st.rerun()
 
-    # 獲取數據
+    # --- 數據獲取 (包含基本面資料以計算換手率) ---
     @st.cache_data(ttl=900)
-    def get_data(symbol):
+    def get_stock_data_and_info(symbol):
         try:
-            # 抓取足夠長的數據以計算 SMA 212
+            # 1. 下載歷史數據
             df = yf.download(symbol, period="2y", auto_adjust=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
-            return df
-        except: return None
+            
+            # 2. 下載基本面資料 (為了獲取流通股數 sharesOutstanding)
+            # 注意：Ticker.info 有時會比較慢，所以放在 cache 裡
+            ticker_obj = yf.Ticker(symbol)
+            info = ticker_obj.info
+            shares_outstanding = info.get('sharesOutstanding', None)
+            
+            return df, shares_outstanding
+        except Exception as e:
+            return None, None
 
-    with st.spinner("正在進行矩陣運算..."):
-        df = get_data(yahoo_ticker)
+    with st.spinner("正在進行矩陣運算與數據下載..."):
+        df, shares_outstanding = get_stock_data_and_info(yahoo_ticker)
 
     if df is None or df.empty:
         st.error(f"無法獲取 {display_ticker} 數據")
@@ -152,7 +148,7 @@ else:
             df[v_name] = df['Volume'].rolling(window=p).sum()
             vol_cols.append(v_name)
 
-        # --- B. 平均值計算 (只計算前 5 條: 7, 14, 28, 57, 106) ---
+        # --- B. 平均值計算 (只計算前 5 條) ---
         avg_cols = sma_cols[:5] 
         df['SMA_Avg_5'] = df[avg_cols].mean(axis=1)
 
@@ -176,14 +172,14 @@ else:
         signal_mask = df['Conv_Count'] > 2 
 
         # --- E. 介面分頁 (Tabs) ---
-        tab1, tab2 = st.tabs(["📈 SMA & Convergence (圖表)", "📊 Turnover Sum (成交量列表)"])
+        tab1, tab2 = st.tabs(["📈 SMA & Convergence (圖表)", "📊 Turnover Rate (換手率列表)"])
         
         last_row = df.iloc[-1]
         colors = ['#FF6B6B', '#FFA500', '#FFD700', '#4CAF50', '#2196F3', '#9C27B0']
 
         # === Tab 1: 圖表介面 ===
         with tab1:
-            # 顯示簡單的 SMA 數值卡片
+            # 顯示 SMA 數值
             cols_sma = st.columns(6)
             for i, p in enumerate(periods):
                 val = last_row[f'SMA_{p}']
@@ -257,28 +253,41 @@ else:
 
             st.plotly_chart(fig, use_container_width=True)
 
-        # === Tab 2: 列表介面 (成交量累計) ===
+        # === Tab 2: 列表介面 (換手率) ===
         with tab2:
-            st.subheader("📊 Turnover (Volume) Sum 列表")
-            st.caption("以下顯示各週期內的成交量總和 (Sum of Volume)：")
+            st.subheader("📊 區間換手率 (Turnover Rate %)")
             
-            # 使用列表呈現 (卡片式)
-            cols_vol = st.columns(3) # 分3列顯示
-            for i, p in enumerate(periods):
-                val_vol = last_row[f'Vol_Sum_{p}']
-                # 計算行數來分配 (0,1,2 -> row 1; 3,4,5 -> row 2)
-                with cols_vol[i % 3]:
-                    st.container(border=True).metric(
-                        label=f"Sum ({p} Days)", 
-                        value=format_large_num(val_vol),
-                        help=f"精確數值: {val_vol:,.0f} 股"
-                    )
-            
-            st.divider()
-            
-            # 詳細表格數據
-            st.caption("詳細數據表 (最近 5 日):")
-            recent_data = df[[f'Vol_Sum_{p}' for p in periods]].tail(5).sort_index(ascending=False)
-            # 格式化 Dataframe 顯示
-            formatted_df = recent_data.applymap(lambda x: f"{x:,.0f}")
-            st.dataframe(formatted_df, use_container_width=True)
+            if shares_outstanding:
+                st.caption(f"已發行流通股數: **{shares_outstanding:,.0f}** | 換手率 = (區間成交量 / 流通股數) * 100%")
+                
+                cols_vol = st.columns(3) 
+                for i, p in enumerate(periods):
+                    vol_sum = last_row[f'Vol_Sum_{p}']
+                    # 計算換手率
+                    turnover_rate = (vol_sum / shares_outstanding) * 100
+                    
+                    with cols_vol[i % 3]:
+                        st.container(border=True).metric(
+                            label=f"Sum ({p} Days)", 
+                            value=f"{turnover_rate:.3f}%",  # 格式化為 0.099%
+                            help=f"累積成交量: {vol_sum:,.0f}"
+                        )
+                
+                st.divider()
+                st.caption("詳細換手率數據表 (最近 5 日):")
+                # 建立一個臨時 DataFrame 來顯示換手率
+                recent_vol_sum = df[[f'Vol_Sum_{p}' for p in periods]].tail(5).sort_index(ascending=False)
+                recent_turnover = recent_vol_sum.apply(lambda x: (x / shares_outstanding) * 100)
+                # 格式化顯示
+                formatted_df = recent_turnover.applymap(lambda x: f"{x:.3f}%")
+                st.dataframe(formatted_df, use_container_width=True)
+                
+            else:
+                st.warning("⚠️ 無法獲取該公司的流通股數數據 (Shares Outstanding)，因此無法計算百分比換手率。以下顯示原始累積成交量：")
+                
+                # Fallback: 如果抓不到股本，顯示原始數據
+                cols_vol = st.columns(3)
+                for i, p in enumerate(periods):
+                    vol_sum = last_row[f'Vol_Sum_{p}']
+                    with cols_vol[i % 3]:
+                         st.metric(f"Sum ({p} Days)", f"{vol_sum:,.0f}")
