@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 
 # --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股 Turnover Rate 分析", page_icon="📊", layout="wide")
+st.set_page_config(page_title="港股 Turnover Pro 分析", page_icon="📊", layout="wide")
 
 # URL 狀態管理
 query_params = st.query_params
@@ -39,6 +39,13 @@ def toggle_watchlist(ticker):
         st.session_state.watchlist.append(clean_code)
         st.toast(f'已收藏 {clean_code}', icon="⭐")
     update_url()
+
+def format_large_num(num):
+    if pd.isna(num): return "-"
+    if num >= 1_000_000_000: return f"{num/1_000_000_000:.2f}B"
+    if num >= 1_000_000: return f"{num/1_000_000:.2f}M"
+    if num >= 1_000: return f"{num/1_000:.2f}K"
+    return f"{num:.0f}"
 
 def filter_data_by_interval(df, interval):
     if df.empty: return df
@@ -73,11 +80,16 @@ with st.sidebar:
     else:
         st.caption("暫無收藏")
 
+    st.divider()
+    st.caption("SMA 參數 (主圖用)")
+    sma1 = st.number_input("SMA 1", value=20)
+    sma2 = st.number_input("SMA 2", value=50)
+
 # --- 4. 主程式邏輯 ---
 current_code = st.session_state.current_view
 
 if not current_code:
-    st.title("港股 Turnover Rate (換手率) 分析系統")
+    st.title("港股 Turnover Pro 分析系統")
     st.info("👈 請輸入代號開始分析")
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
@@ -98,168 +110,216 @@ else:
 
     # 獲取數據
     @st.cache_data(ttl=900)
-    def get_data_with_shares(symbol):
+    def get_data(symbol):
         try:
-            # 1. 獲取歷史價格
+            # 抓取 4 年數據
             df = yf.download(symbol, period="4y", auto_adjust=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             
-            # 2. 獲取流通股數 (Shares Outstanding)
-            ticker_obj = yf.Ticker(symbol)
-            shares = ticker_obj.info.get('sharesOutstanding', None)
-            
+            # 獲取流通股數 (Shares Outstanding)
+            try:
+                info = yf.Ticker(symbol).info
+                shares = info.get('sharesOutstanding', None)
+            except:
+                shares = None
+                
             return df, shares
         except: return None, None
 
-    with st.spinner("正在下載並計算換手率數據..."):
-        df, shares_outstanding = get_data_with_shares(yahoo_ticker)
+    with st.spinner("計算成交量與換手率矩陣中..."):
+        df, shares_outstanding = get_data(yahoo_ticker)
 
     if df is None or df.empty:
         st.error(f"無法獲取 {display_ticker} 數據")
-    elif not shares_outstanding:
-        st.error(f"⚠️ 無法獲取 {display_ticker} 的流通股數 (Shares Outstanding)，無法計算換手率百分比。")
-        st.caption("建議：請嘗試其他大型股，或稍後再試。")
     else:
-        # --- A. 核心計算 (全部基於換手率 %) ---
-        
-        # 1. 計算單日換手率 (Daily Turnover %)
-        # 公式: (成交量 / 流通股數) * 100
-        df['Turnover_Pct'] = (df['Volume'] / shares_outstanding) * 100
-
-        # 2. 計算滾動換手率加總 (Rolling Sum of Turnover)
-        # 用於計算區間總換手
-        periods = [7, 14, 28, 57]
+        # --- A. 核心計算 ---
+        # 1. 滾動加總 (Volume Sums)
+        periods = [7, 14, 28, 57, 106]
         for p in periods:
-            df[f'T_Sum_{p}'] = df['Turnover_Pct'].rolling(window=p).sum()
+            df[f'Sum_{p}'] = df['Volume'].rolling(window=p).sum()
 
-        # 3. 計算增量序列 (Incremental Series)
-        # Sum(7)
-        df['Inc_Sum_7'] = df['T_Sum_7']
-        # Sum(14) - Sum(7)
-        df['Inc_Sum_14_7'] = df['T_Sum_14'] - df['T_Sum_7']
-        # Sum(28) - Sum(14)
-        df['Inc_Sum_28_14'] = df['T_Sum_28'] - df['T_Sum_14']
-        # Sum(57) - Sum(28)
-        df['Inc_Sum_57_28'] = df['T_Sum_57'] - df['T_Sum_28']
+        # 2. 比值 (Ratios)
+        df['R1 (7/14)'] = df['Sum_7'] / df['Sum_14']
+        df['R2 (7/28)'] = df['Sum_7'] / df['Sum_28']
+        df['R3 (14/28)'] = df['Sum_14'] / df['Sum_28']
+        df['R4 (14/57)'] = df['Sum_14'] / df['Sum_57']
+        df['R5 (28/57)'] = df['Sum_28'] / df['Sum_57']
+        df['R6 (28/106)'] = df['Sum_28'] / df['Sum_106']
 
+        # 3. 基礎 SMA
+        df[f'SMA_{sma1}'] = df['Close'].rolling(window=sma1).mean()
+        df[f'SMA_{sma2}'] = df['Close'].rolling(window=sma2).mean()
+
+        # 4. === 新增功能：換手率特定序列計算 ===
+        # 只有當獲取到流通股數時才計算
+        has_turnover_data = False
+        if shares_outstanding:
+            has_turnover_data = True
+            # (1) 單日換手率
+            df['Turnover_Day'] = (df['Volume'] / shares_outstanding) * 100
+            
+            # (2) 區間加總換手率 (Sum of Turnover)
+            # Sum(7)
+            df['TO_Sum_7'] = (df['Sum_7'] / shares_outstanding) * 100
+            
+            # (3) 差值序列 (Incremental Turnover)
+            # Sum(14) - Sum(7)
+            df['TO_Diff_14_7'] = ((df['Sum_14'] - df['Sum_7']) / shares_outstanding) * 100
+            # Sum(28) - Sum(14)
+            df['TO_Diff_28_14'] = ((df['Sum_28'] - df['Sum_14']) / shares_outstanding) * 100
+            # Sum(57) - Sum(28)
+            df['TO_Diff_57_28'] = ((df['Sum_57'] - df['Sum_28']) / shares_outstanding) * 100
+        
         # --- B. 介面呈現 ---
         
         # 區間選擇
-        st.write("⏱️ **圖表觀察區間:**")
+        st.write("⏱️ **時間區間 (Time Interval):**")
         interval_options = ['1D', '5D', '1M', '3M', '6M', '1Y', '3Y']
         selected_interval = st.select_slider("Select", options=interval_options, value='6M', label_visibility="collapsed")
         
         display_df = filter_data_by_interval(df, selected_interval)
-        last_row = df.iloc[-1]
 
-        # 分頁設計
-        tab1, tab2 = st.tabs(["📅 Day(1)-Day(7) (單日序列)", "📈 Period Incremental (區間增量)"])
+        # 增加 Tab 4
+        tab1, tab2, tab3, tab4 = st.tabs(["📉 Price & SMA", "🔄 Ratio Curves", "📊 Volume (Abs)", "💹 Turnover Rate % (NEW)"])
 
-        # === Tab 1: Day(1)-Day(7) 單日換手率 ===
+        # === Tab 1: 主圖 ===
         with tab1:
-            st.subheader("📋 單日換手率列表 (Latest 7 Days)")
-            
-            # 準備數據: 取最後 7 天並倒序 (Day 1 = Latest)
-            last_7_days = df['Turnover_Pct'].tail(7).iloc[::-1]
-            
-            # 列表顯示
-            cols = st.columns(7)
-            for i, (date, val) in enumerate(last_7_days.items()):
-                with cols[i]:
-                    st.metric(
-                        label=f"Day({i+1})", 
-                        value=f"{val:.3f}%",
-                        help=date.strftime('%Y-%m-%d')
-                    )
-            
-            st.divider()
-            
-            # 曲線圖
-            st.subheader(f"📈 日換手率走勢圖 ({selected_interval})")
-            fig_day = go.Figure()
-            
-            # 嵌入數值標註到 Legend
-            latest_val = df['Turnover_Pct'].iloc[-1]
-            label_day = f"Daily Turnover: {latest_val:.3f}%"
-            
-            fig_day.add_trace(go.Scatter(
-                x=display_df.index, 
-                y=display_df['Turnover_Pct'],
-                mode='lines',
-                name=label_day,
-                line=dict(color='#2962FF', width=1.5),
-                hovertemplate="<b>Date</b>: %{x}<br><b>Turnover</b>: %{y:.3f}%<extra></extra>"
-            ))
-            
-            fig_day.update_layout(
-                height=500, xaxis_title="Date", yaxis_title="Turnover Rate (%)",
-                hovermode="x unified", template="plotly_white",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            st.plotly_chart(fig_day, use_container_width=True)
+            fig_price = go.Figure()
+            fig_price.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'],
+                                         low=display_df['Low'], close=display_df['Close'], name='K線'))
+            fig_price.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma1}'], 
+                                     line=dict(color='orange', width=1), name=f'SMA {sma1}'))
+            fig_price.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma2}'], 
+                                     line=dict(color='blue', width=1), name=f'SMA {sma2}'))
+            fig_price.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_white")
+            st.plotly_chart(fig_price, use_container_width=True)
 
-        # === Tab 2: Sum(7) & Incremental Sums ===
+        # === Tab 2: 比率曲線 ===
         with tab2:
-            st.subheader("📋 區間換手率增量列表")
-            
-            # 定義顯示項目
-            inc_items = [
-                {"id": "Inc_Sum_7", "label": "Sum(7)", "color": "#FF6B6B"},
-                {"id": "Inc_Sum_14_7", "label": "Sum(14) - Sum(7)", "color": "#FFA500"},
-                {"id": "Inc_Sum_28_14", "label": "Sum(28) - Sum(14)", "color": "#00E676"},
-                {"id": "Inc_Sum_57_28", "label": "Sum(57) - Sum(28)", "color": "#651FFF"},
-            ]
-            
-            # 列表顯示
-            c1, c2, c3, c4 = st.columns(4)
-            cols_ref = [c1, c2, c3, c4]
-            
-            for i, item in enumerate(inc_items):
-                val = last_row[item['id']]
-                with cols_ref[i]:
-                    st.metric(label=item['label'], value=f"{val:.3f}%")
-                    st.markdown(f'<div style="background-color:{item["color"]};height:4px;border-radius:2px;"></div>', unsafe_allow_html=True)
+            last_row = df.iloc[-1]
+            st.subheader("📋 換手率結構比值 (Ratio Curves)")
+            ratio_cols = ['R1 (7/14)', 'R2 (7/28)', 'R3 (14/28)', 'R4 (14/57)', 'R5 (28/57)', 'R6 (28/106)']
+            colors = ['#FF6B6B', '#FFA500', '#FFD700', '#4CAF50', '#2196F3', '#9C27B0']
 
-            st.divider()
+            fig_ratio = go.Figure()
+            for i, col in enumerate(ratio_cols):
+                latest_val = last_row[col]
+                label_with_val = f"{col}: {latest_val:.3f}"
+                fig_ratio.add_trace(go.Scatter(x=display_df.index, y=display_df[col], mode='lines',
+                    name=label_with_val, line=dict(color=colors[i], width=2),
+                    hovertemplate=f"<b>{col}</b><br>Value: %{{y:.3f}}<extra></extra>"))
+            fig_ratio.update_layout(height=600, xaxis_title="Date", yaxis_title="Ratio", hovermode="x unified", template="plotly_white",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            st.plotly_chart(fig_ratio, use_container_width=True)
 
-            # 曲線圖
-            st.subheader(f"📈 區間增量走勢圖 ({selected_interval})")
-            
-            if display_df.empty:
-                st.warning("數據不足")
-            else:
+        # === Tab 3: 成交量結構 (絕對值) ===
+        with tab3:
+            st.subheader("🧱 成交量分佈 (Volume in Shares)")
+            curr = df.iloc[-1]
+            last_7_days = df['Volume'].tail(7)
+            inc_data = {
+                "Sum(7)": curr['Sum_7'],
+                "Sum(14)-Sum(7)": curr['Sum_14'] - curr['Sum_7'],
+                "Sum(28)-Sum(14)": curr['Sum_28'] - curr['Sum_14'],
+                "Sum(57)-Sum(28)": curr['Sum_57'] - curr['Sum_28']
+            }
+            c_chart1, c_chart2 = st.columns(2)
+            with c_chart1:
+                st.caption("📅 最近 7 日成交量序列 (Day 1-7)")
+                fig_days = go.Figure()
+                fig_days.add_trace(go.Bar(x=last_7_days.index, y=last_7_days.values,
+                    text=[format_large_num(v) for v in last_7_days.values], textposition='auto', marker_color='#636EFA'))
+                fig_days.update_layout(height=400, template="plotly_white", showlegend=False)
+                st.plotly_chart(fig_days, use_container_width=True)
+            with c_chart2:
+                st.caption("📈 區間增量分佈 (Incremental Sums)")
                 fig_inc = go.Figure()
-                
-                for item in inc_items:
-                    col_name = item['id']
-                    val = last_row[col_name]
-                    # 嵌入數值到 Legend
-                    label_with_val = f"{item['label']}: {val:.3f}%"
-                    
-                    fig_inc.add_trace(go.Scatter(
-                        x=display_df.index,
-                        y=display_df[col_name],
-                        mode='lines',
-                        name=label_with_val,
-                        line=dict(color=item['color'], width=2),
-                        hovertemplate=f"<b>{item['label']}</b>: %{{y:.3f}}%<extra></extra>"
-                    ))
+                fig_inc.add_trace(go.Bar(x=list(inc_data.keys()), y=list(inc_data.values()),
+                    text=[format_large_num(v) for v in inc_data.values()], textposition='auto', marker_color='#EF553B'))
+                fig_inc.update_layout(height=400, template="plotly_white", showlegend=False)
+                st.plotly_chart(fig_inc, use_container_width=True)
 
-                fig_inc.update_layout(
-                    height=600,
-                    xaxis_title="Date",
-                    yaxis_title="Accumulated Turnover (%)",
+        # === Tab 4: 換手率結構 (NEW) ===
+        with tab4:
+            if not has_turnover_data:
+                st.warning("⚠️ 無法獲取流通股數 (Shares Outstanding)，無法計算換手率百分比。")
+            else:
+                last_row = df.iloc[-1]
+                st.subheader("💹 換手率結構分析 (Target: Turnover Rate %)")
+                
+                # --- Part 1: Day(1)-Day(7) ---
+                st.markdown("#### 1. Daily Turnover Sequence (Day 1-7)")
+                
+                # 準備列表數據 (最近 7 天)
+                last_7_to = df['Turnover_Day'].tail(7).sort_index(ascending=False) # 倒序: Day 1 (最新) -> Day 7
+                
+                # 列表顯示
+                cols_d = st.columns(7)
+                for i in range(7):
+                    # 安全檢查，避免數據不足 7 天報錯
+                    if i < len(last_7_to):
+                        date_str = last_7_to.index[i].strftime('%m-%d')
+                        val = last_7_to.iloc[i]
+                        with cols_d[i]:
+                            st.metric(label=f"Day({i+1})", value=f"{val:.2f}%", delta=date_str, delta_color="off")
+                
+                # 曲線顯示 (Daily Turnover Curve)
+                fig_to_day = go.Figure()
+                fig_to_day.add_trace(go.Scatter(
+                    x=display_df.index, 
+                    y=display_df['Turnover_Day'],
+                    mode='lines',
+                    name=f"Daily Turnover: {last_row['Turnover_Day']:.2f}%",
+                    line=dict(color='#00CC96', width=1.5),
+                    fill='tozeroy', # 填充背景讓每日換手率更清楚
+                    hovertemplate="Date: %{x}<br>Turnover: %{y:.2f}%<extra></extra>"
+                ))
+                fig_to_day.update_layout(height=350, title="Daily Turnover Trend", template="plotly_white", hovermode="x unified")
+                st.plotly_chart(fig_to_day, use_container_width=True)
+
+                st.divider()
+
+                # --- Part 2: Incremental Turnover Sums ---
+                st.markdown("#### 2. Incremental Turnover Sums (Difference Sequence)")
+                
+                # 定義 4 個指標
+                to_metrics = [
+                    {"col": "TO_Sum_7", "label": "Sum(7)", "color": "#AB63FA"},
+                    {"col": "TO_Diff_14_7", "label": "Sum(14)-Sum(7)", "color": "#FFA15A"},
+                    {"col": "TO_Diff_28_14", "label": "Sum(28)-Sum(14)", "color": "#19D3F3"},
+                    {"col": "TO_Diff_57_28", "label": "Sum(57)-Sum(28)", "color": "#FF6692"},
+                ]
+
+                # 列表顯示
+                cols_inc = st.columns(4)
+                for i, item in enumerate(to_metrics):
+                    val = last_row[item['col']]
+                    with cols_inc[i]:
+                        st.metric(label=item['label'], value=f"{val:.2f}%")
+                        st.markdown(f'<div style="background-color:{item["color"]};height:4px;border-radius:2px;"></div>', unsafe_allow_html=True)
+
+                # 曲線顯示 (Incremental Curves)
+                fig_to_inc = go.Figure()
+                for item in to_metrics:
+                    latest_val = last_row[item['col']]
+                    label_val = f"{item['label']}: {latest_val:.2f}%"
+                    
+                    fig_to_inc.add_trace(go.Scatter(
+                        x=display_df.index,
+                        y=display_df[item['col']],
+                        mode='lines',
+                        name=label_val,
+                        line=dict(color=item['color'], width=2),
+                        hovertemplate=f"<b>{item['label']}</b>: %{{y:.2f}}%<extra></extra>"
+                    ))
+                
+                fig_to_inc.update_layout(
+                    height=500, 
+                    title="Incremental Turnover Sums Trend", 
+                    yaxis_title="Turnover Rate (%)",
+                    template="plotly_white", 
                     hovermode="x unified",
-                    template="plotly_white",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
-                
-                st.plotly_chart(fig_inc, use_container_width=True)
-                
-                st.info("""
-                **指標解讀**:
-                * **Sum(7)**: 最近 7 個交易日的總換手率。
-                * **Sum(14)-Sum(7)**: 過去第 8 天到第 14 天的總換手率 (上一週的活躍度)。
-                * 此圖表用於觀察籌碼交換的**時間分佈**。若 Sum(7) 曲線急劇上升並超過其他長週期曲線，代表近期資金介入極其明顯。
-                """)
+                st.plotly_chart(fig_to_inc, use_container_width=True)
