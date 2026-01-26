@@ -2,3 +2,5 @@ streamlit
 yfinance
 pandas
 plotly
+numpy
+python-dateutil
