@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 
 # --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股 SMA 矩陣分析 v7.1", page_icon="📈", layout="wide")
+st.set_page_config(page_title="港股 SMA 矩陣分析 v7.2", page_icon="📈", layout="wide")
 
 # URL 狀態管理
 query_params = st.query_params
@@ -145,7 +145,7 @@ current_code = st.session_state.current_view
 ref_date_str = st.session_state.ref_date.strftime('%Y-%m-%d')
 
 if not current_code:
-    st.title("港股 SMA 矩陣分析 v7.1")
+    st.title("港股 SMA 矩陣分析 v7.2")
     st.info("👈 請輸入代號開始分析。")
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
@@ -208,8 +208,7 @@ else:
         for p in periods_sma:
             df[f'SMA_{p}'] = df['Close'].rolling(window=p).mean()
 
-        # 2. 【修復 Bug】用戶自定義 SMA (Tab 1 圖表需要)
-        # 檢查是否存在，不存在則計算
+        # 2. 用戶自定義 SMA (Tab 1 圖表需要)
         if f'SMA_{sma1}' not in df.columns:
             df[f'SMA_{sma1}'] = df['Close'].rolling(window=sma1).mean()
         if f'SMA_{sma2}' not in df.columns:
@@ -223,8 +222,7 @@ else:
         else:
             df['Turnover_Rate'] = 0.0
 
-        # 4. 【修復 Bug】計算 Volume Sum 和 Ratios (Tab 2 需要)
-        # 必須在這裡計算，確保 filter_data_by_interval 之後包含這些列
+        # 4. 計算 Volume Sum 和 Ratios (Tab 2 需要)
         for p in [7, 14, 28, 57, 106, 212]:
              df[f'Sum_{p}'] = df['Volume'].rolling(window=p).sum()
         
@@ -282,28 +280,14 @@ else:
             )
             st.plotly_chart(fig_sma_trend, use_container_width=True)
 
-            # --- 2. SMA Matrix ---
+            # --- 2. SMA Matrix (修復縮進導致的 HTML 顯示錯誤) ---
             st.subheader("📋 SMA Matrix")
             
-            sma_html = """
-            <table class="big-font-table">
-                <thead>
-                    <tr>
-                        <th>Interval</th>
-                        <th>Max</th>
-                        <th>Min</th>
-                        <th>SMA (Day1)</th>
-                        <th>SMAC (%)</th>
-                        <th>Day 2</th>
-                        <th>Day 3</th>
-                        <th>Day 4</th>
-                        <th>Day 5</th>
-                        <th>Day 6</th>
-                        <th>Day 7</th>
-                    </tr>
-                </thead>
-                <tbody>
-            """
+            # 使用單行或去除縮進的方式構建 HTML 頭部，避免被視為 Markdown Code Block
+            sma_html = '<table class="big-font-table"><thead><tr>'
+            sma_html += '<th>Interval</th><th>Max</th><th>Min</th><th>SMA (Day1)</th><th>SMAC (%)</th>'
+            sma_html += '<th>Day 2</th><th>Day 3</th><th>Day 4</th><th>Day 5</th><th>Day 6</th><th>Day 7</th>'
+            sma_html += '</tr></thead><tbody>'
             
             for p in periods_sma:
                 col_sma = f'SMA_{p}'
@@ -326,29 +310,19 @@ else:
                     val = data_slice[col_sma].iloc[i]
                     day_vals.append(f"{val:.2f}")
 
-                sma_html += f"""
-                <tr>
-                    <td><b>{p}</b></td>
-                    <td>{val_max:.2f}</td>
-                    <td>{val_min:.2f}</td>
-                    <td><b>{val_curr:.2f}</b></td>
-                    <td class="{smac_class}">{smac_str}</td>
-                    <td>{day_vals[0]}</td>
-                    <td>{day_vals[1]}</td>
-                    <td>{day_vals[2]}</td>
-                    <td>{day_vals[3]}</td>
-                    <td>{day_vals[4]}</td>
-                    <td>{day_vals[5]}</td>
-                </tr>
-                """
+                # 構建每一行，確保沒有會觸發 Code Block 的縮進
+                row_html = f'<tr><td><b>{p}</b></td><td>{val_max:.2f}</td><td>{val_min:.2f}</td><td><b>{val_curr:.2f}</b></td>'
+                row_html += f'<td class="{smac_class}">{smac_str}</td>'
+                row_html += f'<td>{day_vals[0]}</td><td>{day_vals[1]}</td><td>{day_vals[2]}</td><td>{day_vals[3]}</td><td>{day_vals[4]}</td><td>{day_vals[5]}</td></tr>'
+                sma_html += row_html
+                
             sma_html += "</tbody></table>"
-            # 確保這裡使用了 unsafe_allow_html=True
             st.markdown(sma_html, unsafe_allow_html=True)
             st.caption("註: SMAC = (1 - SMA_n / SMA_57) * 100%; Day 2-7 為歷史交易日數值")
             
             st.divider()
 
-            # --- 3. Turnover Rate Matrix ---
+            # --- 3. Turnover Rate Matrix (修復縮進導致的 HTML 顯示錯誤) ---
             st.subheader("📋 Turnover Rate Matrix")
             
             if not has_turnover:
@@ -376,111 +350,31 @@ else:
                 avg_tor_7 = df['Turnover_Rate'].mean()
                 val_avg_7 = f"{avg_tor_7:.2f}%"
 
-                tor_html = f"""
-                <table class="big-font-table">
-                    <tr style="background-color: #e8eaf6;">
-                        <th style="width:14%">Day 2<br><small>{dates_d2_d7[0]}</small></th>
-                        <th style="width:14%">Day 3<br><small>{dates_d2_d7[1]}</small></th>
-                        <th style="width:14%">Day 4<br><small>{dates_d2_d7[2]}</small></th>
-                        <th style="width:14%">Day 5<br><small>{dates_d2_d7[3]}</small></th>
-                        <th style="width:14%">Day 6<br><small>{dates_d2_d7[4]}</small></th>
-                        <th style="width:14%">Day 7<br><small>{dates_d2_d7[5]}</small></th>
-                    </tr>
-                    <tr>
-                        <td>{vals_d2_d7[0]}</td>
-                        <td>{vals_d2_d7[1]}</td>
-                        <td>{vals_d2_d7[2]}</td>
-                        <td>{vals_d2_d7[3]}</td>
-                        <td>{vals_d2_d7[4]}</td>
-                        <td>{vals_d2_d7[5]}</td>
-                    </tr>
-                    
-                    <tr style="background-color: #e8eaf6;">
-                        <th>Day 8<br><small>{dates_d8_d13[0]}</small></th>
-                        <th>Day 9<br><small>{dates_d8_d13[1]}</small></th>
-                        <th>Day 10<br><small>{dates_d8_d13[2]}</small></th>
-                        <th>Day 11<br><small>{dates_d8_d13[3]}</small></th>
-                        <th>Day 12<br><small>{dates_d8_d13[4]}</small></th>
-                        <th>Day 13<br><small>{dates_d8_d13[5]}</small></th>
-                    </tr>
-                    <tr>
-                        <td>{vals_d8_d13[0]}</td>
-                        <td>{vals_d8_d13[1]}</td>
-                        <td>{vals_d8_d13[2]}</td>
-                        <td>{vals_d8_d13[3]}</td>
-                        <td>{vals_d8_d13[4]}</td>
-                        <td>{vals_d8_d13[5]}</td>
-                    </tr>
-                </table>
-                <br>
-                <table class="big-font-table">
-                    <tr style="background-color: #ffe0b2;">
-                        <th style="width:16%">Metrics</th>
-                        <th style="width:14%">Int: {intervals_tor[0]}</th>
-                        <th style="width:14%">Int: {intervals_tor[1]}</th>
-                        <th style="width:14%">Int: {intervals_tor[2]}</th>
-                        <th style="width:14%">Int: {intervals_tor[3]}</th>
-                        <th style="width:14%">Int: {intervals_tor[4]}</th>
-                        <th style="width:14%">Int: {intervals_tor[5]}</th>
-                    </tr>
-                    <tr>
-                        <td><b>Sum(TOR)</b></td>
-                        <td>{sums[0]}</td>
-                        <td>{sums[1]}</td>
-                        <td>{sums[2]}</td>
-                        <td>{sums[3]}</td>
-                        <td>{sums[4]}</td>
-                        <td>{sums[5]}</td>
-                    </tr>
-                    <tr>
-                        <td><b>Max</b></td>
-                        <td>{maxs[0]}</td>
-                        <td>{maxs[1]}</td>
-                        <td>{maxs[2]}</td>
-                        <td>{maxs[3]}</td>
-                        <td>{maxs[4]}</td>
-                        <td>{maxs[5]}</td>
-                    </tr>
-                    <tr>
-                        <td><b>Min</b></td>
-                        <td>{mins[0]}</td>
-                        <td>{mins[1]}</td>
-                        <td>{mins[2]}</td>
-                        <td>{mins[3]}</td>
-                        <td>{mins[4]}</td>
-                        <td>{mins[5]}</td>
-                    </tr>
-                    <tr style="background-color: #c8e6c9;">
-                        <td><b>AVG Label</b></td>
-                        <td>AVGTOR 1</td>
-                        <td>AVGTOR 2</td>
-                        <td>AVGTOR 3</td>
-                        <td>AVGTOR 4</td>
-                        <td>AVGTOR 5</td>
-                        <td>AVGTOR 6</td>
-                    </tr>
-                    <tr>
-                        <td><b>AVGTOR</b></td>
-                        <td>{avgs[0]}</td>
-                        <td>{avgs[1]}</td>
-                        <td>{avgs[2]}</td>
-                        <td>{avgs[3]}</td>
-                        <td>{avgs[4]}</td>
-                        <td>{avgs[5]}</td>
-                    </tr>
-                </table>
-                <table class="big-font-table" style="margin-top: 10px;">
-                     <tr style="background-color: #c8e6c9;">
-                        <th style="width:50%">AVGTOR 7 (Total Average)</th>
-                        <th style="width:50%">Data</th>
-                     </tr>
-                     <tr>
-                        <td>{avg_tor_7:.2f}%</td>
-                        <td>{val_avg_7}</td>
-                     </tr>
-                </table>
-                """
-                # 確保這裡使用了 unsafe_allow_html=True
+                # 同樣避免使用多行字符串縮進
+                tor_html = '<table class="big-font-table">'
+                
+                # Row 1 & 2
+                tor_html += f'<tr style="background-color: #e8eaf6;"><th>Day 2<br><small>{dates_d2_d7[0]}</small></th><th>Day 3<br><small>{dates_d2_d7[1]}</small></th><th>Day 4<br><small>{dates_d2_d7[2]}</small></th><th>Day 5<br><small>{dates_d2_d7[3]}</small></th><th>Day 6<br><small>{dates_d2_d7[4]}</small></th><th>Day 7<br><small>{dates_d2_d7[5]}</small></th></tr>'
+                tor_html += f'<tr><td>{vals_d2_d7[0]}</td><td>{vals_d2_d7[1]}</td><td>{vals_d2_d7[2]}</td><td>{vals_d2_d7[3]}</td><td>{vals_d2_d7[4]}</td><td>{vals_d2_d7[5]}</td></tr>'
+                
+                # Row 3 & 4
+                tor_html += f'<tr style="background-color: #e8eaf6;"><th>Day 8<br><small>{dates_d8_d13[0]}</small></th><th>Day 9<br><small>{dates_d8_d13[1]}</small></th><th>Day 10<br><small>{dates_d8_d13[2]}</small></th><th>Day 11<br><small>{dates_d8_d13[3]}</small></th><th>Day 12<br><small>{dates_d8_d13[4]}</small></th><th>Day 13<br><small>{dates_d8_d13[5]}</small></th></tr>'
+                tor_html += f'<tr><td>{vals_d8_d13[0]}</td><td>{vals_d8_d13[1]}</td><td>{vals_d8_d13[2]}</td><td>{vals_d8_d13[3]}</td><td>{vals_d8_d13[4]}</td><td>{vals_d8_d13[5]}</td></tr></table><br>'
+                
+                # Metrics Table
+                tor_html += '<table class="big-font-table"><tr style="background-color: #ffe0b2;">'
+                tor_html += f'<th style="width:16%">Metrics</th><th style="width:14%">Int: {intervals_tor[0]}</th><th style="width:14%">Int: {intervals_tor[1]}</th><th style="width:14%">Int: {intervals_tor[2]}</th><th style="width:14%">Int: {intervals_tor[3]}</th><th style="width:14%">Int: {intervals_tor[4]}</th><th style="width:14%">Int: {intervals_tor[5]}</th></tr>'
+                
+                tor_html += f'<tr><td><b>Sum(TOR)</b></td><td>{sums[0]}</td><td>{sums[1]}</td><td>{sums[2]}</td><td>{sums[3]}</td><td>{sums[4]}</td><td>{sums[5]}</td></tr>'
+                tor_html += f'<tr><td><b>Max</b></td><td>{maxs[0]}</td><td>{maxs[1]}</td><td>{maxs[2]}</td><td>{maxs[3]}</td><td>{maxs[4]}</td><td>{maxs[5]}</td></tr>'
+                tor_html += f'<tr><td><b>Min</b></td><td>{mins[0]}</td><td>{mins[1]}</td><td>{mins[2]}</td><td>{mins[3]}</td><td>{mins[4]}</td><td>{mins[5]}</td></tr>'
+                
+                tor_html += '<tr style="background-color: #c8e6c9;"><td><b>AVG Label</b></td><td>AVGTOR 1</td><td>AVGTOR 2</td><td>AVGTOR 3</td><td>AVGTOR 4</td><td>AVGTOR 5</td><td>AVGTOR 6</td></tr>'
+                tor_html += f'<tr><td><b>AVGTOR</b></td><td>{avgs[0]}</td><td>{avgs[1]}</td><td>{avgs[2]}</td><td>{avgs[3]}</td><td>{avgs[4]}</td><td>{avgs[5]}</td></tr></table>'
+                
+                # Extra Table
+                tor_html += f'<table class="big-font-table" style="margin-top: 10px;"><tr style="background-color: #c8e6c9;"><th style="width:50%">AVGTOR 7 (Total Average)</th><th style="width:50%">Data</th></tr><tr><td>{avg_tor_7:.2f}%</td><td>{val_avg_7}</td></tr></table>'
+
                 st.markdown(tor_html, unsafe_allow_html=True)
                 st.caption("註: Interval 單位為交易日; Day 數據為對應歷史交易日之換手率。")
 
@@ -489,7 +383,6 @@ else:
     
     tab1, tab2, tab3, tab4 = st.tabs(["📉 Price & SMA", "🔄 Ratio Curves", "📊 Volume (Abs)", "💹 Turnover Analysis (Old)"])
 
-    # 區間選擇
     display_df = filter_data_by_interval(df, '6M')
 
     # Tab 1: Price
@@ -497,7 +390,6 @@ else:
         fig = go.Figure()
         fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'],
                                      low=display_df['Low'], close=display_df['Close'], name='K線'))
-        # 由於我們已經在最前面計算了 sma1 和 sma2，這裡不會再報錯
         fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma1}'], line=dict(color='orange'), name=f'SMA {sma1}'))
         fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma2}'], line=dict(color='blue'), name=f'SMA {sma2}'))
         fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_white")
@@ -505,7 +397,6 @@ else:
 
     # Tab 2: Ratio Curves
     with tab2:
-        # R1, R2 已經在數據獲取階段計算完畢，這裡直接繪圖，不會報錯
         fig_r = go.Figure()
         fig_r.add_trace(go.Scatter(x=display_df.index, y=display_df['R1'], name="R1 (S7/S14)"))
         fig_r.add_trace(go.Scatter(x=display_df.index, y=display_df['R2'], name="R2 (S7/S28)"))
