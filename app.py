@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 
 # --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股 SMA 矩陣分析 v7.0", page_icon="📈", layout="wide")
+st.set_page_config(page_title="港股 SMA 矩陣分析 v7.1", page_icon="📈", layout="wide")
 
 # URL 狀態管理
 query_params = st.query_params
@@ -21,7 +21,7 @@ if 'current_view' not in st.session_state:
 if 'ref_date' not in st.session_state:
     st.session_state.ref_date = datetime.now().date()
 
-# --- CSS 樣式 (針對手機優化與大字體) ---
+# --- CSS 樣式 ---
 st.markdown("""
 <style>
     /* 強制放大表格字體 */
@@ -136,6 +136,7 @@ with st.sidebar:
     
     st.divider()
     st.caption("SMA 參數 (主圖用)")
+    # 將 SMA 參數放入 session_state 以便全局調用
     sma1 = st.number_input("SMA 1", value=20)
     sma2 = st.number_input("SMA 2", value=50)
 
@@ -144,7 +145,7 @@ current_code = st.session_state.current_view
 ref_date_str = st.session_state.ref_date.strftime('%Y-%m-%d')
 
 if not current_code:
-    st.title("港股 SMA 矩陣分析 v7.0")
+    st.title("港股 SMA 矩陣分析 v7.1")
     st.info("👈 請輸入代號開始分析。")
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
@@ -198,41 +199,45 @@ else:
     if df is None or df.empty or len(df) < 5:
         st.error(f"數據不足或當日休市 (Date: {ref_date_str})。請嘗試調整日期。")
     else:
-# --- A. 核心計算 (v7.0 Logic) ---
+        # ==========================================
+        # --- A. 核心計算 (修復版: 統一計算所有指標) ---
+        # ==========================================
         
-        # 1. 計算 SMA
-        # (A) 先計算矩陣需要的固定週期
+        # 1. 矩陣需要的固定 SMA
         periods_sma = [7, 14, 28, 57, 106, 212]
         for p in periods_sma:
             df[f'SMA_{p}'] = df['Close'].rolling(window=p).mean()
 
-        # (B) [修復 Bug] 補算用戶自定義的 SMA (用於 Tab 1 圖表)
-        # 如果用戶設定的 SMA (如 20) 不在上面的列表中，必須額外計算，否則會報 KeyError
+        # 2. 【修復 Bug】用戶自定義 SMA (Tab 1 圖表需要)
+        # 檢查是否存在，不存在則計算
         if f'SMA_{sma1}' not in df.columns:
             df[f'SMA_{sma1}'] = df['Close'].rolling(window=sma1).mean()
-        
         if f'SMA_{sma2}' not in df.columns:
             df[f'SMA_{sma2}'] = df['Close'].rolling(window=sma2).mean()
-        # 2. 計算 Turnover Rate (TOR)
+
+        # 3. 計算 Turnover Rate (TOR)
         has_turnover = False
         if shares_outstanding:
             has_turnover = True
-            # 換手率 (%)
             df['Turnover_Rate'] = (df['Volume'] / shares_outstanding) * 100
         else:
             df['Turnover_Rate'] = 0.0
 
-        # --- B. 界面控制按鈕 (放在首頁上方) ---
-        # 邏輯：按 +/- 會尋找交易日並更新 st.session_state.ref_date
+        # 4. 【修復 Bug】計算 Volume Sum 和 Ratios (Tab 2 需要)
+        # 必須在這裡計算，確保 filter_data_by_interval 之後包含這些列
+        for p in [7, 14, 28, 57, 106, 212]:
+             df[f'Sum_{p}'] = df['Volume'].rolling(window=p).sum()
         
+        df['R1'] = df['Sum_7'] / df['Sum_14']
+        df['R2'] = df['Sum_7'] / df['Sum_28']
+        
+        # ==========================================
+
+        # --- B. 界面控制按鈕 ---
         c_nav_prev, c_nav_mid, c_nav_next = st.columns([1, 4, 1])
-        
-        # 獲取完整數據來查找下一個交易日 (需要重新輕量抓取或假設)
-        # 為了簡單與性能，這裡我們只對當前 df 做減法，對加法做嘗試
         
         with c_nav_prev:
             if st.button("◀ 前一交易日", use_container_width=True):
-                # 當前最後一天是 df.index[-1]，前一天是 df.index[-2]
                 if len(df) >= 2:
                     st.session_state.ref_date = df.index[-2].date()
                     st.rerun()
@@ -247,25 +252,15 @@ else:
 
         st.divider()
 
-        # --- C. 首頁核心數據 (Visuals & Custom Lists) ---
-        # Tab Home is now the main view
-        
-        # 準備數據切片
-        # Last row = Day 1 (index -1)
-        # Day 2 = index -2, etc.
-        # 我們需要 Day 1 到 Day 13 的數據
-        
+        # --- C. 首頁核心數據 ---
         req_len = 13
         if len(df) < req_len:
             st.warning("數據長度不足以生成完整矩陣 (需至少 13 個交易日)。")
         else:
-            # 提取最後 13 天數據 (倒序: Day 1, Day 2 ... Day 13)
-            # data_slice[0] is Day 1 (Latest), data_slice[1] is Day 2
             data_slice = df.iloc[-req_len:][::-1] 
             
-            # --- 1. 上部 Curve (SMA Trend) ---
-            # 顯示 Day 1-7 的 SMA 曲線
-            curve_data = df.iloc[-7:] # 正序用於繪圖
+            # --- 1. SMA Trend Curve ---
+            curve_data = df.iloc[-7:]
             fig_sma_trend = go.Figure()
             colors_map = {7: '#FF6B6B', 14: '#FFA500', 28: '#FFD700', 57: '#4CAF50', 106: '#2196F3', 212: '#9C27B0'}
             
@@ -287,14 +282,9 @@ else:
             )
             st.plotly_chart(fig_sma_trend, use_container_width=True)
 
-            # --- 2. SMA 矩陣列表 ---
+            # --- 2. SMA Matrix ---
             st.subheader("📋 SMA Matrix")
             
-            # 構建 HTML 表格
-            # 列: Item, Max, Min, SMA(Curr), SMAC(%), Day2, Day3, Day4, Day5, Day6, Day7
-            # 行: 7, 14, 28, 57, 106, 212
-            
-            # 標題行
             sma_html = """
             <table class="big-font-table">
                 <thead>
@@ -317,31 +307,22 @@ else:
             
             for p in periods_sma:
                 col_sma = f'SMA_{p}'
-                
-                # 計算 Max/Min (基於該 interval 窗口? 通常是指在特定回看期內的 SMA 極值，這裡假設回看期也是 p 或者 近期)
-                # 根據 prompt "竪列包括 p, interval... max, min, SMA..."
-                # 這裡 Max/Min 通常指過去一段時間該 SMA 的極值。這裡暫定為過去 20 天的極值，或者就用該 SMA 窗口內的 Price Max/Min?
-                # 根據一般分析習慣，這通常指該 SMA 線在最近 N 天(如 20天或同週期)的最高/最低點。
-                # 這裡設定為：最近 14 天內該 SMA 的 Max/Min
                 sma_series_recent = df[col_sma].tail(14) 
                 val_max = sma_series_recent.max()
                 val_min = sma_series_recent.min()
                 val_curr = df[col_sma].iloc[-1]
                 
-                # SMAC 計算: 1 - SMA(n) / SMA(57)
-                # 這是根據您的公式 SMAC1 = 1 - SMA(7)/57
-                # 注意：如果是 SMA(57) 本身，結果為 0
                 base_sma = df[f'SMA_57'].iloc[-1]
                 if base_sma and base_sma != 0:
                     smac_val = (1 - (val_curr / base_sma)) * 100
                 else:
                     smac_val = 0
                 
+                smac_class = 'pos-val' if smac_val > 0 else 'neg-val'
                 smac_str = f"{smac_val:.2f}%"
                 
-                # 歷史數據 Day 2 - Day 7 (indices 1 to 6 in data_slice)
                 day_vals = []
-                for i in range(1, 7): # 1 to 6
+                for i in range(1, 7):
                     val = data_slice[col_sma].iloc[i]
                     day_vals.append(f"{val:.2f}")
 
@@ -351,7 +332,7 @@ else:
                     <td>{val_max:.2f}</td>
                     <td>{val_min:.2f}</td>
                     <td><b>{val_curr:.2f}</b></td>
-                    <td class="{'pos-val' if smac_val > 0 else 'neg-val'}">{smac_str}</td>
+                    <td class="{smac_class}">{smac_str}</td>
                     <td>{day_vals[0]}</td>
                     <td>{day_vals[1]}</td>
                     <td>{day_vals[2]}</td>
@@ -361,42 +342,24 @@ else:
                 </tr>
                 """
             sma_html += "</tbody></table>"
+            # 確保這裡使用了 unsafe_allow_html=True
             st.markdown(sma_html, unsafe_allow_html=True)
-            st.caption("註: SMAC = (1 - SMA_n / SMA_57) * 100%; Day 2-7 為歷史交易日數值 (非日曆日)")
+            st.caption("註: SMAC = (1 - SMA_n / SMA_57) * 100%; Day 2-7 為歷史交易日數值")
             
             st.divider()
 
-            # --- 3. 換手率 (Turnover Rate) 矩陣列表 ---
+            # --- 3. Turnover Rate Matrix ---
             st.subheader("📋 Turnover Rate Matrix")
             
             if not has_turnover:
                 st.error("無流通股數數據，無法顯示換手率矩陣。")
             else:
-                # 構建複雜的 12 行結構
-                # Row 1: Dates Day 2-7
-                # Row 2: Data
-                # Row 3: Dates Day 8-13
-                # Row 4: Data
-                # Row 5: Intervals
-                # Row 6: Sum
-                # Row 7: Max
-                # Row 8: Min
-                # Row 9: AVGTOR Label 1-6
-                # Row 10: Data
-                # Row 11: AVGTOR Label 7
-                # Row 12: Data
-                
-                # 準備數據
-                # Day 2-7 -> indices 1 to 6
                 dates_d2_d7 = [data_slice.index[i].strftime('%m-%d') for i in range(1, 7)]
                 vals_d2_d7 = [f"{data_slice['Turnover_Rate'].iloc[i]:.2f}%" for i in range(1, 7)]
                 
-                # Day 8-13 -> indices 7 to 12
                 dates_d8_d13 = [data_slice.index[i].strftime('%m-%d') for i in range(7, 13)]
                 vals_d8_d13 = [f"{data_slice['Turnover_Rate'].iloc[i]:.2f}%" for i in range(7, 13)]
                 
-                # 統計數據 (Sum, Max, Min, Avg) over Intervals
-                # Intervals: 7, 14, 28, 57, 106, 212
                 intervals_tor = [7, 14, 28, 57, 106, 212]
                 sums = []
                 maxs = []
@@ -404,22 +367,15 @@ else:
                 avgs = []
                 
                 for p in intervals_tor:
-                    # 取最後 p 個數據
                     subset = df['Turnover_Rate'].tail(p)
                     sums.append(f"{subset.sum():.2f}%")
                     maxs.append(f"{subset.max():.2f}%")
                     mins.append(f"{subset.min():.2f}%")
                     avgs.append(f"{subset.mean():.2f}%")
                 
-                # AVGTOR 7 數據 (第 11, 12 行)
-                # 假設這是指"Day 7"的數據，或者更長的週期？
-                # 根據用戶描述 "AVGTOR7"，這裡假設是第 7 個統計項。
-                # 但 Interval 只有 6 個。這裡暫時留空或顯示全期平均。
-                # 這裡我們顯示 All Time Avg 作為第 7 項
                 avg_tor_7 = df['Turnover_Rate'].mean()
                 val_avg_7 = f"{avg_tor_7:.2f}%"
 
-                # 構建 HTML
                 tor_html = f"""
                 <table class="big-font-table">
                     <tr style="background-color: #e8eaf6;">
@@ -524,20 +480,16 @@ else:
                      </tr>
                 </table>
                 """
+                # 確保這裡使用了 unsafe_allow_html=True
                 st.markdown(tor_html, unsafe_allow_html=True)
                 st.caption("註: Interval 單位為交易日; Day 數據為對應歷史交易日之換手率。")
-
 
     st.markdown("---")
     st.markdown("### 📚 歷史功能與圖表")
     
-    # 創建 Tabs 容納舊功能 (保持原有功能不刪除)
     tab1, tab2, tab3, tab4 = st.tabs(["📉 Price & SMA", "🔄 Ratio Curves", "📊 Volume (Abs)", "💹 Turnover Analysis (Old)"])
 
-    # --- 以下為原有功能代碼 (v6.4/6.5 logic) ---
-    # 區間選擇 (影響圖表顯示範圍)
-    interval_options = ['1D', '5D', '1M', '3M', '6M', '1Y', '3Y']
-    # selected_interval = st.select_slider("圖表顯示區間", options=interval_options, value='6M', label_visibility="collapsed")
+    # 區間選擇
     display_df = filter_data_by_interval(df, '6M')
 
     # Tab 1: Price
@@ -545,20 +497,15 @@ else:
         fig = go.Figure()
         fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'],
                                      low=display_df['Low'], close=display_df['Close'], name='K線'))
+        # 由於我們已經在最前面計算了 sma1 和 sma2，這裡不會再報錯
         fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma1}'], line=dict(color='orange'), name=f'SMA {sma1}'))
         fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma2}'], line=dict(color='blue'), name=f'SMA {sma2}'))
         fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_white")
         st.plotly_chart(fig, use_container_width=True)
 
-    # Tab 2: Ratio Curves (Old Logic compatibility)
+    # Tab 2: Ratio Curves
     with tab2:
-        # 需補算 Sum_p
-        for p in [7, 14, 28, 57, 106]:
-            df[f'Sum_{p}'] = df['Volume'].rolling(window=p).sum()
-        
-        df['R1'] = df['Sum_7'] / df['Sum_14']
-        df['R2'] = df['Sum_7'] / df['Sum_28']
-        
+        # R1, R2 已經在數據獲取階段計算完畢，這裡直接繪圖，不會報錯
         fig_r = go.Figure()
         fig_r.add_trace(go.Scatter(x=display_df.index, y=display_df['R1'], name="R1 (S7/S14)"))
         fig_r.add_trace(go.Scatter(x=display_df.index, y=display_df['R2'], name="R2 (S7/S28)"))
