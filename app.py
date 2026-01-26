@@ -5,9 +5,11 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
+import time
+import requests
 
 # --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股矩陣 Pro v7.3", page_icon="📱", layout="wide")
+st.set_page_config(page_title="港股矩陣 Pro v7.4 (Fix)", page_icon="📱", layout="wide")
 
 # URL 狀態管理
 query_params = st.query_params
@@ -114,7 +116,7 @@ ref_date_str = st.session_state.ref_date.strftime('%Y-%m-%d')
 render_custom_css()
 
 if not current_code:
-    st.title("港股矩陣 Pro v7.3")
+    st.title("港股矩陣 Pro v7.4")
     st.info("👈 請輸入代號開始分析")
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
@@ -133,34 +135,59 @@ else:
                 toggle_watchlist(current_code)
                 st.rerun()
 
-    # --- 數據獲取 ---
+    # --- 數據獲取 (含 Rate Limit 修復) ---
     @st.cache_data(ttl=900)
-    def get_data_v73(symbol, end_date):
-        try:
-            # 抓取 4 年數據
-            df = yf.download(symbol, period="4y", auto_adjust=False)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            
-            # 過濾日期
+    def get_data_v74_patched(symbol, end_date):
+        # 1. 配置 Session 偽裝成瀏覽器 (解決 Rate Limit)
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+
+        df = pd.DataFrame()
+        shares = None
+        
+        # 2. 重試機制 (最多 3 次)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # 抓取 4 年數據
+                df = yf.download(symbol, period="4y", auto_adjust=False, session=session, progress=False)
+                if not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    break # 成功則跳出循環
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(1 + attempt) # 失敗後等待 1, 2, 3 秒
+                else:
+                    return None, None # 放棄
+
+        # 3. 過濾日期 (邏輯優化)
+        if not df.empty:
             end_dt = pd.to_datetime(end_date)
+            # 取小於等於基準日的數據
             df = df[df.index <= end_dt]
             
-            # 獲取流通股數
-            shares = None
-            ticker = yf.Ticker(symbol)
+            # 如果過濾後為空 (例如選了很久以前的日期)，回傳空
+            if df.empty:
+                return None, None
+                
+        # 4. 獲取流通股數
+        try:
+            ticker = yf.Ticker(symbol, session=session)
             try: shares = ticker.fast_info.get('shares', None)
             except: pass
             if shares is None:
                 try: shares = ticker.info.get('sharesOutstanding', None)
                 except: pass
+        except:
+            pass
             
-            return df, shares
-        except Exception as e:
-            return None, None
+        return df, shares
 
     with st.spinner(f"正在計算 {ref_date_str} 的矩陣數據..."):
-        df, shares_outstanding = get_data_v73(yahoo_ticker, st.session_state.ref_date)
+        df, shares_outstanding = get_data_v74_patched(yahoo_ticker, st.session_state.ref_date)
 
     if df is not None and not df.empty and shares_outstanding is None:
         with st.sidebar:
@@ -168,9 +195,15 @@ else:
             manual_shares = st.number_input("手動輸入股數", min_value=0, value=0)
             if manual_shares > 0: shares_outstanding = manual_shares
 
+    # --- 錯誤處理優化 ---
     if df is None or df.empty:
-        st.error(f"數據不足或該日休市 ({ref_date_str})。請按上方按鈕調整日期。")
+        st.error(f"⚠️ 無法獲取數據 ({ref_date_str})。可能是以下原因：\n1. 該日期早於上市日期\n2. Yahoo Finance 暫時限制 (請稍後再試)")
     else:
+        # 檢查最後一筆數據的日期
+        last_date = df.index[-1].date()
+        if last_date != st.session_state.ref_date:
+            st.warning(f"⚠️ {ref_date_str} 為非交易日或數據未更新，目前顯示最近交易日 **{last_date}** 的數據。")
+
         # ==================== A. 計算邏輯 ====================
         periods_sma = [7, 14, 28, 57, 106, 212]
         
@@ -214,8 +247,7 @@ else:
             curr = df.iloc[-1]
             
             # --- 1. SMA Matrix ---
-            # Horizontal: Day 2-7 (Using iloc to guarantee Trading Days)
-            # Day 2 is iloc[-2], Day 7 is iloc[-7]
+            # Horizontal: Day 2-7
             sma_hist_header = "".join([f"<th>Day {i}</th>" for i in range(2, 8)])
             sma_hist_data = "".join([f"<td>{df['Close'].iloc[-i]:.2f}</td>" for i in range(2, 8)])
 
@@ -267,7 +299,10 @@ else:
                 if st.button("◀ -1", use_container_width=True):
                     st.session_state.ref_date -= timedelta(days=1)
                     st.rerun()
-                st.markdown(f"<div style='text-align:center; font-size:16px; font-weight:bold; margin:10px 0;'>{ref_date_str}</div>", unsafe_allow_html=True)
+                # 顯示當前使用的實際日期 (Last Date)
+                display_date = last_date.strftime('%Y-%m-%d')
+                st.markdown(f"<div style='text-align:center; font-size:16px; font-weight:bold; margin:10px 0;'>{display_date}</div>", unsafe_allow_html=True)
+                
                 if st.button("▶ +1", use_container_width=True):
                     st.session_state.ref_date += timedelta(days=1)
                     st.rerun()
