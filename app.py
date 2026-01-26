@@ -4,12 +4,11 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-from dateutil.relativedelta import relativedelta
 import time
 import requests
 
 # --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股矩陣 Pro v7.4 (Fix)", page_icon="📱", layout="wide")
+st.set_page_config(page_title="港股矩陣 Pro v7.5 (Stable)", page_icon="📱", layout="wide")
 
 # URL 狀態管理
 query_params = st.query_params
@@ -60,13 +59,13 @@ def render_custom_css():
             background-color: #f0f2f6;
             color: #31333F;
             font-weight: bold;
-            padding: 10px;
+            padding: 8px;
             border: 1px solid #ddd;
             font-size: 16px;
             text-align: center;
         }
         .big-font-table td {
-            padding: 12px;
+            padding: 10px;
             border: 1px solid #ddd;
             text-align: center;
             font-size: 18px; /* 數據字體加大 */
@@ -116,7 +115,7 @@ ref_date_str = st.session_state.ref_date.strftime('%Y-%m-%d')
 render_custom_css()
 
 if not current_code:
-    st.title("港股矩陣 Pro v7.4")
+    st.title("港股矩陣 Pro v7.5")
     st.info("👈 請輸入代號開始分析")
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
@@ -135,19 +134,19 @@ else:
                 toggle_watchlist(current_code)
                 st.rerun()
 
-    # --- 數據獲取 (含 Rate Limit 修復) ---
+    # --- 數據獲取 (修復 Rate Limit 與 日期邏輯) ---
     @st.cache_data(ttl=900)
-    def get_data_v74_patched(symbol, end_date):
-        # 1. 配置 Session 偽裝成瀏覽器 (解決 Rate Limit)
+    def get_data_v75(symbol, end_date):
+        # 1. 配置 Session 偽裝成瀏覽器
         session = requests.Session()
         session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
 
         df = pd.DataFrame()
         shares = None
         
-        # 2. 重試機制 (最多 3 次)
+        # 2. 重試機制 (解決 Rate Limit)
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -156,28 +155,29 @@ else:
                 if not df.empty:
                     if isinstance(df.columns, pd.MultiIndex):
                         df.columns = df.columns.get_level_values(0)
-                    break # 成功則跳出循環
+                    break 
             except Exception as e:
-                if attempt < max_retries - 1:
-                    time.sleep(1 + attempt) # 失敗後等待 1, 2, 3 秒
-                else:
-                    return None, None # 放棄
+                time.sleep(1 + attempt * 2) # 等待 1, 3, 5 秒
 
-        # 3. 過濾日期 (邏輯優化)
+        # 3. 過濾日期 & 自動校正 (解決休市日報錯)
         if not df.empty:
             end_dt = pd.to_datetime(end_date)
             # 取小於等於基準日的數據
-            df = df[df.index <= end_dt]
+            df_filtered = df[df.index <= end_dt]
             
-            # 如果過濾後為空 (例如選了很久以前的日期)，回傳空
-            if df.empty:
+            # 如果選的日期比上市日期還早，回傳空
+            if df_filtered.empty:
                 return None, None
+            
+            df = df_filtered
                 
-        # 4. 獲取流通股數
+        # 4. 獲取流通股數 (增加容錯)
         try:
             ticker = yf.Ticker(symbol, session=session)
+            # 優先嘗試 fast_info
             try: shares = ticker.fast_info.get('shares', None)
             except: pass
+            # 備用 info
             if shares is None:
                 try: shares = ticker.info.get('sharesOutstanding', None)
                 except: pass
@@ -186,72 +186,77 @@ else:
             
         return df, shares
 
-    with st.spinner(f"正在計算 {ref_date_str} 的矩陣數據..."):
-        df, shares_outstanding = get_data_v74_patched(yahoo_ticker, st.session_state.ref_date)
+    with st.spinner(f"正在連線 Yahoo Finance 獲取 {display_ticker} 數據..."):
+        df, shares_outstanding = get_data_v75(yahoo_ticker, st.session_state.ref_date)
 
+    # 側邊欄手動輸入股數 (最後一道防線)
     if df is not None and not df.empty and shares_outstanding is None:
         with st.sidebar:
-            st.warning("⚠️ 無法獲取流通股數，請手動輸入。")
-            manual_shares = st.number_input("手動輸入股數", min_value=0, value=0)
+            st.warning("⚠️ API 未回傳流通股數")
+            manual_shares = st.number_input("請手動輸入股數", min_value=0, value=0)
             if manual_shares > 0: shares_outstanding = manual_shares
 
     # --- 錯誤處理優化 ---
     if df is None or df.empty:
-        st.error(f"⚠️ 無法獲取數據 ({ref_date_str})。可能是以下原因：\n1. 該日期早於上市日期\n2. Yahoo Finance 暫時限制 (請稍後再試)")
+        st.error(f"⚠️ 無法獲取數據。請檢查：\n1. 股票代號是否正確 (例如 0005)\n2. 選定日期是否早於上市日\n3. 網絡連線狀態")
     else:
-        # 檢查最後一筆數據的日期
-        last_date = df.index[-1].date()
-        if last_date != st.session_state.ref_date:
-            st.warning(f"⚠️ {ref_date_str} 為非交易日或數據未更新，目前顯示最近交易日 **{last_date}** 的數據。")
+        # 顯示實際使用的交易日
+        actual_date = df.index[-1].date()
+        if actual_date != st.session_state.ref_date:
+            st.warning(f"ℹ️ {ref_date_str} 非交易日 (或數據未出)，目前顯示最近交易日 **{actual_date}** 的數據。")
 
-        # ==================== A. 計算邏輯 ====================
-        periods_sma = [7, 14, 28, 57, 106, 212]
-        
-        # 1. SMA & Price
-        for p in periods_sma:
-            df[f'SMA_{p}'] = df['Close'].rolling(window=p).mean()
-
-        # 2. SMAC (Convergence) %
-        df['SMAC_1'] = (1 - (df['SMA_7'] / df['SMA_57'])) * 100
-        df['SMAC_2'] = ((df['SMA_14'] - df['SMA_7']) / df['SMA_106']) * 100
-        df['SMAC_3'] = ((df['SMA_28'] - df['SMA_14']) / df['SMA_106']) * 100
-        df['SMAC_4'] = ((df['SMA_57'] - df['SMA_28']) / df['SMA_106']) * 100
-        df['SMAC_5'] = ((df['SMA_106'] - df['SMA_57']) / df['SMA_106']) * 100
-        df['SMAC_6'] = (df['SMA_7'] / df['SMA_106']) * 100
-
-        # 3. Turnover (TOR) %
-        if shares_outstanding:
-            df['TOR'] = (df['Volume'] / shares_outstanding) * 100
+        # 檢查數據長度，防止新股報錯
+        min_required_days = 212
+        if len(df) < min_required_days:
+            st.error(f"⚠️ 歷史數據不足 (僅 {len(df)} 天)，需要至少 {min_required_days} 天才能計算完整矩陣 (SMA212)。")
         else:
-            df['TOR'] = 0
+            # ==================== A. 計算邏輯 ====================
+            periods_sma = [7, 14, 28, 57, 106, 212]
             
-        # Interval Sum, Max, Min for TOR
-        for p in periods_sma:
-            df[f'Sum_TOR_{p}'] = df['TOR'].rolling(window=p).sum()
-            df[f'Max_TOR_{p}'] = df['TOR'].rolling(window=p).max()
-            df[f'Min_TOR_{p}'] = df['TOR'].rolling(window=p).min()
+            # 1. SMA & Price
+            for p in periods_sma:
+                df[f'SMA_{p}'] = df['Close'].rolling(window=p).mean()
 
-        # 4. AVGTOR
-        df['AVGTOR_1'] = (df['SMA_14'] - df['SMA_7']) / df['SMA_106']
-        df['AVGTOR_2'] = (df['SMA_28'] - df['SMA_14']) / df['SMA_106'] / 2
-        df['AVGTOR_3'] = ((df['SMA_57'] - df['SMA_28']) / df['SMA_106']) * 7 / 29
-        df['AVGTOR_4'] = ((df['SMA_106'] - df['SMA_57']) / df['SMA_106']) / 7
-        df['AVGTOR_5'] = 0 
-        df['AVGTOR_6'] = 0 
-        df['AVGTOR_7'] = 0 
+            # 2. SMAC (Convergence) %
+            # 確保分母不為 0 (雖然 SMA 極少為 0)
+            df['SMAC_1'] = np.where(df['SMA_57'] != 0, (1 - (df['SMA_7'] / df['SMA_57'])) * 100, 0)
+            df['SMAC_2'] = np.where(df['SMA_106'] != 0, ((df['SMA_14'] - df['SMA_7']) / df['SMA_106']) * 100, 0)
+            df['SMAC_3'] = np.where(df['SMA_106'] != 0, ((df['SMA_28'] - df['SMA_14']) / df['SMA_106']) * 100, 0)
+            df['SMAC_4'] = np.where(df['SMA_106'] != 0, ((df['SMA_57'] - df['SMA_28']) / df['SMA_106']) * 100, 0)
+            df['SMAC_5'] = np.where(df['SMA_106'] != 0, ((df['SMA_106'] - df['SMA_57']) / df['SMA_106']) * 100, 0)
+            df['SMAC_6'] = np.where(df['SMA_106'] != 0, (df['SMA_7'] / df['SMA_106']) * 100, 0)
 
-        # ==================== B. HTML 構建 ====================
-        if len(df) < 20:
-            st.error("歷史數據不足，無法生成完整矩陣。")
-        else:
+            # 3. Turnover (TOR) %
+            if shares_outstanding:
+                df['TOR'] = (df['Volume'] / shares_outstanding) * 100
+            else:
+                df['TOR'] = 0
+                
+            # Interval Sum, Max, Min for TOR
+            for p in periods_sma:
+                df[f'Sum_TOR_{p}'] = df['TOR'].rolling(window=p).sum()
+                df[f'Max_TOR_{p}'] = df['TOR'].rolling(window=p).max()
+                df[f'Min_TOR_{p}'] = df['TOR'].rolling(window=p).min()
+
+            # 4. AVGTOR
+            df['AVGTOR_1'] = np.where(df['SMA_106'] != 0, (df['SMA_14'] - df['SMA_7']) / df['SMA_106'], 0)
+            df['AVGTOR_2'] = np.where(df['SMA_106'] != 0, (df['SMA_28'] - df['SMA_14']) / df['SMA_106'] / 2, 0)
+            df['AVGTOR_3'] = np.where(df['SMA_106'] != 0, ((df['SMA_57'] - df['SMA_28']) / df['SMA_106']) * 7 / 29, 0)
+            df['AVGTOR_4'] = np.where(df['SMA_106'] != 0, ((df['SMA_106'] - df['SMA_57']) / df['SMA_106']) / 7, 0)
+            df['AVGTOR_5'] = 0 
+            df['AVGTOR_6'] = 0 
+            df['AVGTOR_7'] = 0 
+
+            # ==================== B. 數據提取 ====================
             curr = df.iloc[-1]
             
             # --- 1. SMA Matrix ---
             # Horizontal: Day 2-7
+            # 使用 iloc[-2] 到 iloc[-7] 確保是交易日
             sma_hist_header = "".join([f"<th>Day {i}</th>" for i in range(2, 8)])
             sma_hist_data = "".join([f"<td>{df['Close'].iloc[-i]:.2f}</td>" for i in range(2, 8)])
 
-            # Vertical: Intervals (Max/Min/SMA)
+            # Vertical: Intervals
             sma_rows_html = ""
             for p in periods_sma:
                 p_max = df['Close'].rolling(p).max().iloc[-1]
@@ -280,35 +285,31 @@ else:
             tor_row3_labels = "".join([f"<th>D{i}</th>" for i in range(8, 14)])
             tor_row4_data = "".join([f"<td>{df['TOR'].iloc[-i]:.3f}%</td>" for i in range(8, 14)])
 
-            # Row 5-8: Intervals (7...212)
+            # Interval Stats
             interval_labels = "".join([f"<th>{p}</th>" for p in periods_sma])
             sum_tor_data = "".join([f"<td>{curr[f'Sum_TOR_{p}']:.2f}%</td>" for p in periods_sma])
             max_tor_data = "".join([f"<td>{curr[f'Max_TOR_{p}']:.3f}%</td>" for p in periods_sma])
             min_tor_data = "".join([f"<td>{curr[f'Min_TOR_{p}']:.3f}%</td>" for p in periods_sma])
 
-            # AVGTOR 1-6
+            # AVGTOR
             avgtor_1_6_labels = "".join([f"<th>AVG{i}</th>" for i in range(1, 7)])
             avgtor_1_6_data = "".join([f"<td>{curr[f'AVGTOR_{i}']:.4f}</td>" for i in range(1, 7)])
 
             # ==================== C. 介面呈現 ====================
             
-            # 1. 頂部：日期控制與曲線
+            # 日期控制與曲線
             c_ctrl, c_curve = st.columns([0.2, 0.8])
             with c_ctrl:
                 st.write("#### 日期")
                 if st.button("◀ -1", use_container_width=True):
                     st.session_state.ref_date -= timedelta(days=1)
                     st.rerun()
-                # 顯示當前使用的實際日期 (Last Date)
-                display_date = last_date.strftime('%Y-%m-%d')
-                st.markdown(f"<div style='text-align:center; font-size:16px; font-weight:bold; margin:10px 0;'>{display_date}</div>", unsafe_allow_html=True)
-                
+                st.markdown(f"<div style='text-align:center; font-size:16px; font-weight:bold; margin:10px 0;'>{actual_date}</div>", unsafe_allow_html=True)
                 if st.button("▶ +1", use_container_width=True):
                     st.session_state.ref_date += timedelta(days=1)
                     st.rerun()
             
             with c_curve:
-                # 繪製 SMA + TOR 曲線
                 curve_df = df.tail(30)
                 fig_curve = go.Figure()
                 for p in [7, 28, 106]:
@@ -325,11 +326,11 @@ else:
 
             st.divider()
 
-            # 2. 下部：數據列表 (首頁直顯)
-            tab_data, tab_other = st.tabs(["📊 核心數據矩陣", "📉 其他圖表"])
+            # Tabs (修復了 tab 數量不匹配的 Bug)
+            tab_data, tab_other = st.tabs(["📊 核心數據矩陣", "📉 K線與SMA"])
 
             with tab_data:
-                # Table 1: SMA
+                # SMA Matrix
                 st.markdown("### 1. SMA Matrix")
                 st.markdown(f"""
                 <div class="table-container">
@@ -356,7 +357,7 @@ else:
 
                 st.divider()
 
-                # Table 2: Turnover
+                # Turnover Matrix
                 st.markdown("### 2. Turnover Matrix")
                 st.markdown(f"""
                 <div class="table-container">
