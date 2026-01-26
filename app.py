@@ -198,13 +198,21 @@ else:
     if df is None or df.empty or len(df) < 5:
         st.error(f"數據不足或當日休市 (Date: {ref_date_str})。請嘗試調整日期。")
     else:
-        # --- A. 核心計算 (v7.0 Logic) ---
+# --- A. 核心計算 (v7.0 Logic) ---
         
         # 1. 計算 SMA
+        # (A) 先計算矩陣需要的固定週期
         periods_sma = [7, 14, 28, 57, 106, 212]
         for p in periods_sma:
             df[f'SMA_{p}'] = df['Close'].rolling(window=p).mean()
 
+        # (B) [修復 Bug] 補算用戶自定義的 SMA (用於 Tab 1 圖表)
+        # 如果用戶設定的 SMA (如 20) 不在上面的列表中，必須額外計算，否則會報 KeyError
+        if f'SMA_{sma1}' not in df.columns:
+            df[f'SMA_{sma1}'] = df['Close'].rolling(window=sma1).mean()
+        
+        if f'SMA_{sma2}' not in df.columns:
+            df[f'SMA_{sma2}'] = df['Close'].rolling(window=sma2).mean()
         # 2. 計算 Turnover Rate (TOR)
         has_turnover = False
         if shares_outstanding:
