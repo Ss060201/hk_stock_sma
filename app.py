@@ -11,7 +11,7 @@ import json
 import os
 
 # --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股 SMA 矩陣 v9.2 (Analysis)", page_icon="📈", layout="wide")
+st.set_page_config(page_title="港股 SMA 矩陣 v9.3", page_icon="📈", layout="wide")
 
 # --- CSS 樣式 ---
 st.markdown("""
@@ -25,18 +25,38 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 數據庫連接 (Firebase) ---
+# --- 數據庫連接 (Firebase) - 升級版 ---
 @st.cache_resource
 def get_db():
     try:
         if not firebase_admin._apps:
             if "firebase" in st.secrets:
-                try:
-                    key_dict = json.loads(st.secrets["firebase"]["json_content"])
-                    cred = credentials.Certificate(key_dict)
-                    firebase_admin.initialize_app(cred)
-                except json.JSONDecodeError as je:
-                    st.error(f"Secrets JSON 格式錯誤: {je}")
+                # 策略 1: 嘗試讀取舊版 JSON 格式
+                if "json_content" in st.secrets["firebase"]:
+                    try:
+                        key_dict = json.loads(st.secrets["firebase"]["json_content"])
+                        cred = credentials.Certificate(key_dict)
+                        firebase_admin.initialize_app(cred)
+                    except json.JSONDecodeError:
+                        st.error("Secrets JSON 格式錯誤，請檢查是否有非法換行。")
+                        return None
+                # 策略 2: 嘗試讀取新版 TOML 原生格式 (推薦)
+                elif "private_key" in st.secrets["firebase"]:
+                    try:
+                        # 將 Secrets 物件轉換為標準字典
+                        key_dict = dict(st.secrets["firebase"])
+                        # 確保 private_key 正確處理換行 (轉換為實際的 \n)
+                        # 如果用戶貼上的是 """...""" 多行字串，Python 會自動處理，這裡做雙重保險
+                        if "\\n" in key_dict["private_key"]:
+                            key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+                        
+                        cred = credentials.Certificate(key_dict)
+                        firebase_admin.initialize_app(cred)
+                    except Exception as e:
+                        st.error(f"TOML 格式讀取失敗: {e}")
+                        return None
+                else:
+                    st.error("Secrets 中找不到有效的 Firebase 配置 (json_content 或 private_key)")
                     return None
             elif os.path.exists("service_account.json"):
                 cred = credentials.Certificate("service_account.json")
@@ -85,7 +105,10 @@ def send_telegram_msg(token, chat_id, message):
     payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
     try:
         resp = requests.post(url, json=payload)
-        return resp.ok, resp.text
+        # 增加錯誤代碼處理
+        if not resp.ok:
+            return False, f"Error {resp.status_code}: {resp.text}"
+        return True, "OK"
     except Exception as e:
         return False, str(e)
 
@@ -97,7 +120,6 @@ def calculate_willr(high, low, close, period):
     return wr
 
 def run_analysis_logic(df, symbol, params):
-    """執行 CDM 和 FZM 的完整運算並返回報告文本"""
     # 參數設定
     CDM_COEF1 = 0.7
     CDM_COEF2 = 0.5
@@ -125,11 +147,9 @@ def run_analysis_logic(df, symbol, params):
             s1, e1 = pd.to_datetime(b1_s), pd.to_datetime(b1_e)
             s2, e2 = pd.to_datetime(b2_s), pd.to_datetime(b2_e)
             
-            # 計算區間均價
             sma1 = df[(df.index >= s1) & (df.index <= e1)]['Close'].mean()
             sma2 = df[(df.index >= s2) & (df.index <= e2)]['Close'].mean()
             
-            # 時間權重
             t1_days = (e1 - s1).days
             n_days = (pd.to_datetime(today) - s1).days
             
@@ -146,7 +166,6 @@ def run_analysis_logic(df, symbol, params):
             cdm_status = f"計算錯誤: {str(e)}"
     
     # --- 2. FZM 運算 ---
-    # 確保有足夠數據計算指標
     df['SMA7'] = df['Close'].rolling(FZM_SMA_S).mean()
     df['SMA14'] = df['Close'].rolling(FZM_SMA_M).mean()
     df['WillR'] = calculate_willr(df['High'], df['Low'], df['Close'], FZM_WILLR_P)
@@ -154,17 +173,14 @@ def run_analysis_logic(df, symbol, params):
     val_sma7 = df['SMA7'].iloc[-1]
     val_sma14 = df['SMA14'].iloc[-1]
     val_willr = df['WillR'].iloc[-1]
-    prev_willr = df['WillR'].iloc[-2]
     lowest_low = df['Low'].tail(FZM_LOOKBACK).min()
     
     cond_a = (curr_price > val_sma7) and (curr_price > val_sma14)
-    # 條件 B: 處於低位 (-80以下) 或 剛從低位回升
-    cond_b = (val_willr < -80) or (val_willr > -80 and prev_willr < -80)
+    cond_b = (val_willr < -80) 
     
     fzm_status = "🔴 <b>觸發</b>" if (cond_a and cond_b) else "未觸發"
     trend_str = "站上雙均線" if cond_a else "均線下方"
 
-    # --- 構建報告 ---
     report = f"""<b>[股票警示] {symbol} 分析報告</b>
 
 <b>1. CDM (抄底模式) 狀態： {cdm_status}</b>
@@ -199,7 +215,7 @@ def get_yahoo_ticker(symbol):
 with st.sidebar:
     st.header("HK Stock Analysis")
     
-    # === 1. Telegram 分析測試 (更新版) ===
+    # === 1. Telegram 分析測試 ===
     with st.expander("✈️ Telegram 分析與發送", expanded=True):
         def_token = st.secrets["telegram"]["token"] if "telegram" in st.secrets else ""
         def_chat_id = st.secrets["telegram"]["chat_id"] if "telegram" in st.secrets else ""
@@ -217,20 +233,14 @@ with st.sidebar:
                 yt = get_yahoo_ticker(curr_sym)
                 with st.spinner(f"正在分析 {curr_sym}..."):
                     try:
-                        # 1. 獲取數據
                         df_test = yf.download(yt, period="6mo", progress=False, auto_adjust=False)
                         if isinstance(df_test.columns, pd.MultiIndex): 
                             df_test.columns = df_test.columns.get_level_values(0)
                         
                         if len(df_test) > 50:
-                            # 2. 獲取參數 (如果在庫)
                             wl_data = get_watchlist_from_db()
                             stock_params = wl_data.get(curr_sym, {})
-                            
-                            # 3. 執行邏輯
                             msg_body = run_analysis_logic(df_test, curr_sym, stock_params)
-                            
-                            # 4. 發送
                             ok, res = send_telegram_msg(tg_token, tg_chat_id, msg_body)
                             if ok: st.toast("報告已發送！", icon="✅")
                             else: st.error(f"Telegram 錯誤: {res}")
@@ -275,7 +285,7 @@ current_code = st.session_state.current_view
 ref_date_str = st.session_state.ref_date.strftime('%Y-%m-%d')
 
 if not current_code:
-    st.title("港股 SMA 矩陣分析 v9.2")
+    st.title("港股 SMA 矩陣分析 v9.3")
     st.info("👈 請輸入代號或選擇收藏股票。")
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
@@ -304,7 +314,6 @@ else:
                 df.columns = df.columns.get_level_values(0)
             end_dt = pd.to_datetime(end_date)
             df = df[df.index <= end_dt]
-            
             shares = None
             ticker = yf.Ticker(symbol)
             try: shares = ticker.fast_info.get('shares', None)
