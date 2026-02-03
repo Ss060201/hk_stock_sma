@@ -4,3 +4,5 @@ pandas
 plotly
 numpy
 python-dateutil
+requests
+firebase-admin
