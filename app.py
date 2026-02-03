@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-from dateutil.relativedelta import relativedelta
 import requests
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -12,7 +11,7 @@ import json
 import os
 
 # --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股 SMA 矩陣 (Cloud Sync)", page_icon="📈", layout="wide")
+st.set_page_config(page_title="港股 SMA 矩陣 v9.1", page_icon="📈", layout="wide")
 
 # --- CSS 樣式 ---
 st.markdown("""
@@ -30,19 +29,21 @@ st.markdown("""
 @st.cache_resource
 def get_db():
     try:
-        # 檢查是否已經初始化，避免重複初始化錯誤
         if not firebase_admin._apps:
-            # 優先嘗試從 Streamlit Secrets 讀取 (部署時)
             if "firebase" in st.secrets:
-                key_dict = json.loads(st.secrets["firebase"]["json_content"])
-                cred = credentials.Certificate(key_dict)
-            # 本地開發嘗試讀取 service_account.json
+                # 這裡增加 try-except 捕捉 JSON 解析錯誤
+                try:
+                    key_dict = json.loads(st.secrets["firebase"]["json_content"])
+                    cred = credentials.Certificate(key_dict)
+                    firebase_admin.initialize_app(cred)
+                except json.JSONDecodeError as je:
+                    st.error(f"Secrets JSON 格式錯誤: {je}。請檢查 TOML 檔中的 private_key 是否包含非法換行。")
+                    return None
             elif os.path.exists("service_account.json"):
                 cred = credentials.Certificate("service_account.json")
+                firebase_admin.initialize_app(cred)
             else:
                 return None
-            firebase_admin.initialize_app(cred)
-        
         db = firestore.client()
         return db
     except Exception as e:
@@ -52,26 +53,23 @@ def get_db():
 def get_watchlist_from_db():
     db = get_db()
     if not db: return {}
-    
     try:
-        # 我們將所有收藏存在一個文檔中: collection='stock_app', document='watchlist'
         doc_ref = db.collection('stock_app').document('watchlist')
         doc = doc_ref.get()
         if doc.exists:
-            return doc.to_dict() # 返回字典 { "700": {params}, "0005": {params} }
+            return doc.to_dict()
         else:
             return {}
     except Exception as e:
-        st.error(f"讀取數據庫失敗: {e}")
+        # 這裡不顯示錯誤，避免洗版，僅回傳空字典
         return {}
 
 def update_stock_in_db(symbol, params=None):
-    """新增或更新股票參數"""
     db = get_db()
-    if not db: return
-    
+    if not db: 
+        st.error("無法連接數據庫，請檢查配置")
+        return
     doc_ref = db.collection('stock_app').document('watchlist')
-    # 使用 set({key: value}, merge=True) 來更新特定欄位
     data = {symbol: params if params else {
         "box1_start": "", "box1_end": "",
         "box2_start": "", "box2_end": ""
@@ -82,22 +80,14 @@ def update_stock_in_db(symbol, params=None):
 def remove_stock_from_db(symbol):
     db = get_db()
     if not db: return
-    
     doc_ref = db.collection('stock_app').document('watchlist')
-    # Firestore 刪除 Map 中的一個 Key
-    doc_ref.update({
-        symbol: firestore.DELETE_FIELD
-    })
+    doc_ref.update({symbol: firestore.DELETE_FIELD})
     st.toast(f"已移除 {symbol}", icon="🗑️")
 
 # --- Telegram 發送功能 ---
 def send_telegram_msg(token, chat_id, message):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML"
-    }
+    payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
     try:
         resp = requests.post(url, json=payload)
         return resp.ok, resp.text
@@ -121,21 +111,39 @@ def get_yahoo_ticker(symbol):
 with st.sidebar:
     st.header("HK Stock Analysis")
     
+    # === 1. Telegram 測試 (移至最上方以防止被錯誤遮擋) ===
+    with st.expander("✈️ Telegram 通知測試", expanded=False):
+        def_token = st.secrets["telegram"]["token"] if "telegram" in st.secrets else ""
+        def_chat_id = st.secrets["telegram"]["chat_id"] if "telegram" in st.secrets else ""
+        
+        tg_token = st.text_input("Bot Token", value=def_token, type="password")
+        tg_chat_id = st.text_input("Chat ID", value=def_chat_id)
+        
+        if st.button("🚀 發送測試", type="primary"):
+            if not tg_token or not tg_chat_id:
+                st.toast("請填寫 Token 和 ID", icon="⚠️")
+            else:
+                msg = f"<b>[連接成功]</b>\nStreamlit App 已連接 Telegram。\n時間: {datetime.now().strftime('%H:%M:%S')}"
+                ok, res = send_telegram_msg(tg_token, tg_chat_id, msg)
+                if ok: st.toast("發送成功！", icon="✅")
+                else: st.error(f"發送失敗: {res}")
+    
+    st.divider()
+
+    # === 2. 日期與搜尋 ===
     st.subheader("📅 日期設置")
     new_date = st.date_input("選擇日期", value=st.session_state.ref_date, label_visibility="collapsed")
     if new_date != st.session_state.ref_date:
         st.session_state.ref_date = new_date
         st.rerun()
 
-    st.divider()
     search_input = st.text_input("輸入股票代號", placeholder="例如: 700", key="search_bar")
     if search_input:
         cleaned_search = clean_ticker_input(search_input)
         if cleaned_search: st.session_state.current_view = cleaned_search
 
+    # === 3. 收藏清單 ===
     st.divider()
-    
-    # 從 Firebase 讀取數據
     watchlist_data = get_watchlist_from_db()
     watchlist_list = list(watchlist_data.keys()) if watchlist_data else []
     
@@ -151,43 +159,12 @@ with st.sidebar:
     sma1 = st.number_input("SMA 1", value=20)
     sma2 = st.number_input("SMA 2", value=50)
 
-    # === Telegram 測試區塊 ===
-    st.divider()
-    st.subheader("✈️ Telegram 通知測試")
-    with st.expander("設定與發送", expanded=True):
-        # 嘗試從 secrets 讀取預設值
-        def_token = st.secrets["telegram"]["token"] if "telegram" in st.secrets else ""
-        def_chat_id = st.secrets["telegram"]["chat_id"] if "telegram" in st.secrets else ""
-        
-        tg_token = st.text_input("Bot Token", value=def_token, type="password", placeholder="12345:ABC...")
-        tg_chat_id = st.text_input("Chat ID", value=def_chat_id, placeholder="987654321")
-        
-        if st.button("🚀 發送股票信息", type="primary"):
-            if not st.session_state.current_view:
-                st.toast("請先選擇一支股票", icon="⚠️")
-            elif not tg_token or not tg_chat_id:
-                st.toast("請填寫 Token 和 ID", icon="⚠️")
-            else:
-                curr_sym = st.session_state.current_view
-                yt = get_yahoo_ticker(curr_sym)
-                try:
-                    info = yf.Ticker(yt).fast_info
-                    curr_p = info.last_price
-                    msg = f"<b>[測試] {curr_sym} 股票快訊</b>\n\n最新價格: {curr_p:.2f}\n時間: {datetime.now().strftime('%H:%M:%S')}\n\n<i>來自 Streamlit App</i>"
-                    ok, res = send_telegram_msg(tg_token, tg_chat_id, msg)
-                    if ok:
-                        st.toast("發送成功！請檢查 Telegram", icon="✅")
-                    else:
-                        st.error(f"發送失敗: {res}")
-                except Exception as e:
-                    st.error(f"獲取數據失敗: {e}")
-
 # --- 主程式 ---
 current_code = st.session_state.current_view
 ref_date_str = st.session_state.ref_date.strftime('%Y-%m-%d')
 
 if not current_code:
-    st.title("港股 SMA 矩陣分析 v9.0")
+    st.title("港股 SMA 矩陣分析 v9.1")
     st.info("👈 請輸入代號或選擇收藏股票。")
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
@@ -204,7 +181,7 @@ else:
                 st.rerun()
         else:
             if st.button("☆ 加入", use_container_width=True):
-                update_stock_in_db(current_code) # 加入時使用預設空參數
+                update_stock_in_db(current_code)
                 st.rerun()
 
     # --- 數據獲取 ---
@@ -239,12 +216,17 @@ else:
         st.error(f"數據不足或當日休市 (Date: {ref_date_str})。")
     else:
         # --- A. 核心計算 ---
+        # 1. 計算固定 SMA
         periods_sma = [7, 14, 28, 57, 106, 212]
         for p in periods_sma:
             df[f'SMA_{p}'] = df['Close'].rolling(window=p).mean()
 
-        if f'SMA_{sma1}' not in df.columns: df[f'SMA_{sma1}'] = df['Close'].rolling(window=sma1).mean()
-        if f'SMA_{sma2}' not in df.columns: df[f'SMA_{sma2}'] = df['Close'].rolling(window=sma2).mean()
+        # 2. 計算自定義 SMA (修復 KeyError)
+        # 即使下載的緩存數據中沒有，我們也在此處強制計算
+        if f'SMA_{sma1}' not in df.columns: 
+            df[f'SMA_{sma1}'] = df['Close'].rolling(window=sma1).mean()
+        if f'SMA_{sma2}' not in df.columns: 
+            df[f'SMA_{sma2}'] = df['Close'].rolling(window=sma2).mean()
 
         has_turnover = False
         if shares_outstanding:
@@ -252,6 +234,12 @@ else:
             df['Turnover_Rate'] = (df['Volume'] / shares_outstanding) * 100
         else:
             df['Turnover_Rate'] = 0.0
+
+        # 計算 Ratios (圖表需要)
+        for p in periods_sma:
+            df[f'Sum_{p}'] = df['Volume'].rolling(window=p).sum()
+        df['R1'] = df['Sum_7'] / df['Sum_14']
+        df['R2'] = df['Sum_7'] / df['Sum_28']
 
         # --- B. 界面控制 ---
         c_nav_prev, c_nav_mid, c_nav_next = st.columns([1, 4, 1])
@@ -269,14 +257,11 @@ else:
 
         st.divider()
 
-        # --- C. CDM 參數設置 (Cloud Sync) ---
+        # --- C. CDM 參數 (Cloud Sync) ---
         if is_in_watchlist:
             with st.expander("⚙️ 設定 CDM 自動監測參數", expanded=False):
                 st.caption("設定將同步至雲端，供每日腳本使用。")
-                
-                # 獲取當前參數 (Dictionary)
                 curr_params = watchlist_data.get(current_code, {})
-                
                 c1, c2 = st.columns(2)
                 with c1:
                     val_b1s = pd.to_datetime(curr_params.get('box1_start')).date() if curr_params.get('box1_start') else None
@@ -299,14 +284,14 @@ else:
                     update_stock_in_db(current_code, new_params)
                     st.rerun()
 
-        # --- D. 核心數據呈現 (矩陣) ---
+        # --- D. 核心數據呈現 ---
         req_len = 13
         if len(df) < req_len:
             st.warning("數據長度不足")
         else:
             data_slice = df.iloc[-req_len:][::-1]
             
-            # Curve
+            # 1. Curve (SMA Trend)
             curve_data = df.iloc[-7:]
             fig_sma_trend = go.Figure()
             colors_map = {7: '#FF6B6B', 14: '#FFA500', 28: '#FFD700', 57: '#4CAF50', 106: '#2196F3', 212: '#9C27B0'}
@@ -317,7 +302,7 @@ else:
             fig_sma_trend.update_layout(height=350, margin=dict(l=10, r=10, t=30, b=10), title="SMA 曲線 (近7個交易日)", template="plotly_white", legend=dict(orientation="h", y=1.1))
             st.plotly_chart(fig_sma_trend, use_container_width=True)
 
-            # SMA Matrix
+            # 2. SMA Matrix
             st.subheader("📋 SMA Matrix")
             sma_html = '<table class="big-font-table"><thead><tr><th>Interval</th><th>Max</th><th>Min</th><th>SMA (Day1)</th><th>SMAC (%)</th><th>Day 2</th><th>Day 3</th><th>Day 4</th><th>Day 5</th><th>Day 6</th><th>Day 7</th></tr></thead><tbody>'
             for p in periods_sma:
@@ -336,7 +321,7 @@ else:
 
             st.divider()
 
-            # TOR Matrix
+            # 3. Turnover Matrix
             st.subheader("📋 Turnover Rate Matrix")
             if not has_turnover:
                 st.error("無流通股數數據。")
@@ -367,3 +352,49 @@ else:
                 tor_html += f'<tr><td><b>AVGTOR</b></td>' + "".join([f"<td>{v}</td>" for v in avgs]) + '</tr></table>'
                 tor_html += f'<table class="big-font-table" style="margin-top: 10px;"><tr style="background-color: #c8e6c9;"><th style="width:50%">AVGTOR 7 (Total Average)</th><th style="width:50%">Data</th></tr><tr><td>{avg_tor_7}</td><td>{avg_tor_7}</td></tr></table>'
                 st.markdown(tor_html, unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### 📚 歷史功能與圖表")
+    
+    tab1, tab2, tab3, tab4 = st.tabs(["📉 Price & SMA", "🔄 Ratio Curves", "📊 Volume (Abs)", "💹 Turnover Analysis (Old)"])
+
+    # 這裡我們使用 '6M' 區間來顯示圖表，避免 display_df 為空
+    end_date_dt = pd.to_datetime(st.session_state.ref_date)
+    start_date_6m = end_date_dt - timedelta(days=180)
+    display_df = df[df.index >= start_date_6m]
+
+    # Tab 1: Price
+    with tab1:
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'],
+                                     low=display_df['Low'], close=display_df['Close'], name='K線'))
+        
+        # 安全添加 SMA，避免 KeyError
+        if f'SMA_{sma1}' in display_df.columns:
+            fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma1}'], line=dict(color='orange'), name=f'SMA {sma1}'))
+        
+        if f'SMA_{sma2}' in display_df.columns:
+            fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma2}'], line=dict(color='blue'), name=f'SMA {sma2}'))
+            
+        fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_white")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Tab 2: Ratio Curves
+    with tab2:
+        fig_r = go.Figure()
+        # R1, R2 已經計算過，且如果存在於 df，也會存在於 display_df
+        if 'R1' in display_df.columns:
+            fig_r.add_trace(go.Scatter(x=display_df.index, y=display_df['R1'], name="R1 (S7/S14)"))
+        if 'R2' in display_df.columns:
+            fig_r.add_trace(go.Scatter(x=display_df.index, y=display_df['R2'], name="R2 (S7/S28)"))
+        st.plotly_chart(fig_r, use_container_width=True)
+
+    # Tab 3: Abs Volume
+    with tab3:
+        # 使用原生 chart，它會自動適應寬度
+        st.bar_chart(display_df['Volume'])
+
+    # Tab 4: Turnover Analysis (Old)
+    with tab4:
+        if has_turnover:
+             st.line_chart(display_df['Turnover_Rate'])
