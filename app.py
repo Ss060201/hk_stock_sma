@@ -11,52 +11,70 @@ import json
 import os
 
 # --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股 SMA 矩陣 v9.3", page_icon="📈", layout="wide")
+st.set_page_config(page_title="港股 SMA 矩陣 v9.4", page_icon="📈", layout="wide")
 
-# --- CSS 樣式 ---
+# --- CSS 樣式 (針對新表格優化) ---
 st.markdown("""
 <style>
-    .big-font-table { font-size: 16px !important; width: 100%; border-collapse: collapse; text-align: center; font-family: sans-serif; }
-    .big-font-table th { background-color: #f0f2f6; color: #31333F; padding: 10px; border: 1px solid #ddd; font-weight: bold; }
-    .big-font-table td { padding: 10px; border: 1px solid #ddd; color: #31333F; }
-    .pos-val { color: #d9534f; font-weight: bold; }
-    .neg-val { color: #5cb85c; font-weight: bold; }
+    .big-font-table { 
+        font-size: 15px !important; 
+        width: 100%; 
+        border-collapse: collapse; 
+        text-align: center; 
+        font-family: 'Arial', sans-serif;
+    }
+    .big-font-table th { 
+        background-color: #f8f9fa; 
+        color: #212529; 
+        padding: 12px; 
+        border: 1px solid #dee2e6; 
+        font-weight: bold; 
+    }
+    .big-font-table td { 
+        padding: 10px; 
+        border: 1px solid #dee2e6; 
+        color: #31333F; 
+    }
+    /* 第一欄 (描述欄) 加粗並靠左 */
+    .big-font-table td:first-child {
+        font-weight: bold;
+        text-align: left;
+        background-color: #fff;
+        width: 150px;
+    }
+    .pos-val { color: #d9534f; font-weight: bold; } /* 紅色 */
+    .neg-val { color: #28a745; font-weight: bold; } /* 綠色 */
+    .black-text { color: #000000 !important; font-weight: bold; }
+    .red-text { color: #FF0000 !important; font-weight: bold; }
     .stButton>button { width: 100%; height: 3em; font-size: 18px; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 數據庫連接 (Firebase) - 升級版 ---
+# --- 數據庫連接 (Firebase) ---
 @st.cache_resource
 def get_db():
     try:
         if not firebase_admin._apps:
             if "firebase" in st.secrets:
-                # 策略 1: 嘗試讀取舊版 JSON 格式
                 if "json_content" in st.secrets["firebase"]:
                     try:
                         key_dict = json.loads(st.secrets["firebase"]["json_content"])
                         cred = credentials.Certificate(key_dict)
                         firebase_admin.initialize_app(cred)
                     except json.JSONDecodeError:
-                        st.error("Secrets JSON 格式錯誤，請檢查是否有非法換行。")
+                        st.error("Secrets JSON 格式錯誤。")
                         return None
-                # 策略 2: 嘗試讀取新版 TOML 原生格式 (推薦)
                 elif "private_key" in st.secrets["firebase"]:
                     try:
-                        # 將 Secrets 物件轉換為標準字典
                         key_dict = dict(st.secrets["firebase"])
-                        # 確保 private_key 正確處理換行 (轉換為實際的 \n)
-                        # 如果用戶貼上的是 """...""" 多行字串，Python 會自動處理，這裡做雙重保險
                         if "\\n" in key_dict["private_key"]:
                             key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
-                        
                         cred = credentials.Certificate(key_dict)
                         firebase_admin.initialize_app(cred)
                     except Exception as e:
                         st.error(f"TOML 格式讀取失敗: {e}")
                         return None
                 else:
-                    st.error("Secrets 中找不到有效的 Firebase 配置 (json_content 或 private_key)")
                     return None
             elif os.path.exists("service_account.json"):
                 cred = credentials.Certificate("service_account.json")
@@ -105,7 +123,6 @@ def send_telegram_msg(token, chat_id, message):
     payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
     try:
         resp = requests.post(url, json=payload)
-        # 增加錯誤代碼處理
         if not resp.ok:
             return False, f"Error {resp.status_code}: {resp.text}"
         return True, "OK"
@@ -215,7 +232,6 @@ def get_yahoo_ticker(symbol):
 with st.sidebar:
     st.header("HK Stock Analysis")
     
-    # === 1. Telegram 分析測試 ===
     with st.expander("✈️ Telegram 分析與發送", expanded=True):
         def_token = st.secrets["telegram"]["token"] if "telegram" in st.secrets else ""
         def_chat_id = st.secrets["telegram"]["chat_id"] if "telegram" in st.secrets else ""
@@ -251,7 +267,6 @@ with st.sidebar:
     
     st.divider()
 
-    # === 2. 日期與搜尋 ===
     st.subheader("📅 日期設置")
     new_date = st.date_input("選擇日期", value=st.session_state.ref_date, label_visibility="collapsed")
     if new_date != st.session_state.ref_date:
@@ -263,7 +278,6 @@ with st.sidebar:
         cleaned_search = clean_ticker_input(search_input)
         if cleaned_search: st.session_state.current_view = cleaned_search
 
-    # === 3. 收藏清單 ===
     st.divider()
     watchlist_data = get_watchlist_from_db()
     watchlist_list = list(watchlist_data.keys()) if watchlist_data else []
@@ -285,7 +299,7 @@ current_code = st.session_state.current_view
 ref_date_str = st.session_state.ref_date.strftime('%Y-%m-%d')
 
 if not current_code:
-    st.title("港股 SMA 矩陣分析 v9.3")
+    st.title("港股 SMA 矩陣分析 v9.4")
     st.info("👈 請輸入代號或選擇收藏股票。")
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
@@ -305,7 +319,6 @@ else:
                 update_stock_in_db(current_code)
                 st.rerun()
 
-    # --- 數據獲取 (主圖表用) ---
     @st.cache_data(ttl=900)
     def get_data_v7(symbol, end_date):
         try:
@@ -373,7 +386,7 @@ else:
 
         st.divider()
 
-        # --- C. CDM 參數 (Cloud Sync) ---
+        # --- C. CDM 參數 ---
         if is_in_watchlist:
             with st.expander("⚙️ 設定 CDM 自動監測參數", expanded=False):
                 st.caption("設定將同步至雲端，供每日腳本使用。")
@@ -400,7 +413,7 @@ else:
                     update_stock_in_db(current_code, new_params)
                     st.rerun()
 
-        # --- D. 核心數據呈現 ---
+        # --- D. 數據呈現 ---
         req_len = 13
         if len(df) < req_len:
             st.warning("數據長度不足")
@@ -418,22 +431,99 @@ else:
             fig_sma_trend.update_layout(height=350, margin=dict(l=10, r=10, t=30, b=10), title="SMA 曲線 (近7個交易日)", template="plotly_white", legend=dict(orientation="h", y=1.1))
             st.plotly_chart(fig_sma_trend, use_container_width=True)
 
-            # 2. SMA Matrix
+            # --- 2. SMA Matrix (New Format v9.4) ---
             st.subheader("📋 SMA Matrix")
-            sma_html = '<table class="big-font-table"><thead><tr><th>Interval</th><th>Max</th><th>Min</th><th>SMA (Day1)</th><th>SMAC (%)</th><th>Day 2</th><th>Day 3</th><th>Day 4</th><th>Day 5</th><th>Day 6</th><th>Day 7</th></tr></thead><tbody>'
-            for p in periods_sma:
-                col_sma = f'SMA_{p}'
-                sma_series_recent = df[col_sma].tail(14)
-                val_max = sma_series_recent.max()
-                val_min = sma_series_recent.min()
-                val_curr = df[col_sma].iloc[-1]
-                base_sma = df[f'SMA_57'].iloc[-1]
-                smac_val = (1 - (val_curr / base_sma)) * 100 if base_sma else 0
-                smac_class = 'pos-val' if smac_val > 0 else 'neg-val'
-                day_vals = [f"{data_slice[col_sma].iloc[i]:.2f}" for i in range(1, 7)]
-                sma_html += f'<tr><td><b>{p}</b></td><td>{val_max:.2f}</td><td>{val_min:.2f}</td><td><b>{val_curr:.2f}</b></td><td class="{smac_class}">{smac_val:.2f}%</td>' + "".join([f"<td>{v}</td>" for v in day_vals]) + "</tr>"
-            sma_html += "</tbody></table>"
-            st.markdown(sma_html, unsafe_allow_html=True)
+            
+            # Mapping Columns to SMA periods
+            # Header: Day | 2 (SMA7) | 3 (SMA14) | 4 (SMA28) | 5 (SMA57) | 6 (SMA106) | 7 (SMA212)
+            cols_def = [
+                {"label": "2", "sma": 7},
+                {"label": "3", "sma": 14},
+                {"label": "4", "sma": 28},
+                {"label": "5", "sma": 57},
+                {"label": "6", "sma": 106},
+                {"label": "7", "sma": 212},
+            ]
+            
+            # Prepare rows HTML content
+            # Row 1: P (Interval)
+            row_p_html = "<tr><td>P (Interval)</td>"
+            for c in cols_def: row_p_html += f"<td>{c['sma']}</td>"
+            row_p_html += "</tr>"
+            
+            # Row 2: Max
+            row_max_html = "<tr><td>Max</td>"
+            for c in cols_def:
+                val = df[f'SMA_{c["sma"]}'].tail(14).max()
+                row_max_html += f"<td>{val:.2f}</td>"
+            row_max_html += "</tr>"
+            
+            # Row 3: Min
+            row_min_html = "<tr><td>Min</td>"
+            for c in cols_def:
+                val = df[f'SMA_{c["sma"]}'].tail(14).min()
+                row_min_html += f"<td>{val:.2f}</td>"
+            row_min_html += "</tr>"
+            
+            # Row 4: SMA (Current)
+            row_sma_html = "<tr><td>SMA</td>"
+            curr_vals = {} # store for calculation
+            for c in cols_def:
+                val = df[f'SMA_{c["sma"]}'].iloc[-1]
+                curr_vals[c["sma"]] = val
+                row_sma_html += f"<td>{val:.2f}</td>"
+            row_sma_html += "</tr>"
+            
+            # Row 5: SMAC (%) - Price vs SMA
+            # Rule: Col 2 Black, Col 3-7 Red
+            curr_price = df['Close'].iloc[-1]
+            row_smac_html = "<tr><td>SMAC (%)</td>"
+            for i, c in enumerate(cols_def):
+                sma_val = curr_vals[c["sma"]]
+                pct = ((curr_price - sma_val) / sma_val) * 100
+                style_class = "black-text" if i == 0 else "red-text" # First col (Day 2) is black
+                row_smac_html += f"<td class='{style_class}'>{pct:.2f}%</td>"
+            row_smac_html += "</tr>"
+
+            # Helper for other comparisons
+            def get_comparison_row(label, base_sma_period):
+                if f'SMA_{base_sma_period}' not in df.columns: return ""
+                base_val = df[f'SMA_{base_sma_period}'].iloc[-1]
+                html = f"<tr><td>{label}</td>"
+                for c in cols_def:
+                    target_val = curr_vals[c["sma"]]
+                    pct = ((target_val - base_val) / base_val) * 100
+                    html += f"<td>{pct:.2f}%</td>"
+                html += "</tr>"
+                return html
+
+            # Rows 6-8
+            row_smac14_html = get_comparison_row("SMAC14 (%)", 14)
+            row_smac28_html = get_comparison_row("SMAC28 (%)", 28)
+            row_smac57_html = get_comparison_row("SMAC57 (%)", 57)
+
+            # Assemble Table
+            matrix_html = f"""
+            <table class="big-font-table">
+                <thead>
+                    <tr>
+                        <th>Day</th>
+                        <th>2</th><th>3</th><th>4</th><th>5</th><th>6</th><th>7</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {row_p_html}
+                    {row_max_html}
+                    {row_min_html}
+                    {row_sma_html}
+                    {row_smac_html}
+                    {row_smac14_html}
+                    {row_smac28_html}
+                    {row_smac57_html}
+                </tbody>
+            </table>
+            """
+            st.markdown(matrix_html, unsafe_allow_html=True)
 
             st.divider()
 
