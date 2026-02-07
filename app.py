@@ -431,102 +431,114 @@ else:
             fig_sma_trend.update_layout(height=350, margin=dict(l=10, r=10, t=30, b=10), title="SMA 曲線 (近7個交易日)", template="plotly_white", legend=dict(orientation="h", y=1.1))
             st.plotly_chart(fig_sma_trend, use_container_width=True)
 
-            # --- 2. SMA Matrix (New Format v9.4) ---
+           # 2. SMA Matrix (New Format v10.0)
             st.subheader("📋 SMA Matrix")
             
-            # Mapping Columns to SMA periods
-            # Header: Day | 2 (SMA7) | 3 (SMA14) | 4 (SMA28) | 5 (SMA57) | 6 (SMA106) | 7 (SMA212)
-            cols_def = [
-                {"label": "2", "sma": 7},
-                {"label": "3", "sma": 14},
-                {"label": "4", "sma": 28},
-                {"label": "5", "sma": 57},
-                {"label": "6", "sma": 106},
-                {"label": "7", "sma": 212},
-            ]
+            # 定義列與對應的 Interval
+            # Day 2 -> 7, Day 3 -> 14, Day 4 -> 28, Day 5 -> 57, Day 6 -> 106, Day 7 -> 212
+            matrix_intervals = [7, 14, 28, 57, 106, 212]
+            headers = ["2", "3", "4", "5", "6", "7"] # 對應 Day 2 - Day 7
             
-            # Prepare rows HTML content
-            # Row 1: P (Interval)
-            row_p_html = "<tr><td>P (Interval)</td>"
-            for c in cols_def: row_p_html += f"<td>{c['sma']}</td>"
-            row_p_html += "</tr>"
+            # 預先計算需要的數據，存入字典以利後續提取
+            matrix_data = {}
+            current_close = df['Close'].iloc[-1]
             
-            # Row 2: Max
-            row_max_html = "<tr><td>Max</td>"
-            for c in cols_def:
-                val = df[f'SMA_{c["sma"]}'].tail(14).max()
-                row_max_html += f"<td>{val:.2f}</td>"
-            row_max_html += "</tr>"
+            # 基礎 SMA 數值
+            for p in matrix_intervals:
+                col = f'SMA_{p}'
+                if col in df.columns:
+                    series = df[col].tail(14) # 取近14天算 Max/Min
+                    val_curr = df[col].iloc[-1]
+                    val_max = series.max()
+                    val_min = series.min()
+                    # SMAC (%) = (股價 - SMA) / SMA
+                    smac_val = ((current_close - val_curr) / val_curr) * 100 if val_curr else 0
+                else:
+                    val_curr = val_max = val_min = smac_val = 0
+                
+                matrix_data[p] = {
+                    "max": val_max,
+                    "min": val_min,
+                    "sma": val_curr,
+                    "smac": smac_val
+                }
+
+            # 構建 HTML 表格
+            sma_html = '<table class="big-font-table">'
             
-            # Row 3: Min
-            row_min_html = "<tr><td>Min</td>"
-            for c in cols_def:
-                val = df[f'SMA_{c["sma"]}'].tail(14).min()
-                row_min_html += f"<td>{val:.2f}</td>"
-            row_min_html += "</tr>"
+            # --- Row 1: Header (Day | 2 | 3 ...) ---
+            sma_html += '<thead><tr><th>Day</th>' + "".join([f"<th>{h}</th>" for h in headers]) + '</tr></thead><tbody>'
             
-            # Row 4: SMA (Current)
-            row_sma_html = "<tr><td>SMA</td>"
-            curr_vals = {} # store for calculation
-            for c in cols_def:
-                val = df[f'SMA_{c["sma"]}'].iloc[-1]
-                curr_vals[c["sma"]] = val
-                row_sma_html += f"<td>{val:.2f}</td>"
-            row_sma_html += "</tr>"
+            # --- Row 2: P (顯示對應的 SMA 標籤，方便識別) ---
+            # 雖然需求只寫 "P"，但為了清楚，我們顯示 P(SMA7) 等
+            sma_html += '<tr><td><b>P</b></td>' + "".join([f"<td>SMA {p}</td>" for p in matrix_intervals]) + '</tr>'
             
-            # Row 5: SMAC (%) - Price vs SMA
-            # Rule: Col 2 Black, Col 3-7 Red
-            curr_price = df['Close'].iloc[-1]
-            row_smac_html = "<tr><td>SMAC (%)</td>"
-            for i, c in enumerate(cols_def):
-                sma_val = curr_vals[c["sma"]]
-                pct = ((curr_price - sma_val) / sma_val) * 100
-                style_class = "black-text" if i == 0 else "red-text" # First col (Day 2) is black
-                row_smac_html += f"<td class='{style_class}'>{pct:.2f}%</td>"
-            row_smac_html += "</tr>"
+            # --- Row 3: Interval ---
+            sma_html += '<tr><td><b>Interval</b></td>' + "".join([f"<td>{p}</td>" for p in matrix_intervals]) + '</tr>'
+            
+            # --- Row 4: Max ---
+            sma_html += '<tr><td><b>Max</b></td>' + "".join([f"<td>{matrix_data[p]['max']:.2f}</td>" for p in matrix_intervals]) + '</tr>'
+            
+            # --- Row 5: Min ---
+            sma_html += '<tr><td><b>Min</b></td>' + "".join([f"<td>{matrix_data[p]['min']:.2f}</td>" for p in matrix_intervals]) + '</tr>'
+            
+            # --- Row 6: SMA ---
+            sma_html += '<tr><td><b>SMA</b></td>' + "".join([f"<td><b>{matrix_data[p]['sma']:.2f}</b></td>" for p in matrix_intervals]) + '</tr>'
+            
+            # --- Row 7: SMAC (%) ---
+            # 這是 股價 與 各均線 的乖離
+            sma_html += '<tr><td><b>SMAC (%)</b></td>'
+            for p in matrix_intervals:
+                val = matrix_data[p]['smac']
+                color_class = 'pos-val' if val > 0 else 'neg-val'
+                sma_html += f'<td class="{color_class}">{val:.2f}%</td>'
+            sma_html += '</tr>'
+            
+            # --- Row 8: SMAC14 (%) ---
+            # 邏輯：(該列SMA - SMA14) / SMA14
+            sma_html += '<tr><td><b>SMAC14 (%)</b></td>'
+            base_sma14 = matrix_data[14]['sma']
+            for p in matrix_intervals:
+                curr_sma = matrix_data[p]['sma']
+                if base_sma14 and curr_sma:
+                    val = ((curr_sma - base_sma14) / base_sma14) * 100
+                    color_class = 'pos-val' if val > 0 else 'neg-val'
+                    sma_html += f'<td class="{color_class}">{val:.2f}%</td>'
+                else:
+                    sma_html += '<td>-</td>'
+            sma_html += '</tr>'
 
-            # Helper for other comparisons
-            def get_comparison_row(label, base_sma_period):
-                if f'SMA_{base_sma_period}' not in df.columns: return ""
-                base_val = df[f'SMA_{base_sma_period}'].iloc[-1]
-                html = f"<tr><td>{label}</td>"
-                for c in cols_def:
-                    target_val = curr_vals[c["sma"]]
-                    pct = ((target_val - base_val) / base_val) * 100
-                    html += f"<td>{pct:.2f}%</td>"
-                html += "</tr>"
-                return html
+            # --- Row 9: SMAC28 (%) ---
+            # 邏輯：(該列SMA - SMA28) / SMA28
+            sma_html += '<tr><td><b>SMAC28 (%)</b></td>'
+            base_sma28 = matrix_data[28]['sma']
+            for p in matrix_intervals:
+                curr_sma = matrix_data[p]['sma']
+                if base_sma28 and curr_sma:
+                    val = ((curr_sma - base_sma28) / base_sma28) * 100
+                    color_class = 'pos-val' if val > 0 else 'neg-val'
+                    sma_html += f'<td class="{color_class}">{val:.2f}%</td>'
+                else:
+                    sma_html += '<td>-</td>'
+            sma_html += '</tr>'
 
-            # Rows 6-8
-            row_smac14_html = get_comparison_row("SMAC14 (%)", 14)
-            row_smac28_html = get_comparison_row("SMAC28 (%)", 28)
-            row_smac57_html = get_comparison_row("SMAC57 (%)", 57)
+            # --- Row 10: SMAC57 (%) ---
+            # 邏輯：(該列SMA - SMA57) / SMA57
+            sma_html += '<tr><td><b>SMAC57 (%)</b></td>'
+            base_sma57 = matrix_data[57]['sma']
+            for p in matrix_intervals:
+                curr_sma = matrix_data[p]['sma']
+                if base_sma57 and curr_sma:
+                    val = ((curr_sma - base_sma57) / base_sma57) * 100
+                    color_class = 'pos-val' if val > 0 else 'neg-val'
+                    sma_html += f'<td class="{color_class}">{val:.2f}%</td>'
+                else:
+                    sma_html += '<td>-</td>'
+            sma_html += '</tr>'
 
-            # Assemble Table
-            matrix_html = f"""
-            <table class="big-font-table">
-                <thead>
-                    <tr>
-                        <th>Day</th>
-                        <th>2</th><th>3</th><th>4</th><th>5</th><th>6</th><th>7</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {row_p_html}
-                    {row_max_html}
-                    {row_min_html}
-                    {row_sma_html}
-                    {row_smac_html}
-                    {row_smac14_html}
-                    {row_smac28_html}
-                    {row_smac57_html}
-                </tbody>
-            </table>
-            """
-            st.markdown(matrix_html, unsafe_allow_html=True)
-
-            st.divider()
-
+            sma_html += "</tbody></table>"
+            st.markdown(sma_html, unsafe_allow_html=True)
+            
             # 3. Turnover Matrix
             st.subheader("📋 Turnover Rate Matrix")
             if not has_turnover:
@@ -591,3 +603,4 @@ else:
     # Tab 4
     with tab4:
         if has_turnover: st.line_chart(display_df['Turnover_Rate'])
+
