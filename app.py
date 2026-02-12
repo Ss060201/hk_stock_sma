@@ -788,8 +788,3 @@ else:
         with tab3:
             if has_turnover: st.line_chart(display_df['Turnover_Rate'])
             else: st.info("無流通股數數據，無法顯示換手率。")
-
-    else:
-        st.error(f"數據不足或當日休市 (Date: {ref_date_str})。")
-
-
