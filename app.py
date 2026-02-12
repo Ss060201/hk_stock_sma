@@ -550,85 +550,128 @@ else:
             sma_html += "</tbody></table>"
             st.markdown(sma_html, unsafe_allow_html=True)
             
-            # --- NEW: Price Interface Data List (Req 2) ---
+           # --- NEW: Price Interface Data List (修正版) ---
             st.write("") # Spacer
             
-            # 1. 準備數據
+            # ==========================================
+            # A. Price (AvgP) 計算
+            # ==========================================
             # Avg0 = Close, Avg1-6 = SMA [7, 14, 28, 57, 106, 212]
-            avg_vals = [current_close]
+            avgp_vals = [current_close] # Avg0
             for p in matrix_intervals:
-                avg_vals.append(matrix_data[p]['sma'])
+                # 若 SMA 尚未產生 (NaN) 則補 0 或略過，這裡假設已有值
+                val = matrix_data[p]['sma'] if matrix_data[p]['sma'] else 0
+                avgp_vals.append(val)
             
-            avg_avg_p = sum(avg_vals) / len(avg_vals)
+            # 計算 Avg(AvgP) = (Avg0 + ... + Avg6) / 7
+            if len(avgp_vals) > 0:
+                avg_avg_p = sum(avgp_vals) / len(avgp_vals)
+            else:
+                avg_avg_p = 0
             
-            # AvgP MR (Momentum Ratio) - 假設為與平均值的乖離
-            avgp_mr = []
-            for v in avg_vals:
-                if avg_avg_p != 0: avgp_mr.append((v - avg_avg_p)/avg_avg_p * 100)
-                else: avgp_mr.append(0)
-            avg_avgp_mr = sum(avgp_mr) / len(avgp_mr)
+            # 計算 AvgP MR = (AvgP / Avg) - 1
+            # 包含 AvgP MR0 到 AvgP MR6
+            avgp_mr_vals = []
+            for v in avgp_vals:
+                if avg_avg_p != 0:
+                    # 數學上 (v - avg) / avg 等同於 (v / avg) - 1
+                    mr = (v / avg_avg_p) - 1
+                else:
+                    mr = 0
+                avgp_mr_vals.append(mr * 100) # 轉百分比
+            
+            # AvgP MR (總) - 這裡取所有 MR 的平均
+            avg_avgp_mr_total = sum(avgp_mr_vals) / len(avgp_mr_vals)
 
-            # AMP (Amplitude) Data
-            # AMP = (High - Low) / Close * 100
+            # ==========================================
+            # B. AMP (Amplitude) 計算 (修正公式)
+            # ==========================================
+            # 定義：AMP = (High - Low) / Close * 100
             df['AMP'] = (df['High'] - df['Low']) / df['Close'] * 100
             
-            amp_vals = []
-            # AMP0 = Current AMP
-            amp_vals.append(df['AMP'].iloc[-1])
-            # AMP1-6 = Rolling Mean AMP for intervals
+            # 1. 準備 AMP0 (當日)
+            val_amp0 = df['AMP'].iloc[-1]
+            
+            # 2. 準備 AMP1 ~ AMP6 (對應 SMA 週期的歷史平均振幅)
+            amp_rolling_vals = [] 
             for p in matrix_intervals:
-                amp_vals.append(df['AMP'].rolling(p).mean().iloc[-1])
+                # 計算過去 p 天的 AMP 平均值
+                val = df['AMP'].rolling(p).mean().iloc[-1]
+                amp_rolling_vals.append(val)
             
-            avg_amp = sum(amp_vals) / len(amp_vals)
+            # 3. 計算 AVG Amp (根據圖片公式)
+            # 公式：AVG Amp = (Amp1 + Amp2 + Amp3 + Amp4 + Amp5 + Amp6) / 6
+            # ⚠️ 關鍵修正：排除 AMP0
+            if len(amp_rolling_vals) > 0:
+                avg_amp = sum(amp_rolling_vals) / len(amp_rolling_vals)
+            else:
+                avg_amp = 0
             
-            # AMP MR
-            amp_mr = []
-            for v in amp_vals:
-                if avg_amp != 0: amp_mr.append((v - avg_amp)/avg_amp * 100)
-                else: amp_mr.append(0)
-            avg_amp_mr = sum(amp_mr) / len(amp_mr)
+            # 4. 計算 AMP MR
+            # 公式：MR = (AMPn / AVG Amp) - 1
+            amp_mr_vals = []
+            
+            # 4a. 計算 AMP MR0 (AMP0 / Avg - 1)
+            if avg_amp != 0:
+                mr0 = (val_amp0 / avg_amp) - 1
+            else:
+                mr0 = 0
+            amp_mr_vals.append(mr0 * 100)
+            
+            # 4b. 計算 AMP MR1 ~ MR6
+            for v in amp_rolling_vals:
+                if avg_amp != 0:
+                    mr = (v / avg_amp) - 1
+                else:
+                    mr = 0
+                amp_mr_vals.append(mr * 100)
 
-            # 2. 構建 HTML
+            # 5. 整合顯示數據
+            # AvgP 部分
+            row1_headers = ["Avg(AvgP)", "Avg0", "Avg1", "Avg2", "Avg3", "Avg4", "Avg5", "Avg6"]
+            row1_data = [avg_avg_p] + avgp_vals
+            
+            row2_headers = ["AvgP MR", "AvgP MR0", "AvgP MR1", "AvgP MR2", "AvgP MR3", "AvgP MR4", "AvgP MR5", "AvgP MR6"]
+            row2_data = [avg_avgp_mr_total] + avgp_mr_vals
+
+            # AMP 部分
+            # 注意：列表順序為 [平均值, AMP0, AMP1...AMP6]
+            row3_headers = ["Avg(AMP)", "AMP0", "AMP1", "AMP2", "AMP3", "AMP4", "AMP5", "AMP6"]
+            row3_data = [avg_amp] + [val_amp0] + amp_rolling_vals
+            
+            # MR 部分：列表順序為 [MR總平均(自訂), MR0, MR1...MR6]
+            avg_amp_mr_total = sum(amp_mr_vals) / len(amp_mr_vals)
+            row4_headers = ["AMP MR", "AMP MR0", "AMP MR1", "AMP MR2", "AMP MR3", "AMP MR4", "AMP MR5", "AMP MR6"]
+            row4_data = [avg_amp_mr_total] + amp_mr_vals
+
+            # ==========================================
+            # C. 渲染 HTML 表格
+            # ==========================================
             pi_html = '<table class="big-font-table" style="margin-top: 20px;">'
             
             # Title
             pi_html += '<tr><td colspan="8" class="section-title">Price 界面 數據列表</td></tr>'
             
-            # Row 1: Headers (White)
-            headers_p = ["Avg(AvgP)", "Avg0", "Avg1", "Avg2", "Avg3", "Avg4", "Avg5", "Avg6"]
-            pi_html += '<tr class="header-row">' + "".join([f"<td>{h}</td>" for h in headers_p]) + '</tr>'
+            # Row 1: AvgP Data (White Header + Green Data)
+            pi_html += '<tr class="header-row">' + "".join([f"<td>{h}</td>" for h in row1_headers]) + '</tr>'
+            pi_html += '<tr class="data-row">' + "".join([f"<td>{d:.2f}</td>" for d in row1_data]) + '</tr>'
             
-            # Row 2: Data (Green)
-            data_p = [f"{avg_avg_p:.2f}"] + [f"{v:.2f}" for v in avg_vals]
-            pi_html += '<tr class="data-row">' + "".join([f"<td>{d}</td>" for d in data_p]) + '</tr>'
+            # Row 2: AvgP MR (White Header + Green Data)
+            pi_html += '<tr class="header-row">' + "".join([f"<td>{h}</td>" for h in row2_headers]) + '</tr>'
+            pi_html += '<tr class="data-row">' + "".join([f"<td>{d:.2f}%</td>" for d in row2_data]) + '</tr>'
             
-            # Row 3: Headers (White) - MR
-            headers_pmr = ["AvgP MR"] + [f"AvgP MR{i}" for i in range(7)]
-            pi_html += '<tr class="header-row">' + "".join([f"<td>{h}</td>" for h in headers_pmr]) + '</tr>'
-            
-            # Row 4: Data (Green) - MR
-            data_pmr = [f"{avg_avgp_mr:.2f}%"] + [f"{v:.2f}%" for v in avgp_mr]
-            pi_html += '<tr class="data-row">' + "".join([f"<td>{d}</td>" for d in data_pmr]) + '</tr>'
-            
-            # Row 5: Headers (White) - AMP
-            headers_amp = ["Avg(AMP)", "AMP0", "AMP1", "AMP2", "AMP3", "AMP4", "AMP5", "AMP6"]
-            pi_html += '<tr class="header-row">' + "".join([f"<td>{h}</td>" for h in headers_amp]) + '</tr>'
-            
-            # Row 6: Data (Green) - AMP
-            data_amp = [f"{avg_amp:.2f}"] + [f"{v:.2f}" for v in amp_vals]
-            pi_html += '<tr class="data-row">' + "".join([f"<td>{d}</td>" for d in data_amp]) + '</tr>'
+            # Row 3: AMP Data (White Header + Green Data)
+            pi_html += '<tr class="header-row">' + "".join([f"<td>{h}</td>" for h in row3_headers]) + '</tr>'
+            pi_html += '<tr class="data-row">' + "".join([f"<td>{d:.2f}</td>" for d in row3_data]) + '</tr>'
 
-            # Row 7: Headers (White) - AMP MR
-            headers_amr = ["AMP MR"] + [f"AMP MR{i}" for i in range(7)]
-            pi_html += '<tr class="header-row">' + "".join([f"<td>{h}</td>" for h in headers_amr]) + '</tr>'
-            
-            # Row 8: Data (Green) - AMP MR
-            data_amr = [f"{avg_amp_mr:.2f}%"] + [f"{v:.2f}%" for v in amp_mr]
-            pi_html += '<tr class="data-row">' + "".join([f"<td>{d}</td>" for d in data_amr]) + '</tr>'
+            # Row 4: AMP MR (White Header + Green Data)
+            pi_html += '<tr class="header-row">' + "".join([f"<td>{h}</td>" for h in row4_headers]) + '</tr>'
+            pi_html += '<tr class="data-row">' + "".join([f"<td>{d:.2f}%</td>" for d in row4_data]) + '</tr>'
             
             pi_html += '</table>'
             st.markdown(pi_html, unsafe_allow_html=True)
 
+            # 3. Turnover Matrix (此行不用複製，已存在於你的代碼下方)
 
             # 3. Turnover Matrix
             st.subheader("📋 Turnover Rate Matrix")
@@ -694,3 +737,4 @@ else:
     # Tab 4
     with tab4:
         if has_turnover: st.line_chart(display_df['Turnover_Rate'])
+
