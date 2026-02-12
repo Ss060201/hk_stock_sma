@@ -514,7 +514,26 @@ else:
                     })
                     st.rerun()
 
-   # 2. SMA Matrix (New Format v10.0)
+
+        # --- D. 數據呈現 ---
+        req_len = 13
+        if len(df) < req_len:
+            st.warning("數據長度不足")
+        else:
+            data_slice = df.iloc[-req_len:][::-1]
+            
+            # 1. Curve
+            curve_data = df.iloc[-7:]
+            fig_sma_trend = go.Figure()
+            colors_map = {7: '#FF6B6B', 14: '#FFA500', 28: '#FFD700', 57: '#4CAF50', 106: '#2196F3', 212: '#9C27B0'}
+            for p in periods_sma:
+                col_name = f'SMA_{p}'
+                if col_name in curve_data.columns:
+                    fig_sma_trend.add_trace(go.Scatter(x=curve_data.index, y=curve_data[col_name], mode='lines', name=f"SMA({p})", line=dict(color=colors_map.get(p, 'grey'), width=2)))
+            fig_sma_trend.update_layout(height=350, margin=dict(l=10, r=10, t=30, b=10), title="SMA 曲線 (近7個交易日)", template="plotly_white", legend=dict(orientation="h", y=1.1))
+            st.plotly_chart(fig_sma_trend, use_container_width=True)
+
+           # 2. SMA Matrix (New Format v10.0)
             st.subheader("📋 SMA Matrix")
             
             # 定義列與對應的 Interval
@@ -767,24 +786,5 @@ else:
     with tab4:
         if has_turnover: st.line_chart(display_df['Turnover_Rate'])
 
-        # --- Tabs for Charts ---
-        st.markdown("---")
-        st.markdown("### 📚 歷史圖表")
-        tab1, tab2, tab3 = st.tabs(["📉 Price & SMA", "📊 Volume", "💹 Turnover"])
-        
-        display_df = df.iloc[-120:] # Show last 6 months approx
 
-        with tab1:
-            fig = go.Figure()
-            fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'], low=display_df['Low'], close=display_df['Close'], name='K線'))
-            if f'SMA_{sma1}' in display_df.columns: fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma1}'], line=dict(color='orange'), name=f'SMA {sma1}'))
-            if f'SMA_{sma2}' in display_df.columns: fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma2}'], line=dict(color='blue'), name=f'SMA {sma2}'))
-            fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_white")
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with tab2:
-            st.bar_chart(display_df['Volume'])
-            
-        with tab3:
-            if has_turnover: st.line_chart(display_df['Turnover_Rate'])
-            else: st.info("無流通股數數據，無法顯示換手率。")
+
