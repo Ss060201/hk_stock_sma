@@ -514,76 +514,258 @@ else:
                     })
                     st.rerun()
 
-        # 3. 數據呈現 (保留 v9.4 詳細的 SMA Matrix)
-        curve_data = df.iloc[-7:]
-        fig_sma_trend = go.Figure()
-        colors_map = {7: '#FF6B6B', 14: '#FFA500', 28: '#FFD700', 57: '#4CAF50', 106: '#2196F3', 212: '#9C27B0'}
-        for p in periods_sma:
-            col_name = f'SMA_{p}'
-            if col_name in curve_data.columns:
-                fig_sma_trend.add_trace(go.Scatter(x=curve_data.index, y=curve_data[col_name], mode='lines', name=f"SMA({p})", line=dict(color=colors_map.get(p, 'grey'), width=2)))
-        fig_sma_trend.update_layout(height=350, margin=dict(l=10, r=10, t=30, b=10), title="SMA 曲線 (近7個交易日)", template="plotly_white", legend=dict(orientation="h", y=1.1))
-        st.plotly_chart(fig_sma_trend, use_container_width=True)
-
-        # --- 詳細表格區 ---
-        st.subheader("📋 SMA Matrix")
-        
-        # 準備數據
-        matrix_intervals = [7, 14, 28, 57, 106, 212]
-        current_close = df['Close'].iloc[-1]
-        
-        # 渲染 SMA Matrix
-        sma_html = '<table class="big-font-table"><thead><tr><th>Interval</th>' + "".join([f"<th>{p}</th>" for p in matrix_intervals]) + '</tr></thead><tbody>'
-        sma_html += '<tr><td><b>SMA</b></td>' + "".join([f"<td>{df[f'SMA_{p}'].iloc[-1]:.2f}</td>" for p in matrix_intervals]) + '</tr>'
-        sma_html += '<tr><td><b>SMAC (%)</b></td>'
-        for p in matrix_intervals:
-            val_sma = df[f'SMA_{p}'].iloc[-1]
-            val = ((current_close - val_sma) / val_sma) * 100 if val_sma else 0
-            sma_html += f'<td class="{"pos-val" if val > 0 else "neg-val"}">{val:.2f}%</td>'
-        sma_html += '</tr></tbody></table>'
-        st.markdown(sma_html, unsafe_allow_html=True)
-
-        # Price Interface (v9.4 Logic - Detailed)
-        st.write("")
-        # ... (計算 AvgP, AMP, MR 等 - 保留 v9.4 的完整計算與顯示邏輯)
-        avgp_vals = [current_close]
-        for p in matrix_intervals:
-            avgp_vals.append(df[f'SMA_{p}'].iloc[-1] if f'SMA_{p}' in df.columns else 0)
-        avg_avg_p = sum(avgp_vals) / len(avgp_vals)
-        avgp_mr_vals = [((v/avg_avg_p)-1)*100 for v in avgp_vals]
-
-        df['AMP'] = (df['High'] - df['Low']) / df['Close'] * 100
-        val_amp0 = df['AMP'].iloc[-1]
-        amp_rolling_vals = [df['AMP'].rolling(p).mean().iloc[-1] for p in matrix_intervals]
-        valid_amp = [v for v in amp_rolling_vals if v > 0]
-        avg_amp = sum(valid_amp) / len(valid_amp) if valid_amp else 0
-        amp_mr_vals = [((val_amp0/avg_amp)-1)*100] + [((v/avg_amp)-1)*100 for v in amp_rolling_vals]
-
-        pi_html = '<table class="big-font-table" style="margin-top: 20px;">'
-        pi_html += '<tr><td colspan="8" class="section-title">Price & AMP Interface</td></tr>'
-        pi_html += '<tr class="header-row"><td>Metric</td><td>Base (Avg)</td><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td></tr>'
-        pi_html += '<tr class="data-row"><td>AvgP</td><td>{:.2f}</td>'.format(avg_avg_p) + "".join([f"<td>{v:.2f}</td>" for v in avgp_vals]) + '</tr>'
-        pi_html += '<tr class="data-row"><td>AvgP MR</td><td>-</td>' + "".join([f"<td>{v:.2f}%</td>" for v in avgp_mr_vals]) + '</tr>'
-        pi_html += '<tr class="data-row"><td>AMP</td><td>{:.2f}</td>'.format(avg_amp) + "".join([f"<td>{v:.2f}</td>" for v in [val_amp0]+amp_rolling_vals]) + '</tr>'
-        pi_html += '<tr class="data-row"><td>AMP MR</td><td>-</td>' + "".join([f"<td>{v:.2f}%</td>" for v in amp_mr_vals]) + '</tr>'
-        pi_html += '</table>'
-        st.markdown(pi_html, unsafe_allow_html=True)
-
-        # --- 新增: BS Analysis (v9.6 Logic in Single View) ---
-        if has_turnover and 'MMB' in df.columns:
-            st.subheader("📊 Buy/Sell Analysis (Simulated)")
-            bs_html = '<table class="big-font-table">'
-            bs_html += '<tr class="header-row"><td>Day</td><td>MMB</td><td>MMS</td><td>RTB</td><td>RTS</td></tr>'
-            last_7 = df.iloc[-7:][::-1]
-            for idx, row in last_7.iterrows():
-                bs_html += f'<tr class="data-row"><td>{idx.strftime("%m-%d")}</td><td>{row["MMB"]:.4f}%</td><td>{row["MMS"]:.4f}%</td><td>{row["RTB"]:.4f}%</td><td>{row["RTS"]:.4f}%</td></tr>'
+   # 2. SMA Matrix (New Format v10.0)
+            st.subheader("📋 SMA Matrix")
             
-            # Interval Sums
-            bs_html += '<tr class="header-row" style="border-top:2px solid #666;"><td>Interval Sum</td><td>Sum(MMB)</td><td>Sum(MMS)</td><td>Sum(RTB)</td><td>Sum(RTS)</td></tr>'
+            # 定義列與對應的 Interval
+            matrix_intervals = [7, 14, 28, 57, 106, 212]
+            headers = ["2", "3", "4", "5", "6", "7"] # 對應 Day 2 - Day 7
+            
+            # 預先計算需要的數據，存入字典以利後續提取
+            matrix_data = {}
+            current_close = df['Close'].iloc[-1]
+            
             for p in matrix_intervals:
-                 bs_html += f'<tr class="data-row"><td>{p} Days</td><td>{df["MMB"].tail(p).sum():.4f}%</td><td>{df["MMS"].tail(p).sum():.4f}%</td><td>{df["RTB"].tail(p).sum():.4f}%</td><td>{df["RTS"].tail(p).sum():.4f}%</td></tr>'
-            bs_html += '</table>'
-            st.markdown(bs_html, unsafe_allow_html=True)
+                col = f'SMA_{p}'
+                if col in df.columns:
+                    series = df[col].tail(14) # 取近14天算 Max/Min
+                    val_curr = df[col].iloc[-1]
+                    val_max = series.max()
+                    val_min = series.min()
+                    # SMAC (%) = (股價 - SMA) / SMA
+                    smac_val = ((current_close - val_curr) / val_curr) * 100 if val_curr else 0
+                else:
+                    val_curr = val_max = val_min = smac_val = 0
+                
+                matrix_data[p] = {
+                    "max": val_max,
+                    "min": val_min,
+                    "sma": val_curr,
+                    "smac": smac_val
+                }
+
+            # 構建 HTML 表格
+            sma_html = '<table class="big-font-table">'
+            sma_html += '<thead><tr><th>Day</th>' + "".join([f"<th>{h}</th>" for h in headers]) + '</tr></thead><tbody>'
+            sma_html += '<tr><td><b>P</b></td>' + "".join([f"<td>SMA {p}</td>" for p in matrix_intervals]) + '</tr>'
+            sma_html += '<tr><td><b>Interval</b></td>' + "".join([f"<td>{p}</td>" for p in matrix_intervals]) + '</tr>'
+            sma_html += '<tr><td><b>Max</b></td>' + "".join([f"<td>{matrix_data[p]['max']:.2f}</td>" for p in matrix_intervals]) + '</tr>'
+            sma_html += '<tr><td><b>Min</b></td>' + "".join([f"<td>{matrix_data[p]['min']:.2f}</td>" for p in matrix_intervals]) + '</tr>'
+            sma_html += '<tr><td><b>SMA</b></td>' + "".join([f"<td><b>{matrix_data[p]['sma']:.2f}</b></td>" for p in matrix_intervals]) + '</tr>'
+            
+            # SMAC Rows
+            sma_html += '<tr><td><b>SMAC (%)</b></td>'
+            for p in matrix_intervals:
+                val = matrix_data[p]['smac']
+                color_class = 'pos-val' if val > 0 else 'neg-val'
+                sma_html += f'<td class="{color_class}">{val:.2f}%</td>'
+            sma_html += '</tr>'
+            
+            # SMAC Differences
+            base_smas = {14: matrix_data[14]['sma'], 28: matrix_data[28]['sma'], 57: matrix_data[57]['sma']}
+            for base_p, base_val in base_smas.items():
+                sma_html += f'<tr><td><b>SMAC{base_p} (%)</b></td>'
+                for p in matrix_intervals:
+                    curr_sma = matrix_data[p]['sma']
+                    if base_val and curr_sma:
+                        val = ((curr_sma - base_val) / base_val) * 100
+                        color_class = 'pos-val' if val > 0 else 'neg-val'
+                        sma_html += f'<td class="{color_class}">{val:.2f}%</td>'
+                    else:
+                        sma_html += '<td>-</td>'
+                sma_html += '</tr>'
+
+            sma_html += "</tbody></table>"
+            st.markdown(sma_html, unsafe_allow_html=True)
+            
+          # --- NEW: Price Interface Data List (修正版) ---
+            st.write("") # Spacer
+            
+            # ==========================================
+            # A. Price (AvgP) 計算
+            # ==========================================
+            # Avg0 = Close, Avg1-6 = SMA [7, 14, 28, 57, 106, 212]
+            avgp_vals = [current_close] # Avg0
+            for p in matrix_intervals:
+                # 若 SMA 尚未產生 (NaN) 則補 0 或略過，這裡假設已有值
+                val = matrix_data[p]['sma'] if matrix_data[p]['sma'] else 0
+                avgp_vals.append(val)
+            
+            # 計算 Avg(AvgP) = (Avg0 + ... + Avg6) / 7
+            if len(avgp_vals) > 0:
+                avg_avg_p = sum(avgp_vals) / len(avgp_vals)
+            else:
+                avg_avg_p = 0
+            
+            # 計算 AvgP MR = (AvgP / Avg) - 1
+            # 包含 AvgP MR0 到 AvgP MR6
+            avgp_mr_vals = []
+            for v in avgp_vals:
+                if avg_avg_p != 0:
+                    # 數學上 (v - avg) / avg 等同於 (v / avg) - 1
+                    mr = (v / avg_avg_p) - 1
+                else:
+                    mr = 0
+                avgp_mr_vals.append(mr * 100) # 轉百分比
+            
+            # AvgP MR (總) - 這裡取所有 MR 的平均
+            avg_avgp_mr_total = sum(avgp_mr_vals) / len(avgp_mr_vals)
+
+            # ==========================================
+            # B. AMP (Amplitude) 計算 (修正公式)
+            # ==========================================
+            # 定義：AMP = (High - Low) / Close * 100
+            df['AMP'] = (df['High'] - df['Low']) / df['Close'] * 100
+            
+            # 1. 準備 AMP0 (當日)
+            val_amp0 = df['AMP'].iloc[-1]
+            
+            # 2. 準備 AMP1 ~ AMP6 (對應 SMA 週期的歷史平均振幅)
+            amp_rolling_vals = [] 
+            for p in matrix_intervals:
+                # 計算過去 p 天的 AMP 平均值
+                val = df['AMP'].rolling(p).mean().iloc[-1]
+                amp_rolling_vals.append(val)
+            
+            # 3. 計算 AVG Amp (根據圖片公式)
+            # 公式：AVG Amp = (Amp1 + Amp2 + Amp3 + Amp4 + Amp5 + Amp6) / 6
+            # ⚠️ 關鍵修正：排除 AMP0
+            if len(amp_rolling_vals) > 0:
+                avg_amp = sum(amp_rolling_vals) / len(amp_rolling_vals)
+            else:
+                avg_amp = 0
+            
+            # 4. 計算 AMP MR
+            # 公式：MR = (AMPn / AVG Amp) - 1
+            amp_mr_vals = []
+            
+            # 4a. 計算 AMP MR0 (AMP0 / Avg - 1)
+            if avg_amp != 0:
+                mr0 = (val_amp0 / avg_amp) - 1
+            else:
+                mr0 = 0
+            amp_mr_vals.append(mr0 * 100)
+            
+            # 4b. 計算 AMP MR1 ~ MR6
+            for v in amp_rolling_vals:
+                if avg_amp != 0:
+                    mr = (v / avg_amp) - 1
+                else:
+                    mr = 0
+                amp_mr_vals.append(mr * 100)
+
+            # 5. 整合顯示數據
+            # AvgP 部分
+            row1_headers = ["Avg(AvgP)", "Avg0", "Avg1", "Avg2", "Avg3", "Avg4", "Avg5", "Avg6"]
+            row1_data = [avg_avg_p] + avgp_vals
+            
+            row2_headers = ["AvgP MR", "AvgP MR0", "AvgP MR1", "AvgP MR2", "AvgP MR3", "AvgP MR4", "AvgP MR5", "AvgP MR6"]
+            row2_data = [avg_avgp_mr_total] + avgp_mr_vals
+
+            # AMP 部分
+            # 注意：列表順序為 [平均值, AMP0, AMP1...AMP6]
+            row3_headers = ["Avg(AMP)", "AMP0", "AMP1", "AMP2", "AMP3", "AMP4", "AMP5", "AMP6"]
+            row3_data = [avg_amp] + [val_amp0] + amp_rolling_vals
+            
+            # MR 部分：列表順序為 [MR總平均(自訂), MR0, MR1...MR6]
+            avg_amp_mr_total = sum(amp_mr_vals) / len(amp_mr_vals)
+            row4_headers = ["AMP MR", "AMP MR0", "AMP MR1", "AMP MR2", "AMP MR3", "AMP MR4", "AMP MR5", "AMP MR6"]
+            row4_data = [avg_amp_mr_total] + amp_mr_vals
+
+            # ==========================================
+            # C. 渲染 HTML 表格
+            # ==========================================
+            pi_html = '<table class="big-font-table" style="margin-top: 20px;">'
+            
+            # Title
+            pi_html += '<tr><td colspan="8" class="section-title">Price 界面 數據列表</td></tr>'
+            
+            # Row 1: AvgP Data (White Header + Green Data)
+            pi_html += '<tr class="header-row">' + "".join([f"<td>{h}</td>" for h in row1_headers]) + '</tr>'
+            pi_html += '<tr class="data-row">' + "".join([f"<td>{d:.2f}</td>" for d in row1_data]) + '</tr>'
+            
+            # Row 2: AvgP MR (White Header + Green Data)
+            pi_html += '<tr class="header-row">' + "".join([f"<td>{h}</td>" for h in row2_headers]) + '</tr>'
+            pi_html += '<tr class="data-row">' + "".join([f"<td>{d:.2f}%</td>" for d in row2_data]) + '</tr>'
+            
+            # Row 3: AMP Data (White Header + Green Data)
+            pi_html += '<tr class="header-row">' + "".join([f"<td>{h}</td>" for h in row3_headers]) + '</tr>'
+            pi_html += '<tr class="data-row">' + "".join([f"<td>{d:.2f}</td>" for d in row3_data]) + '</tr>'
+
+            # Row 4: AMP MR (White Header + Green Data)
+            pi_html += '<tr class="header-row">' + "".join([f"<td>{h}</td>" for h in row4_headers]) + '</tr>'
+            pi_html += '<tr class="data-row">' + "".join([f"<td>{d:.2f}%</td>" for d in row4_data]) + '</tr>'
+            
+            pi_html += '</table>'
+            st.markdown(pi_html, unsafe_allow_html=True)
+
+            # 3. Turnover Matrix (此行不用複製，已存在於你的代碼下方)
+
+
+            # 3. Turnover Matrix
+            st.subheader("📋 Turnover Rate Matrix")
+            if not has_turnover:
+                st.error("無流通股數數據。")
+            else:
+                dates_d2_d7 = [data_slice.index[i].strftime('%m-%d') for i in range(1, 7)]
+                vals_d2_d7 = [f"{data_slice['Turnover_Rate'].iloc[i]:.2f}%" for i in range(1, 7)]
+                dates_d8_d13 = [data_slice.index[i].strftime('%m-%d') for i in range(7, 13)]
+                vals_d8_d13 = [f"{data_slice['Turnover_Rate'].iloc[i]:.2f}%" for i in range(7, 13)]
+                
+                intervals_tor = [7, 14, 28, 57, 106, 212]
+                sums = [f"{df['Turnover_Rate'].tail(p).sum():.2f}%" for p in intervals_tor]
+                maxs = [f"{df['Turnover_Rate'].tail(p).max():.2f}%" for p in intervals_tor]
+                mins = [f"{df['Turnover_Rate'].tail(p).min():.2f}%" for p in intervals_tor]
+                avgs = [f"{df['Turnover_Rate'].tail(p).mean():.2f}%" for p in intervals_tor]
+                avg_tor_7 = f"{df['Turnover_Rate'].mean():.2f}%"
+
+                tor_html = '<table class="big-font-table">'
+                tor_html += f'<tr style="background-color: #e8eaf6;"><th>Day 2<br><small>{dates_d2_d7[0]}</small></th><th>Day 3<br><small>{dates_d2_d7[1]}</small></th><th>Day 4<br><small>{dates_d2_d7[2]}</small></th><th>Day 5<br><small>{dates_d2_d7[3]}</small></th><th>Day 6<br><small>{dates_d2_d7[4]}</small></th><th>Day 7<br><small>{dates_d2_d7[5]}</small></th></tr>'
+                tor_html += f'<tr><td>{vals_d2_d7[0]}</td><td>{vals_d2_d7[1]}</td><td>{vals_d2_d7[2]}</td><td>{vals_d2_d7[3]}</td><td>{vals_d2_d7[4]}</td><td>{vals_d2_d7[5]}</td></tr>'
+                tor_html += f'<tr style="background-color: #e8eaf6;"><th>Day 8<br><small>{dates_d8_d13[0]}</small></th><th>Day 9<br><small>{dates_d8_d13[1]}</small></th><th>Day 10<br><small>{dates_d8_d13[2]}</small></th><th>Day 11<br><small>{dates_d8_d13[3]}</small></th><th>Day 12<br><small>{dates_d8_d13[4]}</small></th><th>Day 13<br><small>{dates_d8_d13[5]}</small></th></tr>'
+                tor_html += f'<tr><td>{vals_d8_d13[0]}</td><td>{vals_d8_d13[1]}</td><td>{vals_d8_d13[2]}</td><td>{vals_d8_d13[3]}</td><td>{vals_d8_d13[4]}</td><td>{vals_d8_d13[5]}</td></tr></table><br>'
+                
+                tor_html += '<table class="big-font-table"><tr style="background-color: #ffe0b2;"><th>Metrics</th>' + "".join([f"<th>Int: {p}</th>" for p in intervals_tor]) + '</tr>'
+                tor_html += f'<tr><td><b>Sum(TOR)</b></td>' + "".join([f"<td>{v}</td>" for v in sums]) + '</tr>'
+                tor_html += f'<tr><td><b>Max</b></td>' + "".join([f"<td>{v}</td>" for v in maxs]) + '</tr>'
+                tor_html += f'<tr><td><b>Min</b></td>' + "".join([f"<td>{v}</td>" for v in mins]) + '</tr>'
+                tor_html += f'<tr style="background-color: #c8e6c9;"><td><b>AVG Label</b></td><td>AVGTOR 1</td><td>AVGTOR 2</td><td>AVGTOR 3</td><td>AVGTOR 4</td><td>AVGTOR 5</td><td>AVGTOR 6</td></tr>'
+                tor_html += f'<tr><td><b>AVGTOR</b></td>' + "".join([f"<td>{v}</td>" for v in avgs]) + '</tr></table>'
+                tor_html += f'<table class="big-font-table" style="margin-top: 10px;"><tr style="background-color: #c8e6c9;"><th style="width:50%">AVGTOR 7 (Total Average)</th><th style="width:50%">Data</th></tr><tr><td>{avg_tor_7}</td><td>{avg_tor_7}</td></tr></table>'
+                st.markdown(tor_html, unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### 📚 歷史功能與圖表")
+    
+    tab1, tab2, tab3, tab4 = st.tabs(["📉 Price & SMA", "🔄 Ratio Curves", "📊 Volume (Abs)", "💹 Turnover Analysis (Old)"])
+
+    end_date_dt = pd.to_datetime(st.session_state.ref_date)
+    start_date_6m = end_date_dt - timedelta(days=180)
+    display_df = df[df.index >= start_date_6m]
+
+    # Tab 1
+    with tab1:
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'], low=display_df['Low'], close=display_df['Close'], name='K線'))
+        if f'SMA_{sma1}' in display_df.columns: fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma1}'], line=dict(color='orange'), name=f'SMA {sma1}'))
+        if f'SMA_{sma2}' in display_df.columns: fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma2}'], line=dict(color='blue'), name=f'SMA {sma2}'))
+        fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_white")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Tab 2
+    with tab2:
+        fig_r = go.Figure()
+        if 'R1' in display_df.columns: fig_r.add_trace(go.Scatter(x=display_df.index, y=display_df['R1'], name="R1 (S7/S14)"))
+        if 'R2' in display_df.columns: fig_r.add_trace(go.Scatter(x=display_df.index, y=display_df['R2'], name="R2 (S7/S28)"))
+        st.plotly_chart(fig_r, use_container_width=True)
+
+    # Tab 3
+    with tab3:
+        st.bar_chart(display_df['Volume'])
+
+    # Tab 4
+    with tab4:
+        if has_turnover: st.line_chart(display_df['Turnover_Rate'])
 
         # --- Tabs for Charts ---
         st.markdown("---")
@@ -609,3 +791,5 @@ else:
 
     else:
         st.error(f"數據不足或當日休市 (Date: {ref_date_str})。")
+
+
