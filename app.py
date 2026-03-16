@@ -159,7 +159,8 @@ def send_telegram_msg(token, chat_id, message):
 def calculate_willr(high, low, close, period):
     highest_high = high.rolling(window=period).max()
     lowest_low = low.rolling(window=period).min()
-    wr = -100 * ((highest_high - close) / (highest_high - lowest_low))
+    denom = (highest_high - lowest_low).where((highest_high - lowest_low) != 0)
+    wr = -100 * ((highest_high - close) / denom)
     return wr
 
 # v9.6 新增：模擬買賣盤數據
@@ -172,8 +173,7 @@ def simulate_bs_data(df, tsi):
         return df
     
     # 簡單模擬：成交量分配與大戶/散戶比例
-    vol = df['Volume']
-    avg_p = df['Close'] # 近似 AvgP
+    vol = df['Volume'].fillna(0)
 
     # 定義模擬權重 (假設值)
     df['UBTB'] = vol * 0.15 
@@ -185,10 +185,11 @@ def simulate_bs_data(df, tsi):
     df['RIS']  = vol * 0.10 
 
     # 套用公式
-    df['MMB'] = (df['UBTB']*0.9 + df['BTB']*0.7) / avg_p / tsi * 100
-    df['RTB'] = (df['UBTB']*0.1 + df['BTB']*0.3 + df['RIB']) / avg_p / tsi * 100
-    df['MMS'] = (df['UBTS']*0.1 + df['BTS']*0.7) / avg_p / tsi * 100
-    df['RTS'] = (df['UBTS']*0.1 + df['BTS']*0.3 + df['RIS']) / avg_p / tsi * 100 # 修正公式邏輯
+    denom = float(tsi)
+    df['MMB'] = (df['UBTB'] * 0.9 + df['BTB'] * 0.7) / denom * 100
+    df['RTB'] = (df['UBTB'] * 0.1 + df['BTB'] * 0.3 + df['RIB']) / denom * 100
+    df['MMS'] = (df['UBTS'] * 0.1 + df['BTS'] * 0.7) / denom * 100
+    df['RTS'] = (df['UBTS'] * 0.1 + df['BTS'] * 0.3 + df['RIS']) / denom * 100
 
     return df
 
@@ -216,10 +217,11 @@ def run_analysis_logic(df, symbol, params):
             
             if n_days > 0:
                 p_target = (sma1 * CDM_COEF1 * (t1_days/n_days)) + (sma2 * CDM_COEF2 * ((n_days - t1_days)/n_days))
-                diff = abs(curr_price - p_target) / p_target
-                target_price_str = f"{p_target:.2f}"
-                diff_str = f"{diff*100:.2f}"
-                cdm_status = "🔴 <b>觸發</b>" if diff < CDM_THRESHOLD else "未觸發"
+                if pd.notna(p_target) and p_target != 0:
+                    diff = abs(curr_price - p_target) / p_target
+                    target_price_str = f"{p_target:.2f}"
+                    diff_str = f"{diff*100:.2f}"
+                    cdm_status = "🔴 <b>觸發</b>" if diff < CDM_THRESHOLD else "未觸發"
         except: pass
     
     # FZM 運算
@@ -349,6 +351,11 @@ if not current_code:
 
                     if len(df_w) > 20:
                         curr_p = df_w['Close'].iloc[-1]
+                        prev_close_w = df_w['Close'].shift(1).replace(0, np.nan)
+                        prev_close_last = prev_close_w.iloc[-1]
+                        prev_close_last = float(prev_close_last) if pd.notna(prev_close_last) else 0.0
+                        chg = (curr_p - prev_close_last) if prev_close_last else 0.0
+                        pct = (chg / prev_close_last * 100) if prev_close_last else 0.0
                         intervals = [7, 14, 28, 57, 106, 212]
 
                         # 1. Price Logic
@@ -360,7 +367,7 @@ if not current_code:
                         avgp_mr_vals = [((v / avg_avgp) - 1)*100 if avg_avgp else 0 for v in avgp_vals]
 
                         # 2. AMP Logic
-                        df_w['AMP'] = (df_w['High'] - df_w['Low']) / df_w['Close'] * 100
+                        df_w['AMP'] = (df_w['High'] - df_w['Low']) / prev_close_w * 100
                         val_amp0 = df_w['AMP'].iloc[-1]
                         amp_rolling_vals = []
                         for p in intervals:
@@ -399,7 +406,8 @@ if not current_code:
 
                         # --- Card HTML ---
                         html = f'<div style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 8px; background-color: #f9f9f9;">'
-                        html += f'<h4 style="margin-top:0;">{ticker} <span style="font-size:0.8em; color:#666;">Price: {curr_p:.2f}</span></h4>'
+                        chg_color = "#2ca02c" if chg > 0 else "#d62728" if chg < 0 else "#666"
+                        html += f'<h4 style="margin-top:0;">{ticker} <span style="font-size:0.8em; color:#666;">Price: {curr_p:.2f}</span> <span style="font-size:0.8em; color:{chg_color};">({chg:+.2f}, {pct:+.2f}%)</span></h4>'
                         
                         # Price & AMP Table
                         html += '<table class="big-font-table">'
@@ -491,6 +499,24 @@ else:
         
         st.divider()
 
+        curr_close = float(df['Close'].iloc[-1])
+        prev_close = df['Close'].shift(1).iloc[-1]
+        prev_close = float(prev_close) if pd.notna(prev_close) else 0.0
+        curr_open = float(df['Open'].iloc[-1])
+        curr_high = float(df['High'].iloc[-1])
+        curr_low = float(df['Low'].iloc[-1])
+        chg = (curr_close - prev_close) if prev_close else 0.0
+        pct = (chg / prev_close * 100) if prev_close else 0.0
+        amp = ((curr_high - curr_low) / prev_close * 100) if prev_close else 0.0
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("現價", f"{curr_close:.3f}", f"{chg:+.3f} ({pct:+.2f}%)")
+        m2.metric("前收市", f"{prev_close:.3f}" if prev_close else "-")
+        m3.metric("開市", f"{curr_open:.3f}")
+        m4.metric("最高", f"{curr_high:.3f}")
+        m5.metric("最低", f"{curr_low:.3f}")
+        st.metric("波幅(AA)", f"{amp:.2f}%" if prev_close else "-")
+
         # 2. CDM 設定
         if is_in_watchlist:
             with st.expander("⚙️ 設定 CDM 自動監測參數", expanded=False):
@@ -547,14 +573,15 @@ else:
             for p in matrix_intervals:
                 col = f'SMA_{p}'
                 if col in df.columns:
-                    series = df[col].tail(14) # 取近14天算 Max/Min
+                    series = df[col].tail(14).dropna()
                     val_curr = df[col].iloc[-1]
-                    val_max = series.max()
-                    val_min = series.min()
+                    val_curr = float(val_curr) if pd.notna(val_curr) else 0.0
+                    val_max = float(series.max()) if len(series) else 0.0
+                    val_min = float(series.min()) if len(series) else 0.0
                     # SMAC (%) = (股價 - SMA) / SMA
-                    smac_val = ((current_close - val_curr) / val_curr) * 100 if val_curr else 0
+                    smac_val = ((current_close - val_curr) / val_curr) * 100 if val_curr else 0.0
                 else:
-                    val_curr = val_max = val_min = smac_val = 0
+                    val_curr = val_max = val_min = smac_val = 0.0
                 
                 matrix_data[p] = {
                     "max": val_max,
@@ -586,7 +613,7 @@ else:
                 sma_html += f'<tr><td><b>SMAC{base_p} (%)</b></td>'
                 for p in matrix_intervals:
                     curr_sma = matrix_data[p]['sma']
-                    if base_val and curr_sma:
+                    if base_val and curr_sma and pd.notna(base_val) and pd.notna(curr_sma):
                         val = ((curr_sma - base_val) / base_val) * 100
                         color_class = 'pos-val' if val > 0 else 'neg-val'
                         sma_html += f'<td class="{color_class}">{val:.2f}%</td>'
@@ -606,53 +633,49 @@ else:
             # Avg0 = Close, Avg1-6 = SMA [7, 14, 28, 57, 106, 212]
             avgp_vals = [current_close] # Avg0
             for p in matrix_intervals:
-                # 若 SMA 尚未產生 (NaN) 則補 0 或略過，這裡假設已有值
-                val = matrix_data[p]['sma'] if matrix_data[p]['sma'] else 0
+                val = matrix_data[p]['sma'] if matrix_data[p]['sma'] else 0.0
                 avgp_vals.append(val)
             
             # 計算 Avg(AvgP) = (Avg0 + ... + Avg6) / 7
-            if len(avgp_vals) > 0:
-                avg_avg_p = sum(avgp_vals) / len(avgp_vals)
-            else:
-                avg_avg_p = 0
+            valid_avgp_vals = [v for v in avgp_vals if v and v > 0]
+            avg_avg_p = (sum(valid_avgp_vals) / len(valid_avgp_vals)) if valid_avgp_vals else 0.0
             
             # 計算 AvgP MR = (AvgP / Avg) - 1
             # 包含 AvgP MR0 到 AvgP MR6
             avgp_mr_vals = []
             for v in avgp_vals:
-                if avg_avg_p != 0:
+                if avg_avg_p != 0 and v:
                     # 數學上 (v - avg) / avg 等同於 (v / avg) - 1
                     mr = (v / avg_avg_p) - 1
                 else:
                     mr = 0
                 avgp_mr_vals.append(mr * 100) # 轉百分比
             
-            # AvgP MR (總) - 這裡取所有 MR 的平均
-            avg_avgp_mr_total = sum(avgp_mr_vals) / len(avgp_mr_vals)
+            valid_avgp_mr_vals = [abs(v) for v in avgp_mr_vals if pd.notna(v)]
+            avg_avgp_mr_total = (sum(valid_avgp_mr_vals) / len(valid_avgp_mr_vals)) if valid_avgp_mr_vals else 0.0
 
             # ==========================================
             # B. AMP (Amplitude) 計算 (修正公式)
             # ==========================================
-            # 定義：AMP = (High - Low) / Close * 100
-            df['AMP'] = (df['High'] - df['Low']) / df['Close'] * 100
+            prev_close_series = df['Close'].shift(1).replace(0, np.nan)
+            df['AMP'] = (df['High'] - df['Low']) / prev_close_series * 100
             
             # 1. 準備 AMP0 (當日)
             val_amp0 = df['AMP'].iloc[-1]
+            val_amp0 = float(val_amp0) if pd.notna(val_amp0) else 0.0
             
             # 2. 準備 AMP1 ~ AMP6 (對應 SMA 週期的歷史平均振幅)
             amp_rolling_vals = [] 
             for p in matrix_intervals:
                 # 計算過去 p 天的 AMP 平均值
                 val = df['AMP'].rolling(p).mean().iloc[-1]
-                amp_rolling_vals.append(val)
+                amp_rolling_vals.append(float(val) if pd.notna(val) else 0.0)
             
             # 3. 計算 AVG Amp (根據圖片公式)
             # 公式：AVG Amp = (Amp1 + Amp2 + Amp3 + Amp4 + Amp5 + Amp6) / 6
             # ⚠️ 關鍵修正：排除 AMP0
-            if len(amp_rolling_vals) > 0:
-                avg_amp = sum(amp_rolling_vals) / len(amp_rolling_vals)
-            else:
-                avg_amp = 0
+            valid_rolling = [v for v in amp_rolling_vals if v and v > 0]
+            avg_amp = (sum(valid_rolling) / len(valid_rolling)) if valid_rolling else 0.0
             
             # 4. 計算 AMP MR
             # 公式：MR = (AMPn / AVG Amp) - 1
@@ -667,7 +690,7 @@ else:
             
             # 4b. 計算 AMP MR1 ~ MR6
             for v in amp_rolling_vals:
-                if avg_amp != 0:
+                if avg_amp != 0 and v:
                     mr = (v / avg_amp) - 1
                 else:
                     mr = 0
@@ -770,6 +793,80 @@ else:
         if f'SMA_{sma2}' in display_df.columns: fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma2}'], line=dict(color='blue'), name=f'SMA {sma2}'))
         fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_white")
         st.plotly_chart(fig, use_container_width=True)
+
+        with st.expander("互動模式控制區", expanded=True):
+            min_date = display_df.index.min().date() if len(display_df) else st.session_state.ref_date
+            max_date = display_df.index.max().date() if len(display_df) else st.session_state.ref_date
+            default_end = max_date
+            default_start = default_end - timedelta(days=90)
+            if default_start < min_date:
+                default_start = min_date
+
+            c_range_1, c_range_2 = st.columns(2)
+            with c_range_1:
+                range_start = st.date_input("開始日期", value=default_start, min_value=min_date, max_value=max_date, key="interactive_range_start")
+            with c_range_2:
+                range_end = st.date_input("結束日期", value=default_end, min_value=min_date, max_value=max_date, key="interactive_range_end")
+
+            if range_start > range_end:
+                range_start, range_end = range_end, range_start
+
+            start_ts = pd.to_datetime(range_start)
+            end_ts = pd.to_datetime(range_end)
+            df_range = df[(df.index >= start_ts) & (df.index <= end_ts)].copy()
+
+            if df_range.empty:
+                st.warning("選取時段沒有數據")
+            else:
+                periods_interactive = [7, 14, 28, 57, 106, 212]
+                for p in periods_interactive:
+                    df_range[f"SMA{p}"] = df_range["Close"].rolling(window=p).mean()
+                df_range["WR"] = calculate_willr(df_range["High"], df_range["Low"], df_range["Close"], 35)
+
+                last = df_range.iloc[-1]
+                curr_price = last["Close"]
+
+                st.markdown("**時段 SMA（最後一天）**")
+                sma_cols = st.columns(6)
+                for i, p in enumerate(periods_interactive):
+                    v = last.get(f"SMA{p}", np.nan)
+                    sma_cols[i].metric(f"SMA{p}", "-" if pd.isna(v) else f"{float(v):.3f}")
+
+                val_sma7 = last.get("SMA7", np.nan)
+                val_sma14 = last.get("SMA14", np.nan)
+                val_wr = last.get("WR", np.nan)
+
+                cond_a = bool(pd.notna(curr_price) and pd.notna(val_sma7) and pd.notna(val_sma14) and (curr_price > val_sma7) and (curr_price > val_sma14))
+                cond_b = bool(pd.notna(val_wr) and (val_wr < -80))
+                fzm_trigger = cond_a and cond_b
+                trend_str = "站上雙均線" if cond_a else "均線下方"
+
+                vals = [curr_price]
+                for p in periods_interactive:
+                    vals.append(last.get(f"SMA{p}", np.nan))
+                valid_vals = [float(v) for v in vals if pd.notna(v)]
+
+                avg_of_avgs = (sum(valid_vals) / len(valid_vals)) if valid_vals else 0.0
+                mr_count = 0
+                mr_trigger = False
+                if avg_of_avgs:
+                    for v in valid_vals:
+                        mr_val = (v - avg_of_avgs) / avg_of_avgs * 100
+                        if mr_val > 0.62:
+                            mr_count += 1
+                    if mr_count >= 3:
+                        mr_trigger = True
+
+                st.markdown("**模式狀態（以時段最後一天計）**")
+                c_mode_1, c_mode_2 = st.columns(2)
+                with c_mode_1:
+                    st.markdown(f"超底模式：{'🔴 觸發' if fzm_trigger else '未觸發'}")
+                    st.write(f"SMA7/14: {'-' if pd.isna(val_sma7) else float(val_sma7):.3f} / {'-' if pd.isna(val_sma14) else float(val_sma14):.3f}")
+                    st.write(f"WillR(35): {'-' if pd.isna(val_wr) else float(val_wr):.2f} ({trend_str})")
+                with c_mode_2:
+                    st.markdown(f"振蕩模式：{'🔴 觸發' if mr_trigger else '未觸發'}")
+                    st.write(f"基準均價: {avg_of_avgs:.3f}" if avg_of_avgs else "基準均價: -")
+                    st.write(f"高乖離數: {mr_count}")
 
     # Tab 2
     with tab2:
