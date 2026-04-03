@@ -517,6 +517,110 @@ else:
         m5.metric("最低", f"{curr_low:.3f}")
         st.metric("波幅(AA)", f"{amp:.2f}%" if prev_close else "-")
 
+        with st.expander("互動模式控制區", expanded=True):
+            min_date = df.index.min().date() if len(df) else st.session_state.ref_date
+            max_date = df.index.max().date() if len(df) else st.session_state.ref_date
+            default_end = max_date
+            default_start = default_end - timedelta(days=90)
+            if default_start < min_date:
+                default_start = min_date
+
+            c_range_1, c_range_2 = st.columns(2)
+            with c_range_1:
+                range_start = st.date_input(
+                    "開始日期",
+                    value=default_start,
+                    min_value=min_date,
+                    max_value=max_date,
+                    key=f"interactive_range_start_{current_code}",
+                )
+            with c_range_2:
+                range_end = st.date_input(
+                    "結束日期",
+                    value=default_end,
+                    min_value=min_date,
+                    max_value=max_date,
+                    key=f"interactive_range_end_{current_code}",
+                )
+
+            if range_start > range_end:
+                range_start, range_end = range_end, range_start
+
+            df_range = df[(df.index >= pd.to_datetime(range_start)) & (df.index <= pd.to_datetime(range_end))].copy()
+
+            if df_range.empty:
+                st.warning("選取時段沒有數據")
+            else:
+                periods_interactive = [7, 14, 28, 57, 106, 212]
+                for p in periods_interactive:
+                    df_range[f"SMA{p}"] = df_range["Close"].rolling(window=p).mean()
+                df_range["WR"] = calculate_willr(df_range["High"], df_range["Low"], df_range["Close"], 35)
+
+                last = df_range.iloc[-1]
+                curr_price_r = float(last["Close"]) if pd.notna(last["Close"]) else np.nan
+
+                st.markdown("**時段 SMA（最後一天）**")
+                sma_cols = st.columns(6)
+                for i, p in enumerate(periods_interactive):
+                    v = last.get(f"SMA{p}", np.nan)
+                    sma_cols[i].metric(f"SMA{p}", "-" if pd.isna(v) else f"{float(v):.3f}")
+
+                val_sma7 = last.get("SMA7", np.nan)
+                val_sma14 = last.get("SMA14", np.nan)
+                val_wr = last.get("WR", np.nan)
+
+                cond_a = (curr_price_r > val_sma7) and (curr_price_r > val_sma14)
+                cond_b = (val_wr < -80)
+                fzm_trigger = bool(cond_a and cond_b)
+                trend_str = "站上雙均線" if cond_a else "均線下方"
+
+                labels = ["Price", "SMA7", "SMA14", "SMA28", "SMA57", "SMA106", "SMA212"]
+                vals = [
+                    curr_price_r,
+                    last.get("SMA7", np.nan),
+                    last.get("SMA14", np.nan),
+                    last.get("SMA28", np.nan),
+                    last.get("SMA57", np.nan),
+                    last.get("SMA106", np.nan),
+                    last.get("SMA212", np.nan),
+                ]
+                valid_vals = [float(v) for v in vals if pd.notna(v)]
+                avg_of_avgs = (sum(valid_vals) / len(valid_vals)) if valid_vals else 0.0
+
+                mr_count = 0
+                mr_trigger = False
+                mr_rows = []
+                if avg_of_avgs:
+                    for label, v in zip(labels, vals):
+                        if pd.notna(v):
+                            mr_val = (float(v) - avg_of_avgs) / avg_of_avgs * 100
+                            if mr_val > 0.62:
+                                mr_count += 1
+                            mr_rows.append({"項目": label, "值": float(v), "MR(%)": mr_val})
+                    if mr_count >= 3:
+                        mr_trigger = True
+                else:
+                    for label, v in zip(labels, vals):
+                        if pd.notna(v):
+                            mr_rows.append({"項目": label, "值": float(v), "MR(%)": np.nan})
+
+                st.markdown("**模式狀態（以時段最後一天計）**")
+                c_mode_1, c_mode_2 = st.columns(2)
+                with c_mode_1:
+                    st.markdown(f"超底模式：{'🔴 觸發' if fzm_trigger else '未觸發'}")
+                    st.write(f"現價: {'-' if pd.isna(curr_price_r) else f'{curr_price_r:.3f}'}")
+                    st.write(f"SMA7/14: {'-' if pd.isna(val_sma7) else f'{float(val_sma7):.3f}'} / {'-' if pd.isna(val_sma14) else f'{float(val_sma14):.3f}'}")
+                    st.write(f"WillR(35): {'-' if pd.isna(val_wr) else f'{float(val_wr):.2f}'} ({trend_str})")
+                with c_mode_2:
+                    st.markdown(f"振蕩模式：{'🔴 觸發' if mr_trigger else '未觸發'}")
+                    st.write(f"基準均價: {avg_of_avgs:.3f}" if avg_of_avgs else "基準均價: -")
+                    st.write(f"高乖離數(>0.62%): {mr_count}")
+                    if mr_trigger:
+                        st.write("矩陣突波")
+
+                if mr_rows:
+                    st.dataframe(pd.DataFrame(mr_rows), hide_index=True, use_container_width=True)
+
         # 2. CDM 設定
         if is_in_watchlist:
             with st.expander("⚙️ 設定 CDM 自動監測參數", expanded=False):
@@ -556,8 +660,8 @@ else:
                 col_name = f'SMA_{p}'
                 if col_name in curve_data.columns:
                     fig_sma_trend.add_trace(go.Scatter(x=curve_data.index, y=curve_data[col_name], mode='lines', name=f"SMA({p})", line=dict(color=colors_map.get(p, 'grey'), width=2)))
-            fig_sma_trend.update_layout(height=350, margin=dict(l=10, r=10, t=30, b=10), title="SMA 曲線 (近7個交易日)", template="plotly_white", legend=dict(orientation="h", y=1.1))
-            st.plotly_chart(fig_sma_trend, use_container_width=True)
+            fig_sma_trend.update_layout(height=350, margin=dict(l=10, r=10, t=30, b=10), title="SMA 曲線 (近7個交易日)", template="plotly_white", legend=dict(orientation="h", y=1.1), dragmode="pan", uirevision=f"sma_trend_{current_code}")
+            st.plotly_chart(fig_sma_trend, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
 
            # 2. SMA Matrix (New Format v10.0)
             st.subheader("📋 SMA Matrix")
@@ -791,82 +895,9 @@ else:
         fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'], low=display_df['Low'], close=display_df['Close'], name='K線'))
         if f'SMA_{sma1}' in display_df.columns: fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma1}'], line=dict(color='orange'), name=f'SMA {sma1}'))
         if f'SMA_{sma2}' in display_df.columns: fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma2}'], line=dict(color='blue'), name=f'SMA {sma2}'))
-        fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_white")
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(height=500, xaxis_rangeslider_visible=True, template="plotly_white", dragmode="pan", uirevision=f"hist_price_{current_code}")
+        st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
 
-        with st.expander("互動模式控制區", expanded=True):
-            min_date = display_df.index.min().date() if len(display_df) else st.session_state.ref_date
-            max_date = display_df.index.max().date() if len(display_df) else st.session_state.ref_date
-            default_end = max_date
-            default_start = default_end - timedelta(days=90)
-            if default_start < min_date:
-                default_start = min_date
-
-            c_range_1, c_range_2 = st.columns(2)
-            with c_range_1:
-                range_start = st.date_input("開始日期", value=default_start, min_value=min_date, max_value=max_date, key="interactive_range_start")
-            with c_range_2:
-                range_end = st.date_input("結束日期", value=default_end, min_value=min_date, max_value=max_date, key="interactive_range_end")
-
-            if range_start > range_end:
-                range_start, range_end = range_end, range_start
-
-            start_ts = pd.to_datetime(range_start)
-            end_ts = pd.to_datetime(range_end)
-            df_range = df[(df.index >= start_ts) & (df.index <= end_ts)].copy()
-
-            if df_range.empty:
-                st.warning("選取時段沒有數據")
-            else:
-                periods_interactive = [7, 14, 28, 57, 106, 212]
-                for p in periods_interactive:
-                    df_range[f"SMA{p}"] = df_range["Close"].rolling(window=p).mean()
-                df_range["WR"] = calculate_willr(df_range["High"], df_range["Low"], df_range["Close"], 35)
-
-                last = df_range.iloc[-1]
-                curr_price = last["Close"]
-
-                st.markdown("**時段 SMA（最後一天）**")
-                sma_cols = st.columns(6)
-                for i, p in enumerate(periods_interactive):
-                    v = last.get(f"SMA{p}", np.nan)
-                    sma_cols[i].metric(f"SMA{p}", "-" if pd.isna(v) else f"{float(v):.3f}")
-
-                val_sma7 = last.get("SMA7", np.nan)
-                val_sma14 = last.get("SMA14", np.nan)
-                val_wr = last.get("WR", np.nan)
-
-                cond_a = bool(pd.notna(curr_price) and pd.notna(val_sma7) and pd.notna(val_sma14) and (curr_price > val_sma7) and (curr_price > val_sma14))
-                cond_b = bool(pd.notna(val_wr) and (val_wr < -80))
-                fzm_trigger = cond_a and cond_b
-                trend_str = "站上雙均線" if cond_a else "均線下方"
-
-                vals = [curr_price]
-                for p in periods_interactive:
-                    vals.append(last.get(f"SMA{p}", np.nan))
-                valid_vals = [float(v) for v in vals if pd.notna(v)]
-
-                avg_of_avgs = (sum(valid_vals) / len(valid_vals)) if valid_vals else 0.0
-                mr_count = 0
-                mr_trigger = False
-                if avg_of_avgs:
-                    for v in valid_vals:
-                        mr_val = (v - avg_of_avgs) / avg_of_avgs * 100
-                        if mr_val > 0.62:
-                            mr_count += 1
-                    if mr_count >= 3:
-                        mr_trigger = True
-
-                st.markdown("**模式狀態（以時段最後一天計）**")
-                c_mode_1, c_mode_2 = st.columns(2)
-                with c_mode_1:
-                    st.markdown(f"超底模式：{'🔴 觸發' if fzm_trigger else '未觸發'}")
-                    st.write(f"SMA7/14: {'-' if pd.isna(val_sma7) else float(val_sma7):.3f} / {'-' if pd.isna(val_sma14) else float(val_sma14):.3f}")
-                    st.write(f"WillR(35): {'-' if pd.isna(val_wr) else float(val_wr):.2f} ({trend_str})")
-                with c_mode_2:
-                    st.markdown(f"振蕩模式：{'🔴 觸發' if mr_trigger else '未觸發'}")
-                    st.write(f"基準均價: {avg_of_avgs:.3f}" if avg_of_avgs else "基準均價: -")
-                    st.write(f"高乖離數: {mr_count}")
 
     # Tab 2
     with tab2:
