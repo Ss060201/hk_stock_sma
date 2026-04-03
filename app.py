@@ -479,6 +479,9 @@ else:
         else:
             df['Turnover_Rate'] = 0.0
 
+        prev_close_series = df['Close'].shift(1).replace(0, np.nan)
+        df['AMP'] = (df['High'] - df['Low']) / prev_close_series * 100
+
         for p in periods_sma: df[f'Sum_{p}'] = df['Volume'].rolling(p).sum()
         df['R1'] = df['Sum_7'] / df['Sum_14']
         df['R2'] = df['Sum_7'] / df['Sum_28']
@@ -883,7 +886,7 @@ else:
     st.markdown("---")
     st.markdown("### 📚 歷史功能與圖表")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["📉 Price & SMA", "🔄 Ratio Curves", "📊 Volume (Abs)", "💹 Turnover Analysis (Old)"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📉 Price & SMA", "🔄 Ratio Curves", "📊 Volume (Abs)", "💹 Turnover Analysis (Old)", "📐 AMP(%)"])
 
     end_date_dt = pd.to_datetime(st.session_state.ref_date)
     start_date_6m = end_date_dt - timedelta(days=180)
@@ -913,6 +916,16 @@ else:
     # Tab 4
     with tab4:
         if has_turnover: st.line_chart(display_df['Turnover_Rate'])
+
+    # Tab 5
+    with tab5:
+        fig_amp = go.Figure()
+        if 'AMP' not in display_df.columns:
+            prev_close_series = display_df['Close'].shift(1).replace(0, np.nan)
+            display_df['AMP'] = (display_df['High'] - display_df['Low']) / prev_close_series * 100
+        fig_amp.add_trace(go.Scatter(x=display_df.index, y=display_df['AMP'], name="AMP(%)"))
+        fig_amp.update_layout(height=350, xaxis_rangeslider_visible=True, template="plotly_white", dragmode="pan", uirevision=f"hist_amp_{current_code}")
+        st.plotly_chart(fig_amp, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
 
 
 
