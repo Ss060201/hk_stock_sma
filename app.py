@@ -512,15 +512,91 @@ else:
         pct = (chg / prev_close * 100) if prev_close else 0.0
         amp = ((curr_high - curr_low) / prev_close * 100) if prev_close else 0.0
 
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("現價", f"{curr_close:.3f}", f"{chg:+.3f} ({pct:+.2f}%)")
-        m2.metric("前收市", f"{prev_close:.3f}" if prev_close else "-")
-        m3.metric("開市", f"{curr_open:.3f}")
-        m4.metric("最高", f"{curr_high:.3f}")
-        m5.metric("最低", f"{curr_low:.3f}")
-        st.metric("波幅(AA)", f"{amp:.2f}%" if prev_close else "-")
+        c_sum_1, c_sum_2 = st.columns(2)
+        with c_sum_1:
+            st.metric("現價", f"{curr_close:.3f}", f"{chg:+.3f} ({pct:+.2f}%)")
+            st.metric("前收市", f"{prev_close:.3f}" if prev_close else "-")
+            st.metric("波幅(AA)", f"{amp:.2f}%" if prev_close else "-")
+        with c_sum_2:
+            st.metric("開市", f"{curr_open:.3f}")
+            st.metric("最高", f"{curr_high:.3f}")
+            st.metric("最低", f"{curr_low:.3f}")
 
-        with st.expander("互動模式控制區", expanded=True):
+        end_date_dt = pd.to_datetime(st.session_state.ref_date)
+        start_date_6m = end_date_dt - timedelta(days=180)
+        display_df = df[df.index >= start_date_6m]
+
+        fig_main = go.Figure()
+        fig_main.add_trace(
+            go.Candlestick(
+                x=display_df.index,
+                open=display_df["Open"],
+                high=display_df["High"],
+                low=display_df["Low"],
+                close=display_df["Close"],
+                name="K線",
+            )
+        )
+        if "SMA_7" in display_df.columns:
+            fig_main.add_trace(go.Scatter(x=display_df.index, y=display_df["SMA_7"], line=dict(color="orange"), name="SMA 7"))
+        if "SMA_14" in display_df.columns:
+            fig_main.add_trace(go.Scatter(x=display_df.index, y=display_df["SMA_14"], line=dict(color="blue"), name="SMA 14"))
+        fig_main.update_layout(height=520, xaxis_rangeslider_visible=True, template="plotly_white", dragmode="pan", uirevision=f"main_price_{current_code}")
+        st.plotly_chart(fig_main, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
+
+        st.markdown("**快速信號**")
+        df_sig = df.tail(260).copy()
+        df_sig["WR35"] = calculate_willr(df_sig["High"], df_sig["Low"], df_sig["Close"], 35)
+        last_sig = df_sig.iloc[-1]
+
+        val_sma7 = last_sig.get("SMA_7", np.nan)
+        val_sma14 = last_sig.get("SMA_14", np.nan)
+        val_wr35 = last_sig.get("WR35", np.nan)
+
+        cond_above = (pd.notna(val_sma7) and pd.notna(val_sma14) and (curr_close > float(val_sma7)) and (curr_close > float(val_sma14)))
+        cond_wr = (pd.notna(val_wr35) and (float(val_wr35) < -80))
+        fzm_trigger = bool(cond_above and cond_wr)
+
+        labels = ["Price", "SMA7", "SMA14", "SMA28", "SMA57", "SMA106", "SMA212"]
+        vals = [
+            float(curr_close),
+            last_sig.get("SMA_7", np.nan),
+            last_sig.get("SMA_14", np.nan),
+            last_sig.get("SMA_28", np.nan),
+            last_sig.get("SMA_57", np.nan),
+            last_sig.get("SMA_106", np.nan),
+            last_sig.get("SMA_212", np.nan),
+        ]
+        valid_vals = [float(v) for v in vals if pd.notna(v)]
+        avg_of_avgs = (sum(valid_vals) / len(valid_vals)) if valid_vals else 0.0
+
+        mr_count = 0
+        mr_trigger = False
+        mr_rows = []
+        if avg_of_avgs:
+            for label, v in zip(labels, vals):
+                if pd.notna(v):
+                    mr_val = (float(v) - avg_of_avgs) / avg_of_avgs * 100
+                    if mr_val > 0.62:
+                        mr_count += 1
+                    mr_rows.append({"項目": label, "值": float(v), "MR(%)": mr_val})
+            mr_trigger = mr_count >= 3
+
+        c_sig_1, c_sig_2 = st.columns(2)
+        with c_sig_1:
+            st.markdown(f"超底(FZM)：{'🔴 觸發' if fzm_trigger else '未觸發'}")
+            st.write(f"WR35: {'-' if pd.isna(val_wr35) else f'{float(val_wr35):.2f}'}")
+            st.write(f"SMA7/14: {'-' if pd.isna(val_sma7) else f'{float(val_sma7):.3f}'} / {'-' if pd.isna(val_sma14) else f'{float(val_sma14):.3f}'}")
+        with c_sig_2:
+            st.markdown(f"振蕩(MR)：{'🔴 觸發' if mr_trigger else '未觸發'}")
+            st.write(f"基準均價: {avg_of_avgs:.3f}" if avg_of_avgs else "基準均價: -")
+            st.write(f"高乖離數(>0.62%): {mr_count}")
+
+        if mr_rows:
+            with st.expander("信號詳情", expanded=False):
+                st.dataframe(pd.DataFrame(mr_rows), hide_index=True, use_container_width=True)
+
+        with st.expander("互動模式控制區", expanded=False):
             min_date = df.index.min().date() if len(df) else st.session_state.ref_date
             max_date = df.index.max().date() if len(df) else st.session_state.ref_date
             default_end = max_date
@@ -551,78 +627,125 @@ else:
 
             df_range = df[(df.index >= pd.to_datetime(range_start)) & (df.index <= pd.to_datetime(range_end))].copy()
 
-            if df_range.empty:
-                st.warning("選取時段沒有數據")
+            st.markdown("**A-B-C 調整浪 / 二次探底 預測器**")
+
+            def align_to_prev_trading_day(d):
+                ts = pd.to_datetime(d)
+                idx = df.index[df.index <= ts]
+                return idx.max() if len(idx) else None
+
+            default_date_p1_start = range_start
+            default_date_p1_end = min(range_start + timedelta(days=30), range_end)
+            default_date_p2_end = range_end
+
+            c_abc_d1, c_abc_d2 = st.columns(2)
+            with c_abc_d1:
+                date_p1_start = st.date_input(
+                    "P1 起跌點日期",
+                    value=default_date_p1_start,
+                    min_value=min_date,
+                    max_value=max_date,
+                    key=f"abc_date_p1_start_{current_code}",
+                )
+            with c_abc_d2:
+                date_p1_end = st.date_input(
+                    "P1 止跌點日期",
+                    value=default_date_p1_end,
+                    min_value=min_date,
+                    max_value=max_date,
+                    key=f"abc_date_p1_end_{current_code}",
+                )
+
+            date_p2_end = st.date_input(
+                "P2 反彈結束日期",
+                value=default_date_p2_end,
+                min_value=min_date,
+                max_value=max_date,
+                key=f"abc_date_p2_end_{current_code}",
+            )
+
+            p1_start_ts = align_to_prev_trading_day(date_p1_start)
+            p1_end_ts = align_to_prev_trading_day(date_p1_end)
+            p2_end_ts = align_to_prev_trading_day(date_p2_end)
+
+            if (p1_start_ts is None) or (p1_end_ts is None) or (p2_end_ts is None):
+                st.warning("所選日期找不到對應交易日，請調整日期")
             else:
-                periods_interactive = [7, 14, 28, 57, 106, 212]
-                for p in periods_interactive:
-                    df_range[f"SMA{p}"] = df_range["Close"].rolling(window=p).mean()
-                df_range["WR"] = calculate_willr(df_range["High"], df_range["Low"], df_range["Close"], 35)
+                st.write(
+                    f"實際採用交易日：P1_start={p1_start_ts.date()}，P1_end={p1_end_ts.date()}，P2_end={p2_end_ts.date()}"
+                )
 
-                last = df_range.iloc[-1]
-                curr_price_r = float(last["Close"]) if pd.notna(last["Close"]) else np.nan
+                price_p1_high_auto = float(df.loc[p1_start_ts, "High"]) if p1_start_ts in df.index else np.nan
+                price_p1_low_auto = float(df.loc[p1_end_ts, "Low"]) if p1_end_ts in df.index else np.nan
 
-                st.markdown("**時段 SMA（最後一天）**")
-                sma_cols = st.columns(6)
-                for i, p in enumerate(periods_interactive):
-                    v = last.get(f"SMA{p}", np.nan)
-                    sma_cols[i].metric(f"SMA{p}", "-" if pd.isna(v) else f"{float(v):.3f}")
+                price_p2_high_auto = np.nan
+                if p1_end_ts <= p2_end_ts:
+                    p2_slice = df.loc[p1_end_ts:p2_end_ts]
+                    if not p2_slice.empty and "High" in p2_slice.columns:
+                        price_p2_high_auto = float(p2_slice["High"].max())
 
-                val_sma7 = last.get("SMA7", np.nan)
-                val_sma14 = last.get("SMA14", np.nan)
-                val_wr = last.get("WR", np.nan)
+                c_abc_p1, c_abc_p2, c_abc_p3 = st.columns(3)
+                with c_abc_p1:
+                    price_p1_high = st.number_input(
+                        "P1 起跌點價格 (High)",
+                        value=float(price_p1_high_auto) if pd.notna(price_p1_high_auto) else 0.0,
+                        min_value=0.0,
+                        format="%.3f",
+                        key=f"abc_price_p1_high_{current_code}",
+                    )
+                with c_abc_p2:
+                    price_p1_low = st.number_input(
+                        "P1 止跌點價格 (Low)",
+                        value=float(price_p1_low_auto) if pd.notna(price_p1_low_auto) else 0.0,
+                        min_value=0.0,
+                        format="%.3f",
+                        key=f"abc_price_p1_low_{current_code}",
+                    )
+                with c_abc_p3:
+                    price_p2_high = st.number_input(
+                        "P2 反彈最高價格 (P1_end~P2_end 高點)",
+                        value=float(price_p2_high_auto) if pd.notna(price_p2_high_auto) else 0.0,
+                        min_value=0.0,
+                        format="%.3f",
+                        key=f"abc_price_p2_high_{current_code}",
+                    )
 
-                cond_a = (curr_price_r > val_sma7) and (curr_price_r > val_sma14)
-                cond_b = (val_wr < -80)
-                fzm_trigger = bool(cond_a and cond_b)
-                trend_str = "站上雙均線" if cond_a else "均線下方"
+                delta_t = (p1_end_ts.date() - p1_start_ts.date()).days
+                delta_p = float(price_p1_high) - float(price_p1_low)
+                price_p1_avg = (float(price_p1_high) + float(price_p1_low)) / 2.0
 
-                labels = ["Price", "SMA7", "SMA14", "SMA28", "SMA57", "SMA106", "SMA212"]
-                vals = [
-                    curr_price_r,
-                    last.get("SMA7", np.nan),
-                    last.get("SMA14", np.nan),
-                    last.get("SMA28", np.nan),
-                    last.get("SMA57", np.nan),
-                    last.get("SMA106", np.nan),
-                    last.get("SMA212", np.nan),
-                ]
-                valid_vals = [float(v) for v in vals if pd.notna(v)]
-                avg_of_avgs = (sum(valid_vals) / len(valid_vals)) if valid_vals else 0.0
+                c_abc_m1, c_abc_m2, c_abc_m3 = st.columns(3)
+                c_abc_m1.metric("P1 天數 delta_t", "-" if delta_t <= 0 else f"{delta_t}")
+                c_abc_m2.metric("P1 跌幅 delta_p", "-" if delta_p <= 0 else f"{delta_p:.3f}")
+                c_abc_m3.metric("P1 均價 avg", "-" if delta_t <= 0 else f"{price_p1_avg:.3f}")
 
-                mr_count = 0
-                mr_trigger = False
-                mr_rows = []
-                if avg_of_avgs:
-                    for label, v in zip(labels, vals):
-                        if pd.notna(v):
-                            mr_val = (float(v) - avg_of_avgs) / avg_of_avgs * 100
-                            if mr_val > 0.62:
-                                mr_count += 1
-                            mr_rows.append({"項目": label, "值": float(v), "MR(%)": mr_val})
-                    if mr_count >= 3:
-                        mr_trigger = True
+                if delta_t <= 0:
+                    st.error("日期順序錯誤：P1 止跌點日期必須晚於 P1 起跌點日期")
+                elif delta_p <= 0:
+                    st.error("價格順序錯誤：P1 起跌點價格必須大於 P1 止跌點價格")
                 else:
-                    for label, v in zip(labels, vals):
-                        if pd.notna(v):
-                            mr_rows.append({"項目": label, "值": float(v), "MR(%)": np.nan})
+                    ratios = [("A", 0.618), ("B", 1.0), ("C", 1.618)]
+                    rows = []
+                    for scenario, r in ratios:
+                        n_days = int(round(delta_t * r))
+                        target_date_cal = p2_end_ts.date() + timedelta(days=n_days)
+                        target_date_trade_ts = align_to_prev_trading_day(target_date_cal)
+                        target_date_trade = target_date_trade_ts.date().isoformat() if target_date_trade_ts is not None else "-"
+                        target_price = float(price_p2_high) - (delta_p * r)
+                        rows.append(
+                            {
+                                "情境": scenario,
+                                "比例": r,
+                                "預測天數": n_days,
+                                "見底日期(曆)": target_date_cal.isoformat(),
+                                "見底日期(交易)": target_date_trade,
+                                "見底價格": target_price,
+                            }
+                        )
 
-                st.markdown("**模式狀態（以時段最後一天計）**")
-                c_mode_1, c_mode_2 = st.columns(2)
-                with c_mode_1:
-                    st.markdown(f"超底模式：{'🔴 觸發' if fzm_trigger else '未觸發'}")
-                    st.write(f"現價: {'-' if pd.isna(curr_price_r) else f'{curr_price_r:.3f}'}")
-                    st.write(f"SMA7/14: {'-' if pd.isna(val_sma7) else f'{float(val_sma7):.3f}'} / {'-' if pd.isna(val_sma14) else f'{float(val_sma14):.3f}'}")
-                    st.write(f"WillR(35): {'-' if pd.isna(val_wr) else f'{float(val_wr):.2f}'} ({trend_str})")
-                with c_mode_2:
-                    st.markdown(f"振蕩模式：{'🔴 觸發' if mr_trigger else '未觸發'}")
-                    st.write(f"基準均價: {avg_of_avgs:.3f}" if avg_of_avgs else "基準均價: -")
-                    st.write(f"高乖離數(>0.62%): {mr_count}")
-                    if mr_trigger:
-                        st.write("矩陣突波")
-
-                if mr_rows:
-                    st.dataframe(pd.DataFrame(mr_rows), hide_index=True, use_container_width=True)
+                    out_df = pd.DataFrame(rows)
+                    out_df["見底價格"] = out_df["見底價格"].map(lambda x: f"{float(x):.3f}")
+                    st.dataframe(out_df, hide_index=True, use_container_width=True)
 
         # 2. CDM 設定
         if is_in_watchlist:
@@ -885,15 +1008,18 @@ else:
 
     st.markdown("---")
     st.markdown("### 📚 歷史功能與圖表")
-    
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📉 Price & SMA", "🔄 Ratio Curves", "📊 Volume (Abs)", "💹 Turnover Analysis (Old)", "📐 AMP(%)"])
+
+    hist_section = st.selectbox(
+        "選擇圖表",
+        ["📉 Price & SMA", "🔄 Ratio Curves", "📊 Volume (Abs)", "💹 Turnover Analysis (Old)", "📐 AMP(%)"],
+        key=f"hist_section_{current_code}",
+    )
 
     end_date_dt = pd.to_datetime(st.session_state.ref_date)
     start_date_6m = end_date_dt - timedelta(days=180)
     display_df = df[df.index >= start_date_6m]
 
-    # Tab 1
-    with tab1:
+    if hist_section == "📉 Price & SMA":
         fig = go.Figure()
         fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'], low=display_df['Low'], close=display_df['Close'], name='K線'))
         if f'SMA_{sma1}' in display_df.columns: fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma1}'], line=dict(color='orange'), name=f'SMA {sma1}'))
@@ -901,24 +1027,20 @@ else:
         fig.update_layout(height=500, xaxis_rangeslider_visible=True, template="plotly_white", dragmode="pan", uirevision=f"hist_price_{current_code}")
         st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
 
-
-    # Tab 2
-    with tab2:
+    elif hist_section == "🔄 Ratio Curves":
         fig_r = go.Figure()
         if 'R1' in display_df.columns: fig_r.add_trace(go.Scatter(x=display_df.index, y=display_df['R1'], name="R1 (S7/S14)"))
         if 'R2' in display_df.columns: fig_r.add_trace(go.Scatter(x=display_df.index, y=display_df['R2'], name="R2 (S7/S28)"))
-        st.plotly_chart(fig_r, use_container_width=True)
+        fig_r.update_layout(height=380, template="plotly_white", dragmode="pan", uirevision=f"hist_ratio_{current_code}")
+        st.plotly_chart(fig_r, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
 
-    # Tab 3
-    with tab3:
+    elif hist_section == "📊 Volume (Abs)":
         st.bar_chart(display_df['Volume'])
 
-    # Tab 4
-    with tab4:
+    elif hist_section == "💹 Turnover Analysis (Old)":
         if has_turnover: st.line_chart(display_df['Turnover_Rate'])
 
-    # Tab 5
-    with tab5:
+    elif hist_section == "📐 AMP(%)":
         fig_amp = go.Figure()
         if 'AMP' not in display_df.columns:
             prev_close_series = display_df['Close'].shift(1).replace(0, np.nan)
