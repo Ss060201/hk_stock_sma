@@ -121,14 +121,30 @@ def get_watchlist_from_db():
 
 def update_stock_in_db(symbol, params=None):
     db = get_db()
-    if not db: 
+    if not db:
         st.error("無法連接數據庫")
         return
     doc_ref = db.collection('stock_app').document('watchlist')
-    data = {symbol: params if params else {
-        "box1_start": "", "box1_end": "",
-        "box2_start": "", "box2_end": ""
-    }}
+    data = {
+        symbol: params
+        if params
+        else {
+            "box1_start": "",
+            "box1_end": "",
+            "box2_start": "",
+            "box2_end": "",
+            "interactive_range_start": "",
+            "interactive_range_end": "",
+            "abc_date_p1_start": "",
+            "abc_date_p1_end": "",
+            "abc_date_p2_end": "",
+            "abc_price_p1_high": 0.0,
+            "abc_price_p1_low": 0.0,
+            "abc_price_p2_high": 0.0,
+            "cdm_p1_avg_override": 0.0,
+            "cdm_p2_avg_override": 0.0,
+        }
+    }
     doc_ref.set(data, merge=True)
     st.toast(f"已同步 {symbol}", icon="☁️")
 
@@ -206,23 +222,41 @@ def run_analysis_logic(df, symbol, params):
     b2_s = params.get('box2_start')
     b2_e = params.get('box2_end')
 
+    def _parse_float(v):
+        try:
+            if v is None:
+                return np.nan
+            if isinstance(v, str) and (not v.strip()):
+                return np.nan
+            return float(v)
+        except Exception:
+            return np.nan
+
+    p1_avg_override = _parse_float(params.get('cdm_p1_avg_override'))
+    p2_avg_override = _parse_float(params.get('cdm_p2_avg_override'))
+
     if b1_s and b1_e and b2_s and b2_e:
         try:
             s1, e1 = pd.to_datetime(b1_s), pd.to_datetime(b1_e)
             s2, e2 = pd.to_datetime(b2_s), pd.to_datetime(b2_e)
-            sma1 = df[(df.index >= s1) & (df.index <= e1)]['Close'].mean()
-            sma2 = df[(df.index >= s2) & (df.index <= e2)]['Close'].mean()
+            sma1_calc = df[(df.index >= s1) & (df.index <= e1)]['Close'].mean()
+            sma2_calc = df[(df.index >= s2) & (df.index <= e2)]['Close'].mean()
+
+            sma1 = p1_avg_override if (pd.notna(p1_avg_override) and p1_avg_override > 0) else sma1_calc
+            sma2 = p2_avg_override if (pd.notna(p2_avg_override) and p2_avg_override > 0) else sma2_calc
+
             t1_days = (e1 - s1).days
             n_days = (pd.to_datetime(today) - s1).days
-            
+
             if n_days > 0:
-                p_target = (sma1 * CDM_COEF1 * (t1_days/n_days)) + (sma2 * CDM_COEF2 * ((n_days - t1_days)/n_days))
+                p_target = (sma1 * CDM_COEF1 * (t1_days / n_days)) + (sma2 * CDM_COEF2 * ((n_days - t1_days) / n_days))
                 if pd.notna(p_target) and p_target != 0:
                     diff = abs(curr_price - p_target) / p_target
                     target_price_str = f"{p_target:.2f}"
                     diff_str = f"{diff*100:.2f}"
                     cdm_status = "🔴 <b>觸發</b>" if diff < CDM_THRESHOLD else "未觸發"
-        except: pass
+        except:
+            pass
     
     # FZM 運算
     df['SMA7'] = df['Close'].rolling(7).mean()
@@ -267,7 +301,7 @@ with st.sidebar:
                 yt = get_yahoo_ticker(st.session_state.current_view)
                 with st.spinner("分析中..."):
                     try:
-                        d = yf.download(yt, period="6mo", progress=False, auto_adjust=False)
+                        d = yf.download(yt, period="2y", progress=False, auto_adjust=False)
                         if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
                         if len(d) > 50:
                             w = get_watchlist_from_db()
@@ -749,25 +783,175 @@ else:
 
         # 2. CDM 設定
         if is_in_watchlist:
-            with st.expander("⚙️ 設定 CDM 自動監測參數", expanded=False):
+            with st.expander("⚙️ 設定 CDM 自動檢測參數", expanded=False):
                 curr_params = watchlist_data.get(current_code, {})
-                c1, c2 = st.columns(2)
-                with c1:
-                    val_b1s = pd.to_datetime(curr_params.get('box1_start')).date() if curr_params.get('box1_start') else None
-                    val_b1e = pd.to_datetime(curr_params.get('box1_end')).date() if curr_params.get('box1_end') else None
-                    new_b1_s = st.date_input("Box 1 Start", value=val_b1s)
-                    new_b1_e = st.date_input("Box 1 End", value=val_b1e)
-                with c2:
-                    val_b2s = pd.to_datetime(curr_params.get('box2_start')).date() if curr_params.get('box2_start') else None
-                    val_b2e = pd.to_datetime(curr_params.get('box2_end')).date() if curr_params.get('box2_end') else None
-                    new_b2_s = st.date_input("Box 2 Start", value=val_b2s)
-                    new_b2_e = st.date_input("Box 2 End", value=val_b2e)
-                
-                if st.button("💾 儲存參數"):
-                    update_stock_in_db(current_code, {
-                        "box1_start": str(new_b1_s) if new_b1_s else "", "box1_end": str(new_b1_e) if new_b1_e else "",
-                        "box2_start": str(new_b2_s) if new_b2_s else "", "box2_end": str(new_b2_e) if new_b2_e else ""
-                    })
+
+                def _pdate(key):
+                    v = curr_params.get(key)
+                    try:
+                        return pd.to_datetime(v).date() if v else None
+                    except Exception:
+                        return None
+
+                def _pfloat(key):
+                    try:
+                        v = curr_params.get(key)
+                        if v is None:
+                            return 0.0
+                        if isinstance(v, str) and (not v.strip()):
+                            return 0.0
+                        return float(v)
+                    except Exception:
+                        return 0.0
+
+                def align_to_prev_trading_day(d):
+                    ts = pd.to_datetime(d)
+                    idx = df.index[df.index <= ts]
+                    return idx.max() if len(idx) else None
+
+                st.markdown("**互動區間**")
+                c_rng_1, c_rng_2 = st.columns(2)
+                with c_rng_1:
+                    new_range_start = st.date_input(
+                        "開始日期",
+                        value=_pdate("interactive_range_start") or df.index.max().date() - timedelta(days=90),
+                        min_value=df.index.min().date(),
+                        max_value=df.index.max().date(),
+                        key=f"cdm_range_start_{current_code}",
+                    )
+                with c_rng_2:
+                    new_range_end = st.date_input(
+                        "結束日期",
+                        value=_pdate("interactive_range_end") or df.index.max().date(),
+                        min_value=df.index.min().date(),
+                        max_value=df.index.max().date(),
+                        key=f"cdm_range_end_{current_code}",
+                    )
+
+                if new_range_start > new_range_end:
+                    new_range_start, new_range_end = new_range_end, new_range_start
+
+                st.markdown("**P1 / P2 波段輸入（用於 CDM 與 ABC）**")
+                c_d1, c_d2 = st.columns(2)
+                with c_d1:
+                    new_date_p1_start = st.date_input(
+                        "P1 起跌點日期",
+                        value=_pdate("abc_date_p1_start") or df.index.max().date() - timedelta(days=120),
+                        min_value=df.index.min().date(),
+                        max_value=df.index.max().date(),
+                        key=f"cdm_abc_p1_start_{current_code}",
+                    )
+                with c_d2:
+                    new_date_p1_end = st.date_input(
+                        "P1 止跌點日期",
+                        value=_pdate("abc_date_p1_end") or df.index.max().date() - timedelta(days=60),
+                        min_value=df.index.min().date(),
+                        max_value=df.index.max().date(),
+                        key=f"cdm_abc_p1_end_{current_code}",
+                    )
+
+                new_date_p2_end = st.date_input(
+                    "P2 反彈結束日期",
+                    value=_pdate("abc_date_p2_end") or df.index.max().date(),
+                    min_value=df.index.min().date(),
+                    max_value=df.index.max().date(),
+                    key=f"cdm_abc_p2_end_{current_code}",
+                )
+
+                p1_start_ts = align_to_prev_trading_day(new_date_p1_start)
+                p1_end_ts = align_to_prev_trading_day(new_date_p1_end)
+                p2_end_ts = align_to_prev_trading_day(new_date_p2_end)
+
+                if (p1_start_ts is None) or (p1_end_ts is None) or (p2_end_ts is None):
+                    st.warning("所選日期找不到對應交易日，請調整日期")
+
+                price_p1_high_auto = float(df.loc[p1_start_ts, "High"]) if (p1_start_ts is not None and p1_start_ts in df.index) else 0.0
+                price_p1_low_auto = float(df.loc[p1_end_ts, "Low"]) if (p1_end_ts is not None and p1_end_ts in df.index) else 0.0
+
+                price_p2_high_auto = 0.0
+                if (p1_end_ts is not None) and (p2_end_ts is not None) and (p1_end_ts <= p2_end_ts):
+                    p2_slice = df.loc[p1_end_ts:p2_end_ts]
+                    if (not p2_slice.empty) and ("High" in p2_slice.columns):
+                        price_p2_high_auto = float(p2_slice["High"].max())
+
+                c_p1, c_p2, c_p3 = st.columns(3)
+                with c_p1:
+                    new_price_p1_high = st.number_input(
+                        "P1 起跌點價格 (High)",
+                        value=_pfloat("abc_price_p1_high") or price_p1_high_auto,
+                        min_value=0.0,
+                        format="%.3f",
+                        key=f"cdm_abc_price_p1_high_{current_code}",
+                    )
+                with c_p2:
+                    new_price_p1_low = st.number_input(
+                        "P1 止跌點價格 (Low)",
+                        value=_pfloat("abc_price_p1_low") or price_p1_low_auto,
+                        min_value=0.0,
+                        format="%.3f",
+                        key=f"cdm_abc_price_p1_low_{current_code}",
+                    )
+                with c_p3:
+                    new_price_p2_high = st.number_input(
+                        "P2 反彈最高價格 (P1_end~P2_end 高點)",
+                        value=_pfloat("abc_price_p2_high") or price_p2_high_auto,
+                        min_value=0.0,
+                        format="%.3f",
+                        key=f"cdm_abc_price_p2_high_{current_code}",
+                    )
+
+                p1_avg_calc = 0.0
+                p2_avg_calc = 0.0
+                if (p1_start_ts is not None) and (p1_end_ts is not None) and (p1_start_ts <= p1_end_ts):
+                    p1_avg_calc = float(df.loc[p1_start_ts:p1_end_ts]["Close"].mean())
+                if (p1_end_ts is not None) and (p2_end_ts is not None) and (p1_end_ts <= p2_end_ts):
+                    p2_avg_calc = float(df.loc[p1_end_ts:p2_end_ts]["Close"].mean())
+
+                c_avg_1, c_avg_2 = st.columns(2)
+                with c_avg_1:
+                    st.metric("P1 均價(計算)", "-" if not p1_avg_calc else f"{p1_avg_calc:.3f}")
+                    new_cdm_p1_avg_override = st.number_input(
+                        "P1 均價(手動覆蓋, 0=不用)",
+                        value=_pfloat("cdm_p1_avg_override"),
+                        min_value=0.0,
+                        format="%.3f",
+                        key=f"cdm_p1_avg_override_{current_code}",
+                    )
+                with c_avg_2:
+                    st.metric("P2 均價(計算)", "-" if not p2_avg_calc else f"{p2_avg_calc:.3f}")
+                    new_cdm_p2_avg_override = st.number_input(
+                        "P2 均價(手動覆蓋, 0=不用)",
+                        value=_pfloat("cdm_p2_avg_override"),
+                        min_value=0.0,
+                        format="%.3f",
+                        key=f"cdm_p2_avg_override_{current_code}",
+                    )
+
+                if st.button("💾 儲存參數", key=f"save_cdm_{current_code}"):
+                    box1_start = str(new_date_p1_start)
+                    box1_end = str(new_date_p1_end)
+                    box2_start = str(new_date_p1_end)
+                    box2_end = str(new_date_p2_end)
+
+                    update_stock_in_db(
+                        current_code,
+                        {
+                            "interactive_range_start": str(new_range_start),
+                            "interactive_range_end": str(new_range_end),
+                            "abc_date_p1_start": str(new_date_p1_start),
+                            "abc_date_p1_end": str(new_date_p1_end),
+                            "abc_date_p2_end": str(new_date_p2_end),
+                            "abc_price_p1_high": float(new_price_p1_high),
+                            "abc_price_p1_low": float(new_price_p1_low),
+                            "abc_price_p2_high": float(new_price_p2_high),
+                            "cdm_p1_avg_override": float(new_cdm_p1_avg_override),
+                            "cdm_p2_avg_override": float(new_cdm_p2_avg_override),
+                            "box1_start": box1_start,
+                            "box1_end": box1_end,
+                            "box2_start": box2_start,
+                            "box2_end": box2_end,
+                        },
+                    )
                     st.rerun()
 
 
