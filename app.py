@@ -250,11 +250,34 @@ def run_analysis_logic(df, symbol, params):
 
             if n_days > 0:
                 p_target = (sma1 * CDM_COEF1 * (t1_days / n_days)) + (sma2 * CDM_COEF2 * ((n_days - t1_days) / n_days))
-                if pd.notna(p_target) and p_target != 0:
-                    diff = abs(curr_price - p_target) / p_target
+                if pd.notna(p_target) and p_target != 0 and pd.notna(curr_price) and curr_price:
+                    diff = abs(p_target - curr_price) / curr_price
+                    diff_pct = (p_target - curr_price) / curr_price * 100
+
+                    tor_cond = False
+                    tor_info = "TOR: N/A"
+                    if "Turnover_Rate" in df.columns and len(df) >= 20:
+                        curr_tor = df["Turnover_Rate"].iloc[-1]
+                        avg20_tor = df["Turnover_Rate"].tail(20).mean()
+                        if pd.notna(curr_tor) and pd.notna(avg20_tor) and avg20_tor > 0:
+                            threshold_tor = avg20_tor / 5
+                            tor_cond = float(curr_tor) < float(threshold_tor)
+                            tor_info = f"TOR: {float(curr_tor):.2f}% (< {float(threshold_tor):.2f}%)"
+
+                    sma57 = df["Close"].rolling(57).mean().iloc[-1] if len(df) >= 57 else np.nan
+                    sma106 = df["Close"].rolling(106).mean().iloc[-1] if len(df) >= 106 else np.nan
+
+                    sma_cond = False
+                    if pd.notna(sma57) and pd.notna(sma106) and sma57 and sma106:
+                        sma_cond = (
+                            abs(float(sma57) - float(sma106)) / abs(float(sma106)) < 0.05
+                            and abs(float(curr_price) - float(sma57)) / abs(float(sma57)) < 0.05
+                            and abs(float(curr_price) - float(sma106)) / abs(float(sma106)) < 0.05
+                        )
+
                     target_price_str = f"{p_target:.2f}"
-                    diff_str = f"{diff*100:.2f}"
-                    cdm_status = "🔴 <b>觸發</b>" if diff < CDM_THRESHOLD else "未觸發"
+                    diff_str = f"{diff_pct:+.2f}"
+                    cdm_status = "🔴 <b>觸發</b>" if (diff < CDM_THRESHOLD and tor_cond and sma_cond) else "未觸發"
         except:
             pass
     
@@ -273,7 +296,7 @@ def run_analysis_logic(df, symbol, params):
     trend_str = "站上雙均線" if cond_a else "均線下方"
 
     report = f"""<b>[股票警示] {symbol} 分析報告</b>
-<b>1. CDM: {cdm_status}</b> (目標: {target_price_str}, 偏差: {diff_str}%)
+<b>1. CDM: {cdm_status}</b> (目標: {target_price_str}, 偏差: {diff_str}%, {tor_info})
 <b>2. FZM: {fzm_status}</b> (WR: {val_willr:.2f}, {trend_str})
 建議止損: {lowest_low:.2f}
 """
@@ -303,6 +326,18 @@ with st.sidebar:
                     try:
                         d = yf.download(yt, period="2y", progress=False, auto_adjust=False)
                         if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
+                        try:
+                            t_obj = yf.Ticker(yt)
+                            try:
+                                shares_outstanding = t_obj.fast_info.get('shares', None)
+                            except Exception:
+                                shares_outstanding = None
+                            if not shares_outstanding:
+                                shares_outstanding = t_obj.info.get('sharesOutstanding', None)
+                            if shares_outstanding:
+                                d["Turnover_Rate"] = (d["Volume"] / float(shares_outstanding)) * 100
+                        except Exception:
+                            pass
                         if len(d) > 50:
                             w = get_watchlist_from_db()
                             msg = run_analysis_logic(d, st.session_state.current_view, w.get(st.session_state.current_view, {}))
@@ -809,22 +844,41 @@ else:
                     idx = df.index[df.index <= ts]
                     return idx.max() if len(idx) else None
 
+                min_d = df.index.min().date()
+                max_d = df.index.max().date()
+
+                def clamp_date(d):
+                    if d is None:
+                        return None
+                    if d < min_d:
+                        return min_d
+                    if d > max_d:
+                        return max_d
+                    return d
+
+                default_range_start = clamp_date(max_d - timedelta(days=90))
+                default_range_end = max_d
+                default_p1_start = clamp_date(max_d - timedelta(days=120))
+                default_p1_end = clamp_date(max_d - timedelta(days=60))
+
                 st.markdown("**互動區間**")
                 c_rng_1, c_rng_2 = st.columns(2)
                 with c_rng_1:
+                    saved_range_start = clamp_date(_pdate("interactive_range_start"))
                     new_range_start = st.date_input(
                         "開始日期",
-                        value=_pdate("interactive_range_start") or df.index.max().date() - timedelta(days=90),
-                        min_value=df.index.min().date(),
-                        max_value=df.index.max().date(),
+                        value=saved_range_start or default_range_start,
+                        min_value=min_d,
+                        max_value=max_d,
                         key=f"cdm_range_start_{current_code}",
                     )
                 with c_rng_2:
+                    saved_range_end = clamp_date(_pdate("interactive_range_end"))
                     new_range_end = st.date_input(
                         "結束日期",
-                        value=_pdate("interactive_range_end") or df.index.max().date(),
-                        min_value=df.index.min().date(),
-                        max_value=df.index.max().date(),
+                        value=saved_range_end or default_range_end,
+                        min_value=min_d,
+                        max_value=max_d,
                         key=f"cdm_range_end_{current_code}",
                     )
 
@@ -834,19 +888,21 @@ else:
                 st.markdown("**P1 / P2 波段輸入（用於 CDM 與 ABC）**")
                 c_d1, c_d2 = st.columns(2)
                 with c_d1:
+                    saved_p1_start = clamp_date(_pdate("abc_date_p1_start"))
                     new_date_p1_start = st.date_input(
                         "P1 起跌點日期",
-                        value=_pdate("abc_date_p1_start") or df.index.max().date() - timedelta(days=120),
-                        min_value=df.index.min().date(),
-                        max_value=df.index.max().date(),
+                        value=saved_p1_start or default_p1_start,
+                        min_value=min_d,
+                        max_value=max_d,
                         key=f"cdm_abc_p1_start_{current_code}",
                     )
                 with c_d2:
+                    saved_p1_end = clamp_date(_pdate("abc_date_p1_end"))
                     new_date_p1_end = st.date_input(
                         "P1 止跌點日期",
-                        value=_pdate("abc_date_p1_end") or df.index.max().date() - timedelta(days=60),
-                        min_value=df.index.min().date(),
-                        max_value=df.index.max().date(),
+                        value=saved_p1_end or default_p1_end,
+                        min_value=min_d,
+                        max_value=max_d,
                         key=f"cdm_abc_p1_end_{current_code}",
                     )
 
@@ -1191,47 +1247,95 @@ else:
                 st.markdown(tor_html, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 📚 歷史功能與圖表")
+    st.markdown("### 📈 CDM 目標價偏差(%)")
 
-    hist_section = st.selectbox(
-        "選擇圖表",
-        ["📉 Price & SMA", "🔄 Ratio Curves", "📊 Volume (Abs)", "💹 Turnover Analysis (Old)", "📐 AMP(%)"],
-        key=f"hist_section_{current_code}",
-    )
+    curr_params = watchlist_data.get(current_code, {})
 
-    end_date_dt = pd.to_datetime(st.session_state.ref_date)
-    start_date_6m = end_date_dt - timedelta(days=180)
-    display_df = df[df.index >= start_date_6m]
+    def _pfloat(v):
+        try:
+            if v is None:
+                return 0.0
+            if isinstance(v, str) and (not v.strip()):
+                return 0.0
+            return float(v)
+        except Exception:
+            return 0.0
 
-    if hist_section == "📉 Price & SMA":
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(x=display_df.index, open=display_df['Open'], high=display_df['High'], low=display_df['Low'], close=display_df['Close'], name='K線'))
-        if f'SMA_{sma1}' in display_df.columns: fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma1}'], line=dict(color='orange'), name=f'SMA {sma1}'))
-        if f'SMA_{sma2}' in display_df.columns: fig.add_trace(go.Scatter(x=display_df.index, y=display_df[f'SMA_{sma2}'], line=dict(color='blue'), name=f'SMA {sma2}'))
-        fig.update_layout(height=500, xaxis_rangeslider_visible=True, template="plotly_white", dragmode="pan", uirevision=f"hist_price_{current_code}")
-        st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
+    band2_peak = _pfloat(curr_params.get("abc_price_p2_high"))
 
-    elif hist_section == "🔄 Ratio Curves":
-        fig_r = go.Figure()
-        if 'R1' in display_df.columns: fig_r.add_trace(go.Scatter(x=display_df.index, y=display_df['R1'], name="R1 (S7/S14)"))
-        if 'R2' in display_df.columns: fig_r.add_trace(go.Scatter(x=display_df.index, y=display_df['R2'], name="R2 (S7/S28)"))
-        fig_r.update_layout(height=380, template="plotly_white", dragmode="pan", uirevision=f"hist_ratio_{current_code}")
-        st.plotly_chart(fig_r, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
+    b1_s = curr_params.get("box1_start")
+    b1_e = curr_params.get("box1_end")
+    b2_s = curr_params.get("box2_start")
+    b2_e = curr_params.get("box2_end")
 
-    elif hist_section == "📊 Volume (Abs)":
-        st.bar_chart(display_df['Volume'])
+    if not band2_peak:
+        st.info("請先到『⚙️ 設定 CDM 自動檢測參數』輸入 Band2 峰值價格（P2 反彈最高價格），才會顯示 CDM 偏差曲線與列表。")
+    elif not (b1_s and b1_e and b2_s and b2_e):
+        st.info("請先完成 CDM 的 Box 1/Box 2 日期設定，才會顯示 CDM 偏差曲線與列表。")
+    else:
+        try:
+            s1, e1 = pd.to_datetime(b1_s), pd.to_datetime(b1_e)
+            s2, e2 = pd.to_datetime(b2_s), pd.to_datetime(b2_e)
 
-    elif hist_section == "💹 Turnover Analysis (Old)":
-        if has_turnover: st.line_chart(display_df['Turnover_Rate'])
+            sma1 = df[(df.index >= s1) & (df.index <= e1)]["Close"].mean()
+            sma2 = df[(df.index >= s2) & (df.index <= e2)]["Close"].mean()
+            t1_days = (e1 - s1).days
 
-    elif hist_section == "📐 AMP(%)":
-        fig_amp = go.Figure()
-        if 'AMP' not in display_df.columns:
-            prev_close_series = display_df['Close'].shift(1).replace(0, np.nan)
-            display_df['AMP'] = (display_df['High'] - display_df['Low']) / prev_close_series * 100
-        fig_amp.add_trace(go.Scatter(x=display_df.index, y=display_df['AMP'], name="AMP(%)"))
-        fig_amp.update_layout(height=350, xaxis_rangeslider_visible=True, template="plotly_white", dragmode="pan", uirevision=f"hist_amp_{current_code}")
-        st.plotly_chart(fig_amp, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
+            last_14 = df.tail(14).copy()
+            rows = []
+            for d, r in last_14.iterrows():
+                n_days = (pd.to_datetime(d) - s1).days
+                actual = float(r["Close"]) if pd.notna(r.get("Close")) else np.nan
+                if (n_days <= 0) or (not actual) or pd.isna(actual):
+                    continue
+
+                p_target = (sma1 * 0.7 * (t1_days / n_days)) + (sma2 * 0.5 * ((n_days - t1_days) / n_days))
+                diff_pct = (p_target - actual) / actual * 100
+
+                rows.append(
+                    {
+                        "日期": pd.to_datetime(d).date().isoformat(),
+                        "實際價": actual,
+                        "計算價": float(p_target) if pd.notna(p_target) else np.nan,
+                        "偏差(%)": float(diff_pct) if pd.notna(diff_pct) else np.nan,
+                    }
+                )
+
+            if not rows:
+                st.warning("近 14 天無法計算（可能是 Box1 起點太新或資料不足）。")
+            else:
+                out_df = pd.DataFrame(rows)
+                out_df["實際價"] = out_df["實際價"].map(lambda x: "-" if pd.isna(x) else f"{float(x):.3f}")
+                out_df["計算價"] = out_df["計算價"].map(lambda x: "-" if pd.isna(x) else f"{float(x):.3f}")
+                out_df["偏差(%)"] = out_df["偏差(%)"].map(lambda x: "-" if pd.isna(x) else f"{float(x):+.2f}%")
+
+                fig_cdm = go.Figure()
+                fig_cdm.add_trace(
+                    go.Scatter(
+                        x=pd.to_datetime(out_df["日期"]),
+                        y=pd.to_numeric(out_df["偏差(%)"].str.replace("%", ""), errors="coerce"),
+                        mode="lines+markers",
+                        name="(計算-實際)/實際",
+                    )
+                )
+                fig_cdm.update_layout(
+                    height=360,
+                    template="plotly_white",
+                    dragmode="pan",
+                    uirevision=f"cdm_diff_{current_code}",
+                    margin=dict(l=10, r=10, t=30, b=10),
+                    yaxis_title="%",
+                )
+                fig_cdm.update_xaxes(rangeslider_visible=False)
+
+                st.plotly_chart(
+                    fig_cdm,
+                    use_container_width=True,
+                    config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True},
+                )
+                st.dataframe(out_df, hide_index=True, use_container_width=True)
+        except Exception as e:
+            st.error(str(e))
 
 
 
