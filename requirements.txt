@@ -6,3 +6,4 @@ numpy
 python-dateutil
 requests
 firebase-admin
+openpyxl

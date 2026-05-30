@@ -3,19 +3,33 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import requests
 import firebase_admin
 from firebase_admin import credentials, firestore
 import json
 import os
+from io import BytesIO
+from typing import Any, Dict, List, Optional
+from streamlit.errors import StreamlitSecretNotFoundError
 
 # --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股 SMA 矩陣 v9.7 (整合版)", page_icon="📈", layout="wide")
+st.set_page_config(page_title="港股 SMA 矩陣", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
 
 # --- 2. CSS 樣式 (合併 v9.4 與 v9.6) ---
 st.markdown("""
 <style>
+    :root {
+        --mobile-padding: 8px;
+        --desktop-padding: 16px;
+        --card-radius: 8px;
+        --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+        --shadow-md: 0 4px 6px rgba(0,0,0,0.10);
+    }
+    * {
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+    }
     /* 全局表格樣式 */
     .big-font-table { 
         font-size: 14px !important; 
@@ -71,26 +85,50 @@ st.markdown("""
     }
     
     /* 按鈕樣式 */
-    .stButton>button { width: 100%; height: 3em; font-size: 18px; }
+    .stButton>button { width: 100%; min-height: 44px; padding: 12px 16px !important; border-radius: 6px; font-size: 14px; box-shadow: var(--shadow-sm); }
+    .stButton>button:active { transform: scale(0.98); box-shadow: var(--shadow-md); }
+    input, textarea, select { min-height: 44px; font-size: 16px; }
+
+    @media (max-width: 768px) {
+        .main .block-container { padding: var(--mobile-padding) !important; max-width: 100% !important; }
+        div[data-testid="stHorizontalBlock"] { flex-direction: column !important; }
+        div[data-testid="stHorizontalBlock"] > div { width: 100% !important; margin-bottom: 12px; }
+        table { font-size: 12px; }
+        th, td { padding: 8px; }
+    }
+
+    @media (min-width: 1024px) {
+        .main .block-container { padding: var(--desktop-padding) !important; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # --- 3. 數據庫連接 (Firebase) ---
+def get_secrets_dict() -> Dict[str, Any]:
+    try:
+        return dict(st.secrets)
+    except StreamlitSecretNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
 @st.cache_resource
 def get_db():
     try:
         if not firebase_admin._apps:
-            if "firebase" in st.secrets:
-                if "json_content" in st.secrets["firebase"]:
+            secrets = get_secrets_dict()
+            if "firebase" in secrets:
+                firebase_cfg = secrets.get("firebase", {})
+                if "json_content" in firebase_cfg:
                     try:
-                        key_dict = json.loads(st.secrets["firebase"]["json_content"])
+                        key_dict = json.loads(firebase_cfg["json_content"])
                         cred = credentials.Certificate(key_dict)
                         firebase_admin.initialize_app(cred)
                     except json.JSONDecodeError:
                         return None
-                elif "private_key" in st.secrets["firebase"]:
+                elif "private_key" in firebase_cfg:
                     try:
-                        key_dict = dict(st.secrets["firebase"])
+                        key_dict = dict(firebase_cfg)
                         if "\\n" in key_dict["private_key"]:
                             key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
                         cred = credentials.Certificate(key_dict)
@@ -179,6 +217,1896 @@ def calculate_willr(high, low, close, period):
     wr = -100 * ((highest_high - close) / denom)
     return wr
 
+def is_consecutive_down(close: pd.Series, days: int = 6) -> bool:
+    try:
+        if close is None or len(close) < (days + 1):
+            return False
+        diffs = close.diff().tail(days).dropna()
+        if len(diffs) < days:
+            return False
+        return bool((diffs < 0).all())
+    except Exception:
+        return False
+
+def _trend_score(price: float, sma7: float, sma14: float, sma28: float) -> int:
+    score = 0
+    if pd.notna(sma7) and pd.notna(sma14) and float(sma7) > float(sma14):
+        score += 1
+    if pd.notna(sma14) and pd.notna(sma28) and float(sma14) > float(sma28):
+        score += 1
+    if pd.notna(price) and pd.notna(sma7) and float(price) > float(sma7):
+        score += 1
+    return score
+
+def _trend_icon(score: int) -> str:
+    if score >= 3:
+        return "⬆️⬆️⬆️"
+    if score == 2:
+        return "⬆️⬆️"
+    if score == 1:
+        return "⬆️"
+    return "⬇️⬇️⬇️"
+
+def _mr_rating(mr_pct: float) -> str:
+    v = abs(float(mr_pct)) if pd.notna(mr_pct) else 0.0
+    if v > 5:
+        return "🔴 極度"
+    if 3 < v <= 5:
+        return "🟠 中度"
+    if 1 < v <= 3:
+        return "🟡 輕度"
+    return "🟢 正常"
+
+def _mr_recommendation(trend_icon: str, mr_pct: float) -> str:
+    v = abs(float(mr_pct)) if pd.notna(mr_pct) else 0.0
+    if trend_icon == "⬆️⬆️⬆️" and (1 < v <= 5):
+        return "⭐⭐⭐"
+    if trend_icon == "⬆️⬆️" and (2 < v <= 6):
+        return "⭐⭐"
+    if trend_icon == "⬇️⬇️⬇️" and v > 3:
+        return "⚠️ 謹慎"
+    return "⭐"
+
+def _cdm_metrics(df: pd.DataFrame, params: dict) -> dict:
+    out = {
+        "configured": False,
+        "status": "⚙️ 未配置",
+        "target": np.nan,
+        "diff_pct": np.nan,
+        "tor_ok": None,
+        "sma_ok": None,
+        "confidence": 0.0,
+        "tor_info": "TOR: N/A",
+    }
+
+    try:
+        b1_s = params.get("box1_start")
+        b1_e = params.get("box1_end")
+        b2_s = params.get("box2_start")
+        b2_e = params.get("box2_end")
+        if not (b1_s and b1_e and b2_s and b2_e):
+            return out
+
+        CDM_COEF1, CDM_COEF2 = 0.7, 0.5
+        s1, e1 = pd.to_datetime(b1_s), pd.to_datetime(b1_e)
+        s2, e2 = pd.to_datetime(b2_s), pd.to_datetime(b2_e)
+
+        def _parse_float(v):
+            try:
+                if v is None:
+                    return np.nan
+                if isinstance(v, str) and (not v.strip()):
+                    return np.nan
+                return float(v)
+            except Exception:
+                return np.nan
+
+        p1_avg_override = _parse_float(params.get("cdm_p1_avg_override"))
+        p2_avg_override = _parse_float(params.get("cdm_p2_avg_override"))
+
+        sma1_calc = df[(df.index >= s1) & (df.index <= e1)]["Close"].mean()
+        sma2_calc = df[(df.index >= s2) & (df.index <= e2)]["Close"].mean()
+
+        sma1 = p1_avg_override if (pd.notna(p1_avg_override) and p1_avg_override > 0) else sma1_calc
+        sma2 = p2_avg_override if (pd.notna(p2_avg_override) and p2_avg_override > 0) else sma2_calc
+
+        t1_days = (e1 - s1).days
+        n_days = (pd.to_datetime(datetime.now().date()) - s1).days
+        curr_price = float(df["Close"].iloc[-1]) if len(df) else np.nan
+        if (n_days <= 0) or (pd.isna(curr_price)) or (curr_price == 0) or pd.isna(sma1) or pd.isna(sma2):
+            return out
+
+        p_target = (sma1 * CDM_COEF1 * (t1_days / n_days)) + (sma2 * CDM_COEF2 * ((n_days - t1_days) / n_days))
+        diff_pct = (float(p_target) - float(curr_price)) / float(curr_price) * 100
+
+        tor_ok = None
+        tor_info = "TOR: N/A"
+        if "Turnover_Rate" in df.columns and len(df) >= 20:
+            curr_tor = df["Turnover_Rate"].iloc[-1]
+            avg20_tor = df["Turnover_Rate"].tail(20).mean()
+            if pd.notna(curr_tor) and pd.notna(avg20_tor) and float(avg20_tor) > 0:
+                threshold_tor = float(avg20_tor) / 5
+                tor_ok = float(curr_tor) < float(threshold_tor)
+                tor_info = f"TOR: {float(curr_tor):.2f}% (< {float(threshold_tor):.2f}%)"
+
+        sma57 = df["Close"].rolling(57).mean().iloc[-1] if len(df) >= 57 else np.nan
+        sma106 = df["Close"].rolling(106).mean().iloc[-1] if len(df) >= 106 else np.nan
+        sma_ok = False
+        if pd.notna(sma57) and pd.notna(sma106) and float(sma106) != 0 and float(sma57) != 0:
+            sma_ok = (
+                abs(float(sma57) - float(sma106)) / abs(float(sma106)) < 0.05
+                and abs(float(curr_price) - float(sma57)) / abs(float(sma57)) < 0.05
+                and abs(float(curr_price) - float(sma106)) / abs(float(sma106)) < 0.05
+            )
+
+        abs_diff = abs(float(diff_pct))
+        if (abs_diff < 5) and (tor_ok is True) and (sma_ok is True):
+            status = "🔴 觸發"
+        elif 5 <= abs_diff < 8:
+            status = "⏳ 待觀察"
+        else:
+            status = "❌ 未觸發"
+
+        confidence = (1 - min(abs_diff, 10) / 10) * 40
+        confidence += (30 if (tor_ok is True) else 0)
+        confidence += (30 if (sma_ok is True) else 0)
+
+        out.update(
+            {
+                "configured": True,
+                "status": status,
+                "target": float(p_target) if pd.notna(p_target) else np.nan,
+                "diff_pct": float(diff_pct) if pd.notna(diff_pct) else np.nan,
+                "tor_ok": tor_ok,
+                "sma_ok": bool(sma_ok),
+                "confidence": float(confidence),
+                "tor_info": tor_info,
+            }
+        )
+        return out
+    except Exception:
+        return out
+
+def _build_cdm_signal_series(
+    df: pd.DataFrame,
+    params: Dict[str, Any],
+    cdm_threshold: float,
+) -> pd.DataFrame:
+    out = pd.DataFrame(index=df.index)
+    out["cdm_signal"] = False
+    out["cdm_target"] = np.nan
+    out["cdm_diff_pct"] = np.nan
+    out["cdm_tor_ok"] = False
+    out["cdm_sma_ok"] = False
+
+    b1_s = params.get("box1_start")
+    b1_e = params.get("box1_end")
+    b2_s = params.get("box2_start")
+    b2_e = params.get("box2_end")
+    if not (b1_s and b1_e and b2_s and b2_e):
+        return out
+
+    def _parse_float(v):
+        try:
+            if v is None:
+                return np.nan
+            if isinstance(v, str) and (not v.strip()):
+                return np.nan
+            return float(v)
+        except Exception:
+            return np.nan
+
+    try:
+        CDM_COEF1, CDM_COEF2 = 0.7, 0.5
+        s1, e1 = pd.to_datetime(b1_s), pd.to_datetime(b1_e)
+        s2, e2 = pd.to_datetime(b2_s), pd.to_datetime(b2_e)
+
+        sma1_calc = df[(df.index >= s1) & (df.index <= e1)]["Close"].mean()
+        sma2_calc = df[(df.index >= s2) & (df.index <= e2)]["Close"].mean()
+
+        p1_avg_override = _parse_float(params.get("cdm_p1_avg_override"))
+        p2_avg_override = _parse_float(params.get("cdm_p2_avg_override"))
+        sma1 = p1_avg_override if (pd.notna(p1_avg_override) and p1_avg_override > 0) else sma1_calc
+        sma2 = p2_avg_override if (pd.notna(p2_avg_override) and p2_avg_override > 0) else sma2_calc
+
+        if pd.isna(sma1) or pd.isna(sma2):
+            return out
+
+        t1_days = (e1 - s1).days
+        if t1_days <= 0:
+            return out
+
+        n_days = (df.index.to_series().apply(lambda d: (pd.to_datetime(d) - s1).days)).astype(float)
+        valid_n = n_days.where(n_days > 0)
+        p_target = (sma1 * CDM_COEF1 * (t1_days / valid_n)) + (sma2 * CDM_COEF2 * ((valid_n - t1_days) / valid_n))
+        out["cdm_target"] = p_target
+        out["cdm_diff_pct"] = (p_target - df["Close"]) / df["Close"].replace(0, np.nan) * 100
+
+        if "Turnover_Rate" in df.columns:
+            curr_tor = df["Turnover_Rate"]
+            avg20_tor = df["Turnover_Rate"].rolling(20).mean()
+            threshold_tor = avg20_tor / 5
+            out["cdm_tor_ok"] = (curr_tor < threshold_tor) & pd.notna(curr_tor) & pd.notna(threshold_tor)
+
+        sma57 = df["Close"].rolling(57).mean()
+        sma106 = df["Close"].rolling(106).mean()
+        out["cdm_sma_ok"] = (
+            (abs(sma57 - sma106) / abs(sma106) < 0.05)
+            & (abs(df["Close"] - sma57) / abs(sma57) < 0.05)
+            & (abs(df["Close"] - sma106) / abs(sma106) < 0.05)
+        ).fillna(False)
+
+        out["cdm_signal"] = (
+            (out["cdm_diff_pct"].abs() < float(cdm_threshold))
+            & (out["cdm_tor_ok"] == True)
+            & (out["cdm_sma_ok"] == True)
+        ).fillna(False)
+        return out
+    except Exception:
+        return out
+
+def _build_mr_series(df: pd.DataFrame) -> pd.Series:
+    sma7 = df["Close"].rolling(7).mean()
+    sma14 = df["Close"].rolling(14).mean()
+    sma28 = df["Close"].rolling(28).mean()
+    sma57 = df["Close"].rolling(57).mean()
+    sma106 = df["Close"].rolling(106).mean()
+    sma212 = df["Close"].rolling(212).mean()
+    avgp_vals = pd.concat([df["Close"], sma7, sma14, sma28, sma57, sma106, sma212], axis=1)
+    avg_avgp = avgp_vals.mean(axis=1, skipna=True)
+    mr_pct = (df["Close"] / avg_avgp.replace(0, np.nan) - 1) * 100
+    return mr_pct
+
+def _build_fzm_signal_series(df: pd.DataFrame, wr_threshold: float) -> pd.Series:
+    sma7 = df["Close"].rolling(7).mean()
+    sma14 = df["Close"].rolling(14).mean()
+    wr35 = calculate_willr(df["High"], df["Low"], df["Close"], 35)
+    signal = (df["Close"] > sma7) & (df["Close"] > sma14) & (wr35 < float(wr_threshold))
+    return signal.fillna(False)
+
+class BacktestResults:
+    def __init__(self, trades: List[Dict[str, Any]], capital: float):
+        self.trades = trades
+        self.capital = float(capital)
+
+    @property
+    def total_return(self) -> float:
+        if not self.trades:
+            return 0.0
+        total_pnl = sum(float(t.get("pnl_hkd", 0.0)) for t in self.trades)
+        denom = (len(self.trades) * self.capital) if self.capital else 0.0
+        return (total_pnl / denom * 100) if denom else 0.0
+
+    @property
+    def win_rate(self) -> float:
+        if not self.trades:
+            return 0.0
+        wins = sum(1 for t in self.trades if float(t.get("pnl_hkd", 0.0)) > 0)
+        return wins / len(self.trades) * 100
+
+    @property
+    def monthly_avg_return(self) -> float:
+        if len(self.trades) < 2:
+            return 0.0
+        start = pd.to_datetime(self.trades[0]["entry_date"])
+        end = pd.to_datetime(self.trades[-1]["exit_date"])
+        months = (end - start).days / 30.0
+        return self.total_return / months if months > 0 else 0.0
+
+    @property
+    def annualized_return(self) -> float:
+        if len(self.trades) < 2:
+            return 0.0
+        start = pd.to_datetime(self.trades[0]["entry_date"])
+        end = pd.to_datetime(self.trades[-1]["exit_date"])
+        days = (end - start).days
+        return (self.total_return * (365.25 / days)) if days > 0 else 0.0
+
+    @property
+    def max_drawdown(self) -> float:
+        if not self.trades:
+            return 0.0
+        equity = []
+        cum = 0.0
+        for t in self.trades:
+            cum += float(t.get("pnl_hkd", 0.0))
+            equity.append(self.capital + cum)
+        if not equity:
+            return 0.0
+        peaks = np.maximum.accumulate(equity)
+        drawdowns = (peaks - equity) / np.where(peaks == 0, np.nan, peaks) * 100
+        mdd = np.nanmax(drawdowns) if len(drawdowns) else 0.0
+        return float(mdd) if pd.notna(mdd) else 0.0
+
+    @property
+    def profit_factor(self) -> float:
+        win_sum = sum(float(t.get("pnl_hkd", 0.0)) for t in self.trades if float(t.get("pnl_hkd", 0.0)) > 0)
+        lose_sum = abs(sum(float(t.get("pnl_hkd", 0.0)) for t in self.trades if float(t.get("pnl_hkd", 0.0)) < 0))
+        if lose_sum == 0:
+            return float("inf") if win_sum > 0 else 0.0
+        return win_sum / lose_sum
+
+    @property
+    def avg_winning_trade(self) -> float:
+        wins = [float(t.get("pnl_pct", 0.0)) for t in self.trades if float(t.get("pnl_hkd", 0.0)) > 0]
+        return float(np.mean(wins)) if wins else 0.0
+
+    @property
+    def avg_losing_trade(self) -> float:
+        loses = [float(t.get("pnl_pct", 0.0)) for t in self.trades if float(t.get("pnl_hkd", 0.0)) < 0]
+        return float(np.mean(loses)) if loses else 0.0
+
+    @property
+    def win_streak(self) -> int:
+        best = 0
+        cur = 0
+        for t in self.trades:
+            if float(t.get("pnl_hkd", 0.0)) > 0:
+                cur += 1
+                best = max(best, cur)
+            else:
+                cur = 0
+        return best
+
+    @property
+    def loss_streak(self) -> int:
+        best = 0
+        cur = 0
+        for t in self.trades:
+            if float(t.get("pnl_hkd", 0.0)) < 0:
+                cur += 1
+                best = max(best, cur)
+            else:
+                cur = 0
+        return best
+
+    @property
+    def sharpe_ratio(self) -> float:
+        rets = [float(t.get("pnl_pct", 0.0)) for t in self.trades]
+        if len(rets) < 2:
+            return 0.0
+        mean = float(np.mean(rets))
+        std = float(np.std(rets))
+        return (mean / std * np.sqrt(252)) if std > 0 else 0.0
+
+    def confidence_score(self) -> float:
+        score = (
+            min(self.win_rate, 100) * 0.3
+            + min(self.annualized_return / 2, 100) * 0.3
+            + (100 - min(self.max_drawdown * 5, 100)) * 0.2
+            + min(self.sharpe_ratio * 10, 100) * 0.2
+        )
+        return float(min(max(score, 0), 100))
+
+class BacktestEngine:
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        signals: pd.DataFrame,
+        capital: float,
+        commission_rate: float,
+        sell_config: Dict[str, Any],
+        combined_logic: str,
+    ):
+        self.df = df
+        self.signals = signals
+        self.capital = float(capital)
+        self.commission_rate = float(commission_rate)
+        self.sell_config = sell_config
+        self.combined_logic = combined_logic
+        self.trades: List[Dict[str, Any]] = []
+        self.position: Optional[Dict[str, Any]] = None
+
+    def _buy_signal(self, i: int) -> bool:
+        row = self.signals.iloc[i]
+        selected = []
+        if row.get("use_cdm", False):
+            selected.append(bool(row.get("cdm", False)))
+        if row.get("use_fzm", False):
+            selected.append(bool(row.get("fzm", False)))
+        if row.get("use_mr", False):
+            selected.append(bool(row.get("mr", False)))
+        if not selected:
+            return False
+        if row.get("use_combined", False):
+            if self.combined_logic == "同時觸發 (AND)":
+                return all(selected)
+            return any(selected)
+        return any(selected)
+
+    def _signal_type(self, i: int) -> str:
+        row = self.signals.iloc[i]
+        types = []
+        if row.get("use_cdm", False) and bool(row.get("cdm", False)):
+            types.append("CDM")
+        if row.get("use_fzm", False) and bool(row.get("fzm", False)):
+            types.append("FZM")
+        if row.get("use_mr", False) and bool(row.get("mr", False)):
+            types.append("MR")
+        return "+".join(types) if types else "N/A"
+
+    def _should_sell(self, i: int) -> tuple[bool, str]:
+        if not self.position:
+            return False, ""
+        entry_price = float(self.position["entry_price"])
+        entry_idx = int(self.position["entry_idx"])
+        price = float(self.df["Close"].iloc[i])
+        pnl_pct = (price - entry_price) / entry_price * 100 if entry_price else 0.0
+        sell_type = self.sell_config.get("type")
+
+        if sell_type == "profit_target":
+            if pnl_pct >= float(self.sell_config.get("value", 5)):
+                return True, "止盈"
+        elif sell_type == "stop_loss":
+            if pnl_pct <= float(self.sell_config.get("value", -3)):
+                return True, "止損"
+        elif sell_type == "time_based":
+            hold = int(self.sell_config.get("value", 5))
+            if i >= entry_idx + hold:
+                return True, "時間"
+        elif sell_type == "signal_reverse":
+            if i > entry_idx and (not self._buy_signal(i)):
+                return True, "信號反轉"
+        return False, ""
+
+    def run(self) -> BacktestResults:
+        for i in range(len(self.df)):
+            if self.position is None:
+                if self._buy_signal(i):
+                    entry_price = float(self.df["Close"].iloc[i])
+                    self.position = {
+                        "entry_date": self.df.index[i],
+                        "entry_price": entry_price,
+                        "entry_idx": i,
+                        "signal_type": self._signal_type(i),
+                    }
+            else:
+                should, reason = self._should_sell(i)
+                if should:
+                    entry_price = float(self.position["entry_price"])
+                    exit_price = float(self.df["Close"].iloc[i])
+                    raw_pct = (exit_price - entry_price) / entry_price * 100 if entry_price else 0.0
+                    net_pct = raw_pct - (2 * float(self.commission_rate))
+                    pnl_hkd = self.capital * (net_pct / 100.0)
+                    self.trades.append(
+                        {
+                            "entry_date": self.position["entry_date"],
+                            "exit_date": self.df.index[i],
+                            "entry_price": entry_price,
+                            "exit_price": exit_price,
+                            "pnl_pct": float(net_pct),
+                            "pnl_hkd": float(pnl_hkd),
+                            "signal_type": self.position.get("signal_type", "N/A"),
+                            "exit_reason": reason,
+                            "holding_days": int(i - int(self.position["entry_idx"])),
+                        }
+                    )
+                    self.position = None
+        return BacktestResults(self.trades, self.capital)
+
+def _default_backtest_params() -> Dict[str, Any]:
+    return {
+        "use_cdm": True,
+        "use_fzm": True,
+        "use_mr": True,
+        "use_combined": False,
+        "combine_logic": "任意一個觸發 (OR)",
+        "cdm_threshold": 5.0,
+        "mr_threshold": 3.0,
+        "wr_threshold": -80.0,
+        "sell_logic": "🎯 止盈 (+5% 目標)",
+        "capital": 10000,
+        "commission_rate": 0.2,
+    }
+
+@st.cache_data(ttl=600)
+def run_backtest_cached(
+    symbol: str,
+    df_slice: pd.DataFrame,
+    params: Dict[str, Any],
+    watchlist_params: Dict[str, Any],
+) -> Dict[str, Any]:
+    cdm_series = _build_cdm_signal_series(df_slice, watchlist_params, float(params.get("cdm_threshold", 5.0)))
+    mr_pct = _build_mr_series(df_slice)
+    mr_signal = mr_pct.abs() > float(params.get("mr_threshold", 3.0))
+    fzm_signal = _build_fzm_signal_series(df_slice, float(params.get("wr_threshold", -80.0)))
+
+    signals = pd.DataFrame(index=df_slice.index)
+    signals["cdm"] = cdm_series["cdm_signal"]
+    signals["fzm"] = fzm_signal
+    signals["mr"] = mr_signal.fillna(False)
+    signals["use_cdm"] = bool(params.get("use_cdm", True))
+    signals["use_fzm"] = bool(params.get("use_fzm", True))
+    signals["use_mr"] = bool(params.get("use_mr", True))
+    signals["use_combined"] = bool(params.get("use_combined", False))
+
+    sell_config = {
+        "🎯 止盈 (+5% 目標)": {"type": "profit_target", "value": 5},
+        "🎯 止盈 (+5%)": {"type": "profit_target", "value": 5},
+        "🛑 止損 (-3% 止損)": {"type": "stop_loss", "value": -3},
+        "🛑 止損 (-3%)": {"type": "stop_loss", "value": -3},
+        "⏱️ 時間 (5 交易日)": {"type": "time_based", "value": 5},
+        "⏱️ 時間 (5日)": {"type": "time_based", "value": 5},
+        "🔄 策略反轉信號": {"type": "signal_reverse", "value": None},
+    }[params.get("sell_logic", "🎯 止盈 (+5% 目標)")]
+
+    engine = BacktestEngine(
+        df=df_slice,
+        signals=signals,
+        capital=float(params.get("capital", 10000)),
+        commission_rate=float(params.get("commission_rate", 0.2)),
+        sell_config=sell_config,
+        combined_logic=str(params.get("combine_logic", "任意一個觸發 (OR)")),
+    )
+    results = engine.run()
+
+    return {
+        "results": results,
+        "trades": results.trades,
+        "signals": signals,
+        "mr_pct": mr_pct,
+        "cdm_target": cdm_series["cdm_target"],
+        "cdm_diff_pct": cdm_series["cdm_diff_pct"],
+    }
+
+class StrategyComparisonResult:
+    def __init__(self, strategy_name: str, results: BacktestResults, trades: List[Dict[str, Any]]):
+        self.strategy_name = strategy_name
+        self.results = results
+        self.trades = trades
+
+    @property
+    def annual_return(self) -> float:
+        return float(self.results.annualized_return)
+
+    @property
+    def monthly_return(self) -> float:
+        return float(self.results.monthly_avg_return)
+
+    @property
+    def win_rate(self) -> float:
+        return float(self.results.win_rate)
+
+    @property
+    def max_drawdown(self) -> float:
+        return float(self.results.max_drawdown)
+
+    @property
+    def trades_count(self) -> int:
+        return int(len(self.trades))
+
+    @property
+    def sharpe_ratio(self) -> float:
+        return float(self.results.sharpe_ratio)
+
+    @property
+    def profit_factor(self) -> float:
+        return float(self.results.profit_factor)
+
+    @property
+    def avg_winning(self) -> float:
+        return float(self.results.avg_winning_trade)
+
+    @property
+    def avg_losing(self) -> float:
+        return float(self.results.avg_losing_trade)
+
+    @property
+    def win_streak(self) -> int:
+        return int(self.results.win_streak)
+
+    @property
+    def loss_streak(self) -> int:
+        return int(self.results.loss_streak)
+
+    @property
+    def rank_score(self) -> float:
+        score = (
+            min(self.win_rate, 100) * 0.25
+            + min(self.annual_return / 2, 100) * 0.30
+            + (100 - min(self.max_drawdown * 5, 100)) * 0.25
+            + min(self.sharpe_ratio * 10, 100) * 0.20
+        )
+        return float(min(max(score, 0), 100))
+
+    @property
+    def rating(self) -> str:
+        s = self.rank_score
+        if s >= 85:
+            return "🟢 強烈推薦"
+        if s >= 75:
+            return "🟡 中等推薦"
+        if s >= 65:
+            return "🔵 可考慮"
+        return "🔴 不推薦"
+
+def _strategy_profile(strategy_name: str) -> Dict[str, str]:
+    profiles = {
+        "CDM": {
+            "principle": "基於價格目標預測模型 (CDM)：根據波段均價推算目標價，結合成交量(換手率)與中長均線接近度判斷機會，偏差小且條件滿足時進場。",
+            "scene": "中長線 / 偏保守",
+            "difficulty": "簡單",
+            "freq": "中等",
+            "false_signal": "中等",
+        },
+        "FZM": {
+            "principle": "基於 Williams %R 超賣反彈：當 WR 進入超賣且股價站上 SMA7/14 時進場，適合短線反彈或波段。",
+            "scene": "短線 / 波段",
+            "difficulty": "中等",
+            "freq": "低",
+            "false_signal": "低",
+        },
+        "MR": {
+            "principle": "基於均線偏離率 (MR)：當股價相對多均線均值出現明顯偏離時進場，偏離回歸或達到賣出條件出場，偏向偏離套利。",
+            "scene": "偏離 / 較高頻",
+            "difficulty": "複雜",
+            "freq": "高",
+            "false_signal": "高",
+        },
+    }
+    return profiles.get(strategy_name, {})
+
+def _apply_strategy_to_params(strategy_name: str, base_params: Dict[str, Any]) -> Dict[str, Any]:
+    p = dict(base_params)
+    p["use_combined"] = False
+    p["combine_logic"] = "任意一個觸發 (OR)"
+    p["use_cdm"] = strategy_name == "CDM"
+    p["use_fzm"] = strategy_name == "FZM"
+    p["use_mr"] = strategy_name == "MR"
+    if strategy_name == "CDM":
+        p["cdm_threshold"] = float(p.get("cdm_threshold", 5.0) or 5.0)
+    if strategy_name == "FZM":
+        p["wr_threshold"] = float(p.get("wr_threshold", -80.0) or -80.0)
+    if strategy_name == "MR":
+        p["mr_threshold"] = float(p.get("mr_threshold", 3.0) or 3.0)
+    return p
+
+def _equity_curve_from_trades(trades: List[Dict[str, Any]]) -> pd.DataFrame:
+    if not trades:
+        return pd.DataFrame(columns=["date", "cum_pct"])
+    rows = []
+    cum = 0.0
+    for t in trades:
+        cum += float(t.get("pnl_pct", 0.0))
+        rows.append({"date": pd.to_datetime(t["exit_date"]), "cum_pct": cum})
+    return pd.DataFrame(rows)
+
+def _compute_recovery_days(curve_df: pd.DataFrame) -> float:
+    if curve_df is None or curve_df.empty:
+        return np.nan
+    c = curve_df.sort_values("date").reset_index(drop=True)
+    equity = c["cum_pct"].astype(float).values
+    peaks = np.maximum.accumulate(equity)
+    dd = peaks - equity
+    if len(dd) == 0:
+        return np.nan
+    trough_idx = int(np.argmax(dd))
+    if dd[trough_idx] <= 0:
+        return 0.0
+    peak_value = peaks[trough_idx]
+    trough_date = pd.to_datetime(c.loc[trough_idx, "date"])
+    rec_idx = None
+    for j in range(trough_idx + 1, len(equity)):
+        if equity[j] >= peak_value:
+            rec_idx = j
+            break
+    if rec_idx is None:
+        return np.nan
+    rec_date = pd.to_datetime(c.loc[rec_idx, "date"])
+    return float((rec_date - trough_date).days)
+
+def _recent_performance(trades: List[Dict[str, Any]], end_date: date, days: int = 30) -> Dict[str, Any]:
+    if not trades:
+        return {"win_rate": 0.0, "winning_trades": 0, "total_trades": 0, "monthly_return": 0.0, "max_loss": 0.0}
+    end_dt = pd.to_datetime(end_date)
+    start_dt = end_dt - pd.Timedelta(days=int(days))
+    recent = [t for t in trades if pd.to_datetime(t["exit_date"]) >= start_dt]
+    if not recent:
+        return {"win_rate": 0.0, "winning_trades": 0, "total_trades": 0, "monthly_return": 0.0, "max_loss": 0.0}
+    wins = [t for t in recent if float(t.get("pnl_hkd", 0.0)) > 0]
+    pnl_pcts = [float(t.get("pnl_pct", 0.0)) for t in recent]
+    win_rate = (len(wins) / len(recent) * 100) if recent else 0.0
+    monthly_return = float(np.sum(pnl_pcts))
+    max_loss = float(np.min(pnl_pcts)) if pnl_pcts else 0.0
+    return {
+        "win_rate": float(win_rate),
+        "winning_trades": int(len(wins)),
+        "total_trades": int(len(recent)),
+        "monthly_return": float(monthly_return),
+        "max_loss": float(max_loss),
+    }
+
+@st.cache_data(ttl=600)
+def run_strategy_comparison_cached(
+    symbol: str,
+    df_slice: pd.DataFrame,
+    compare_capital: float,
+    compare_commission: float,
+    compare_sell_logic: str,
+    cdm_threshold: float,
+    mr_threshold: float,
+    wr_threshold: float,
+    watchlist_params: Dict[str, Any],
+) -> Dict[str, Any]:
+    base = {
+        "use_cdm": False,
+        "use_fzm": False,
+        "use_mr": False,
+        "use_combined": False,
+        "combine_logic": "任意一個觸發 (OR)",
+        "cdm_threshold": float(cdm_threshold),
+        "mr_threshold": float(mr_threshold),
+        "wr_threshold": float(wr_threshold),
+        "sell_logic": compare_sell_logic,
+        "capital": float(compare_capital),
+        "commission_rate": float(compare_commission),
+    }
+
+    params_cdm = dict(base)
+    params_cdm["use_cdm"] = True
+    params_fzm = dict(base)
+    params_fzm["use_fzm"] = True
+    params_mr = dict(base)
+    params_mr["use_mr"] = True
+
+    out_cdm = run_backtest_cached(symbol, df_slice, params_cdm, watchlist_params)
+    out_fzm = run_backtest_cached(symbol, df_slice, params_fzm, watchlist_params)
+    out_mr = run_backtest_cached(symbol, df_slice, params_mr, watchlist_params)
+
+    r_cdm: BacktestResults = out_cdm["results"]
+    r_fzm: BacktestResults = out_fzm["results"]
+    r_mr: BacktestResults = out_mr["results"]
+
+    results = [
+        StrategyComparisonResult("CDM", r_cdm, out_cdm["trades"]),
+        StrategyComparisonResult("FZM", r_fzm, out_fzm["trades"]),
+        StrategyComparisonResult("MR", r_mr, out_mr["trades"]),
+    ]
+
+    return {
+        "results": results,
+        "curves": {
+            "CDM": _equity_curve_from_trades(out_cdm["trades"]),
+            "FZM": _equity_curve_from_trades(out_fzm["trades"]),
+            "MR": _equity_curve_from_trades(out_mr["trades"]),
+        },
+    }
+
+def render_backtest_page(
+    df: pd.DataFrame,
+    current_code: str,
+    watchlist_data: Dict[str, Any],
+):
+    if "backtest_params" not in st.session_state:
+        st.session_state.backtest_params = _default_backtest_params()
+    if "strategy_compare_params" not in st.session_state:
+        st.session_state.strategy_compare_params = {}
+
+    p = dict(st.session_state.backtest_params)
+
+    min_d = df.index.min().date()
+    max_d = df.index.max().date()
+
+    if "bt_start" not in st.session_state:
+        st.session_state.bt_start = max(min_d, (pd.to_datetime(max_d) - timedelta(days=365)).date())
+    if "bt_end" not in st.session_state:
+        st.session_state.bt_end = max_d
+
+    sub1, sub2, sub3, sub4 = st.tabs(["⚙️ 回測設定", "📊 單策略回測", "🆚 策略對標", "🎯 策略推薦"])
+
+    with sub1:
+        st.markdown("### ⚙️ 回測設定")
+
+        c1, c2, c3, c4, c5 = st.columns([1.5, 1.5, 0.8, 0.8, 0.8])
+        with c1:
+            st.session_state.bt_start = st.date_input("開始日期", value=st.session_state.bt_start, min_value=min_d, max_value=max_d, key=f"bt_start_{current_code}")
+        with c2:
+            st.session_state.bt_end = st.date_input("結束日期", value=st.session_state.bt_end, min_value=min_d, max_value=max_d, key=f"bt_end_{current_code}")
+        with c3:
+            if st.button("⏪ 1Y", use_container_width=True, key=f"bt_1y_{current_code}"):
+                st.session_state.bt_end = max_d
+                st.session_state.bt_start = max(min_d, (pd.to_datetime(max_d) - timedelta(days=365)).date())
+                st.rerun()
+        with c4:
+            if st.button("⏪ 2Y", use_container_width=True, key=f"bt_2y_{current_code}"):
+                st.session_state.bt_end = max_d
+                st.session_state.bt_start = max(min_d, (pd.to_datetime(max_d) - timedelta(days=730)).date())
+                st.rerun()
+        with c5:
+            if st.button("⏪ ALL", use_container_width=True, key=f"bt_all_{current_code}"):
+                st.session_state.bt_start = min_d
+                st.session_state.bt_end = max_d
+                st.rerun()
+
+        st.markdown("**🎲 策略選擇**")
+        s1, s2, s3, s4 = st.columns(4)
+        with s1:
+            p["use_cdm"] = st.checkbox("CDM 策略", value=bool(p.get("use_cdm", True)), key=f"bt_use_cdm_{current_code}")
+        with s2:
+            p["use_fzm"] = st.checkbox("FZM 策略 (超底)", value=bool(p.get("use_fzm", True)), key=f"bt_use_fzm_{current_code}")
+        with s3:
+            p["use_mr"] = st.checkbox("MR 策略 (偏離)", value=bool(p.get("use_mr", True)), key=f"bt_use_mr_{current_code}")
+        with s4:
+            p["use_combined"] = st.checkbox("組合策略", value=bool(p.get("use_combined", False)), key=f"bt_use_combined_{current_code}")
+
+        if p["use_combined"]:
+            p["combine_logic"] = st.radio("組合邏輯", ["任意一個觸發 (OR)", "同時觸發 (AND)"], index=0, key=f"bt_combine_logic_{current_code}")
+        else:
+            p["combine_logic"] = "任意一個觸發 (OR)"
+
+        st.markdown("**⚙️ 進階參數**")
+        a1, a2, a3 = st.columns(3)
+        with a1:
+            p["cdm_threshold"] = st.slider("CDM 偏差閾值 (%)", min_value=2.0, max_value=10.0, value=float(p.get("cdm_threshold", 5.0)), step=0.5, key=f"bt_cdm_th_{current_code}")
+        with a2:
+            p["mr_threshold"] = st.slider("MR 偏離閾值 (%)", min_value=1.0, max_value=8.0, value=float(p.get("mr_threshold", 3.0)), step=0.5, key=f"bt_mr_th_{current_code}")
+        with a3:
+            p["wr_threshold"] = st.slider("FZM WR 閾值", min_value=-100, max_value=-50, value=int(p.get("wr_threshold", -80)), step=5, key=f"bt_wr_th_{current_code}")
+
+        st.markdown("**📈 交易邏輯**")
+        t1, t2 = st.columns(2)
+        with t1:
+            p["sell_logic"] = st.radio(
+                "選擇賣出條件",
+                ["🎯 止盈 (+5% 目標)", "🛑 止損 (-3% 止損)", "⏱️ 時間 (5 交易日)", "🔄 策略反轉信號"],
+                index=["🎯 止盈 (+5% 目標)", "🛑 止損 (-3% 止損)", "⏱️ 時間 (5 交易日)", "🔄 策略反轉信號"].index(p.get("sell_logic", "🎯 止盈 (+5% 目標)")),
+                key=f"bt_sell_logic_{current_code}",
+            )
+        with t2:
+            p["capital"] = st.number_input("交易本金 (HKD)", min_value=1000, max_value=1000000, value=int(p.get("capital", 10000)), step=1000, key=f"bt_capital_{current_code}")
+            p["commission_rate"] = st.number_input("手續費率 (%)", min_value=0.0, max_value=1.0, value=float(p.get("commission_rate", 0.2)), step=0.05, key=f"bt_comm_{current_code}")
+
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("📥 導入預設", use_container_width=True, key=f"bt_preset_{current_code}"):
+                st.session_state.backtest_params = _default_backtest_params()
+                st.rerun()
+        with b2:
+            if st.button("✅ 保存設定", type="primary", use_container_width=True, key=f"bt_save_{current_code}"):
+                st.session_state.backtest_params = p
+                st.toast("已保存回測設定", icon="✅")
+
+    start_date = st.session_state.bt_start
+    end_date = st.session_state.bt_end
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    df_bt = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))].copy()
+
+    with sub2:
+        st.markdown("### 📊 單策略回測")
+        if len(df_bt) < 50:
+            st.warning("回測數據不足（至少需要 50 個交易日）。")
+        else:
+            p = dict(st.session_state.backtest_params)
+            c_run, c_opt = st.columns(2)
+            with c_run:
+                run_backtest = st.button("🔄 重新計算", type="primary", use_container_width=True, key=f"bt_run_{current_code}")
+            with c_opt:
+                run_opt = st.button("🎯 智能優化", use_container_width=True, key=f"bt_opt_{current_code}")
+
+            if run_backtest:
+                with st.spinner("回測計算中..."):
+                    st.session_state.backtest_output = run_backtest_cached(current_code, df_bt, p, watchlist_data.get(current_code, {}))
+
+            if run_opt:
+                with st.spinner("參數優化中..."):
+                    cdm_thresholds = [3, 4, 5, 6, 7]
+                    mr_thresholds = [1.5, 2, 2.5, 3, 3.5, 4]
+                    wr_thresholds = [-70, -75, -80, -85, -90]
+                    results = []
+                    base = dict(p)
+                    for cdm_th in cdm_thresholds:
+                        for mr_th in mr_thresholds:
+                            for wr_th in wr_thresholds:
+                                trial = dict(base)
+                                trial["cdm_threshold"] = float(cdm_th)
+                                trial["mr_threshold"] = float(mr_th)
+                                trial["wr_threshold"] = float(wr_th)
+                                out = run_backtest_cached(current_code, df_bt, trial, watchlist_data.get(current_code, {}))
+                                r: BacktestResults = out["results"]
+                                score = (
+                                    r.win_rate * 0.3
+                                    + min(r.annualized_return / 2, 100) * 0.3
+                                    + (100 - min(r.max_drawdown * 5, 100)) * 0.2
+                                    + min(r.sharpe_ratio * 10, 100) * 0.2
+                                )
+                                results.append({"cdm": cdm_th, "mr": mr_th, "wr": wr_th, "score": score, "r": r})
+                    results.sort(key=lambda x: x["score"], reverse=True)
+                    st.session_state.backtest_opt_results = results
+                    top = results[:3]
+                    st.success("智能優化完成")
+                    for i, item in enumerate(top, 1):
+                        rr: BacktestResults = item["r"]
+                        st.write(
+                            f"參數組合{i}: CDM={item['cdm']}% / MR={item['mr']}% / WR={item['wr']} | 勝率 {rr.win_rate:.1f}% | 年化 {rr.annualized_return:+.1f}% | 回撤 {rr.max_drawdown:.1f}% | 評分 {item['score']:.1f}/100"
+                        )
+
+                    heat = pd.DataFrame(results)
+                    cdm_vals = sorted(set(heat["cdm"]))
+                    mr_vals = sorted(set(heat["mr"]))
+                    mat = np.zeros((len(mr_vals), len(cdm_vals)))
+                    for _, row in heat.iterrows():
+                        cdm_idx = cdm_vals.index(row["cdm"])
+                        mr_idx = mr_vals.index(row["mr"])
+                        mat[mr_idx][cdm_idx] = row["r"].win_rate
+                    fig = go.Figure(data=go.Heatmap(z=mat, x=cdm_vals, y=mr_vals, colorscale="RdYlGn", colorbar=dict(title="勝率 (%)")))
+                    fig.update_layout(title="參數組合勝率熱力圖 (WR 已混合)", xaxis_title="CDM 偏差閾值 (%)", yaxis_title="MR 偏離閾值 (%)", height=400)
+                    st.plotly_chart(fig, use_container_width=True)
+
+            out = st.session_state.get("backtest_output")
+            if not out:
+                st.info("先到「回測設定」設定參數，然後點擊「重新計算」。")
+            else:
+                results: BacktestResults = out["results"]
+                trades = out["trades"]
+
+                st.write("---")
+                k1, k2, k3, k4, k5 = st.columns(5)
+                with k1:
+                    st.metric("總盈虧", f"{results.total_return:+.1f}%")
+                with k2:
+                    st.metric("月平均收益", f"{results.monthly_avg_return:+.2f}%")
+                with k3:
+                    st.metric("年化收益", f"{results.annualized_return:+.1f}%")
+                with k4:
+                    st.metric("最大回撤", f"{results.max_drawdown:.1f}%")
+                with k5:
+                    st.metric("勝率", f"{results.win_rate:.1f}%")
+
+                st.divider()
+                s1, s2, s3 = st.columns(3)
+                with s1:
+                    st.markdown(
+                        f"**交易統計**\n\n- 總交易次數: {len(trades)}\n- 勝利次數: {sum(1 for t in trades if float(t.get('pnl_hkd', 0)) > 0)}\n- 失敗次數: {sum(1 for t in trades if float(t.get('pnl_hkd', 0)) < 0)}"
+                    )
+                with s2:
+                    st.markdown(
+                        f"**收益分析**\n\n- 平均獲利: {results.avg_winning_trade:+.2f}%\n- 平均虧損: {results.avg_losing_trade:+.2f}%\n- 盈虧比: {results.profit_factor:.2f}:1"
+                    )
+                with s3:
+                    conf = results.confidence_score()
+                    stars = "⭐" * int(conf / 25)
+                    st.markdown(f"**風險評估**\n\n- 連勝紀錄: {results.win_streak} 次\n- 連敗紀錄: {results.loss_streak} 次\n- 信心指數: {stars} ({conf:.0f}/100)")
+
+                st.write("---")
+                st.markdown("### 策略曲線與交易信號")
+                if trades:
+                    curve = _equity_curve_from_trades(trades)
+                    fig_curve = go.Figure()
+                    fig_curve.add_trace(go.Scatter(x=curve["date"], y=curve["cum_pct"], mode="lines+markers", name="策略累積收益(%)"))
+                    fig_curve.update_layout(height=350, template="plotly_white", yaxis_title="累積收益(%)", xaxis_title="日期")
+                    st.plotly_chart(fig_curve, use_container_width=True)
+
+                    fig_sig = go.Figure()
+                    fig_sig.add_trace(go.Candlestick(x=df_bt.index, open=df_bt["Open"], high=df_bt["High"], low=df_bt["Low"], close=df_bt["Close"], name="K線"))
+                    for t in trades:
+                        fig_sig.add_trace(go.Scatter(x=[t["entry_date"]], y=[t["entry_price"]], mode="markers", marker=dict(symbol="triangle-up", color="green", size=12), showlegend=False))
+                        fig_sig.add_trace(go.Scatter(x=[t["exit_date"]], y=[t["exit_price"]], mode="markers", marker=dict(symbol="triangle-down", color="red", size=12), showlegend=False))
+                    fig_sig.update_layout(height=520, template="plotly_white", xaxis_rangeslider_visible=False, title="K線圖 + 交易信號")
+                    st.plotly_chart(fig_sig, use_container_width=True)
+                else:
+                    st.info("此區間內沒有產生任何交易。")
+
+                st.write("---")
+                st.markdown("### 詳細交易列表")
+                if trades:
+                    rows = []
+                    for i, t in enumerate(trades, 1):
+                        rows.append(
+                            {
+                                "序號": i,
+                                "買入日期": pd.to_datetime(t["entry_date"]).strftime("%Y-%m-%d"),
+                                "賣出日期": pd.to_datetime(t["exit_date"]).strftime("%Y-%m-%d"),
+                                "買入價": f"{float(t['entry_price']):.2f}",
+                                "賣出價": f"{float(t['exit_price']):.2f}",
+                                "收益%": f"{float(t['pnl_pct']):+.2f}%",
+                                "盈虧": "✅ 獲利" if float(t.get("pnl_hkd", 0.0)) > 0 else "❌ 虧損",
+                                "原因": str(t.get("signal_type", "")),
+                                "賣出原因": str(t.get("exit_reason", "")),
+                                "持倉(交易日)": int(t.get("holding_days", 0)),
+                            }
+                        )
+                    df_tr = pd.DataFrame(rows)
+                    st.dataframe(df_tr, use_container_width=True, hide_index=True)
+                    st.download_button("📥 導出 CSV", data=df_tr.to_csv(index=False).encode("utf-8-sig"), file_name=f"交易明細_{current_code}_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True)
+
+    with sub3:
+        st.markdown("### 🆚 策略對標")
+        if "cmp_start" not in st.session_state:
+            st.session_state.cmp_start = st.session_state.bt_start
+        if "cmp_end" not in st.session_state:
+            st.session_state.cmp_end = st.session_state.bt_end
+
+        c1, c2, c3, c4, c5 = st.columns([1.5, 1.5, 0.7, 0.7, 0.7])
+        with c1:
+            st.session_state.cmp_start = st.date_input("開始日期", value=st.session_state.cmp_start, min_value=min_d, max_value=max_d, key=f"cmp_start_{current_code}")
+        with c2:
+            st.session_state.cmp_end = st.date_input("結束日期", value=st.session_state.cmp_end, min_value=min_d, max_value=max_d, key=f"cmp_end_{current_code}")
+        with c3:
+            if st.button("⏪ 1Y", use_container_width=True, key=f"cmp_1y_{current_code}"):
+                st.session_state.cmp_end = max_d
+                st.session_state.cmp_start = max(min_d, (pd.to_datetime(max_d) - timedelta(days=365)).date())
+                st.rerun()
+        with c4:
+            if st.button("⏪ 2Y", use_container_width=True, key=f"cmp_2y_{current_code}"):
+                st.session_state.cmp_end = max_d
+                st.session_state.cmp_start = max(min_d, (pd.to_datetime(max_d) - timedelta(days=730)).date())
+                st.rerun()
+        with c5:
+            if st.button("⏪ ALL", use_container_width=True, key=f"cmp_all_{current_code}"):
+                st.session_state.cmp_start = min_d
+                st.session_state.cmp_end = max_d
+                st.rerun()
+
+        cs = st.session_state.cmp_start
+        ce = st.session_state.cmp_end
+        if cs > ce:
+            cs, ce = ce, cs
+        df_cmp = df[(df.index >= pd.to_datetime(cs)) & (df.index <= pd.to_datetime(ce))].copy()
+        trading_days = len(df_cmp)
+        span_years = (pd.to_datetime(ce) - pd.to_datetime(cs)).days / 365.0
+        st.caption(f"⏱️ 時間段概況: 共 {trading_days} 個交易日，時間跨度: {span_years:.1f} 年")
+
+        p_cmp = dict(st.session_state.strategy_compare_params or {})
+        if not p_cmp:
+            p_cmp = {
+                "capital": float(p.get("capital", 10000)),
+                "commission_rate": float(p.get("commission_rate", 0.2)),
+                "sell_logic": str(p.get("sell_logic", "🎯 止盈 (+5% 目標)")),
+                "cdm_threshold": float(p.get("cdm_threshold", 5.0)),
+                "mr_threshold": float(p.get("mr_threshold", 3.0)),
+                "wr_threshold": float(p.get("wr_threshold", -80.0)),
+            }
+
+        st.markdown("**⚙️ 共同參數 (所有策略適用)**")
+        x1, x2, x3 = st.columns(3)
+        with x1:
+            p_cmp["capital"] = st.number_input("交易本金 (HKD)", min_value=1000, max_value=1000000, value=int(p_cmp.get("capital", 10000)), step=1000, key=f"cmp_cap_{current_code}")
+        with x2:
+            p_cmp["commission_rate"] = st.number_input("手續費率 (%)", min_value=0.0, max_value=1.0, value=float(p_cmp.get("commission_rate", 0.2)), step=0.05, key=f"cmp_comm_{current_code}")
+        with x3:
+            sell_opts = ["🎯 止盈 (+5%)", "🛑 止損 (-3%)", "⏱️ 時間 (5日)"]
+            current_sell = p_cmp.get("sell_logic", "🎯 止盈 (+5%)")
+            if current_sell not in sell_opts:
+                if current_sell == "🎯 止盈 (+5% 目標)":
+                    current_sell = "🎯 止盈 (+5%)"
+                elif current_sell == "🛑 止損 (-3% 止損)":
+                    current_sell = "🛑 止損 (-3%)"
+                elif current_sell == "⏱️ 時間 (5 交易日)":
+                    current_sell = "⏱️ 時間 (5日)"
+                else:
+                    current_sell = "🎯 止盈 (+5%)"
+            p_cmp["sell_logic"] = st.radio("賣出邏輯", sell_opts, index=sell_opts.index(current_sell), key=f"cmp_sell_{current_code}", help="所有策略採用相同賣出邏輯（公平對比）")
+
+        st.markdown("**進階閾值 (用於對標)**")
+        y1, y2, y3 = st.columns(3)
+        with y1:
+            p_cmp["cdm_threshold"] = st.slider("CDM 偏差閾值 (%)", min_value=2.0, max_value=10.0, value=float(p_cmp.get("cdm_threshold", 5.0)), step=0.5, key=f"cmp_cdm_th_{current_code}")
+        with y2:
+            p_cmp["mr_threshold"] = st.slider("MR 偏離閾值 (%)", min_value=1.0, max_value=8.0, value=float(p_cmp.get("mr_threshold", 3.0)), step=0.5, key=f"cmp_mr_th_{current_code}")
+        with y3:
+            p_cmp["wr_threshold"] = st.slider("FZM WR 閾值", min_value=-100, max_value=-50, value=int(p_cmp.get("wr_threshold", -80)), step=5, key=f"cmp_wr_th_{current_code}")
+
+        st.session_state.strategy_compare_params = p_cmp
+
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            run_cmp = st.button("🆚 開始對標 (全部策略)", type="primary", use_container_width=True, key=f"cmp_run_{current_code}")
+        with b2:
+            if st.button("🔄 清空結果", use_container_width=True, key=f"cmp_clear_{current_code}"):
+                st.session_state.comparison_results = None
+                st.rerun()
+        export_clicked = False
+        with b3:
+            export_clicked = st.button("📥 導出對比報告", use_container_width=True, key=f"cmp_export_{current_code}")
+
+        if len(df_cmp) < 50:
+            st.warning("對標數據不足（至少需要 50 個交易日）。")
+        else:
+            if run_cmp:
+                with st.spinner("策略對標計算中..."):
+                    st.session_state.comparison_results = run_strategy_comparison_cached(
+                        current_code,
+                        df_cmp,
+                        float(p_cmp["capital"]),
+                        float(p_cmp["commission_rate"]),
+                        str(p_cmp["sell_logic"]),
+                        float(p_cmp["cdm_threshold"]),
+                        float(p_cmp["mr_threshold"]),
+                        float(p_cmp["wr_threshold"]),
+                        watchlist_data.get(current_code, {}),
+                    )
+
+        comp_out = st.session_state.get("comparison_results")
+        if comp_out:
+            results_list: List[StrategyComparisonResult] = comp_out["results"]
+            ranked = sorted(results_list, key=lambda r: r.rank_score, reverse=True)
+
+            st.write("---")
+            st.markdown("### 🆚 三大策略核心指標對比")
+            cols = st.columns(3)
+            for idx, r in enumerate(ranked):
+                with cols[idx]:
+                    rank_emoji = ["🥇", "🥈", "🥉"][idx]
+                    if idx == 0:
+                        bg_color, border_color = "#d4edda", "#28a745"
+                    elif idx == 1:
+                        bg_color, border_color = "#fff3cd", "#ffc107"
+                    else:
+                        bg_color, border_color = "#f8d7da", "#dc3545"
+
+                    card_html = f"""
+                    <div style="
+                        border: 3px solid {border_color};
+                        border-radius: 10px;
+                        padding: 18px;
+                        background-color: {bg_color};
+                        margin-bottom: 10px;
+                    ">
+                        <div style="text-align: center;">
+                            <h3 style="margin: 0; color: {border_color};">{rank_emoji} {r.strategy_name} 策略 {rank_emoji}</h3>
+                            <div style="color: #666; font-size: 12px; margin-top: 6px;">
+                                年化收益 <b>{r.annual_return:+.1f}%</b> ｜ 勝率 <b>{r.win_rate:.1f}%</b>
+                            </div>
+                        </div>
+                        <hr style="border: none; border-top: 1px solid {border_color}; margin: 12px 0;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
+                            <div>最大回撤: <b>{r.max_drawdown:.1f}%</b></div>
+                            <div>交易數: <b>{r.trades_count}</b></div>
+                            <div>夏普比: <b>{r.sharpe_ratio:.2f}</b></div>
+                            <div>盈虧比: <b>{r.profit_factor:.2f}:1</b></div>
+                        </div>
+                        <hr style="border: none; border-top: 1px solid {border_color}; margin: 12px 0;">
+                        <div style="text-align: center;">
+                            <div style="font-weight: 700;">⭐ 評級: {r.rating}</div>
+                            <div style="color: #666; font-size: 12px;">綜合評分: {r.rank_score:.1f}/100</div>
+                        </div>
+                    </div>
+                    """
+                    st.markdown(card_html, unsafe_allow_html=True)
+
+                    d1, d2 = st.columns(2)
+                    with d1:
+                        if st.button("📊 詳情", use_container_width=True, key=f"cmp_detail_{current_code}_{r.strategy_name}"):
+                            st.session_state[f"cmp_show_{current_code}_{r.strategy_name}"] = not st.session_state.get(f"cmp_show_{current_code}_{r.strategy_name}", False)
+                    with d2:
+                        if st.button(f"✅ 採用 {r.strategy_name}", use_container_width=True, key=f"cmp_adopt_{current_code}_{r.strategy_name}"):
+                            st.session_state.selected_strategy = r.strategy_name
+                            st.session_state.backtest_params = _apply_strategy_to_params(r.strategy_name, st.session_state.backtest_params)
+                            st.success(f"已採用 {r.strategy_name} 策略到回測設定")
+
+                    show_detail = bool(st.session_state.get(f"cmp_show_{current_code}_{r.strategy_name}", False))
+                    with st.expander(f"{r.strategy_name} 詳細交易與統計", expanded=show_detail):
+                        prof = _strategy_profile(r.strategy_name)
+                        if prof:
+                            st.write(f"策略原理：{prof.get('principle','')}")
+                            st.write(f"適用場景：{prof.get('scene','')}")
+                        if r.trades:
+                            tdf = pd.DataFrame(r.trades).copy()
+                            show_cols = [c for c in ["entry_date", "exit_date", "entry_price", "exit_price", "pnl_pct", "exit_reason", "holding_days"] if c in tdf.columns]
+                            if show_cols:
+                                tdf = tdf[show_cols]
+                            st.dataframe(tdf.tail(30), use_container_width=True, hide_index=True)
+                        else:
+                            st.info("此時間段內沒有交易。")
+
+            st.caption(
+                f"💡 對標說明：所有策略基於相同時間段 ({cs} ~ {ce})，共同參數（本金 {int(p_cmp['capital'])} HKD，手續費 {float(p_cmp['commission_rate']):.2f}%），賣出邏輯 {p_cmp['sell_logic']}。"
+            )
+
+            st.write("---")
+            st.markdown("### 📈 三大策略累積收益曲線對比")
+            curves = comp_out["curves"]
+            fig = go.Figure()
+            colors = {"CDM": "#1f77b4", "FZM": "#ff7f0e", "MR": "#2ca02c"}
+            for r in ranked:
+                cdf = curves.get(r.strategy_name)
+                if cdf is None or cdf.empty:
+                    continue
+                fig.add_trace(
+                    go.Scatter(
+                        x=cdf["date"],
+                        y=cdf["cum_pct"],
+                        mode="lines+markers",
+                        name=f"{r.strategy_name} (年化 {r.annual_return:+.1f}%)",
+                        line=dict(color=colors.get(r.strategy_name, "#666"), width=2),
+                    )
+                )
+            if not df_cmp.empty:
+                base = (df_cmp["Close"] / float(df_cmp["Close"].iloc[0]) - 1) * 100
+                fig.add_trace(go.Scatter(x=df_cmp.index, y=base, mode="lines", name="買入持有", line=dict(color="#888", dash="dash")))
+            fig.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.5)
+            fig.update_layout(height=420, template="plotly_white", yaxis_title="累積收益(%)", xaxis_title="日期", hovermode="x unified")
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.write("---")
+            st.markdown("### 📊 詳細對比表格")
+            by_name = {r.strategy_name: r for r in results_list}
+            curves = comp_out["curves"]
+            rec_days_vals = {k: _compute_recovery_days(curves.get(k)) for k in ["CDM", "FZM", "MR"] if k in by_name}
+
+            def _best(values: Dict[str, float], higher_is_better: bool) -> str:
+                items = [(k, v) for k, v in values.items() if pd.notna(v)]
+                if not items:
+                    return ""
+                best_k, _ = (max(items, key=lambda x: x[1]) if higher_is_better else min(items, key=lambda x: x[1]))
+                return best_k
+
+            annual_vals = {k: by_name[k].annual_return for k in ["CDM", "FZM", "MR"] if k in by_name}
+            win_vals = {k: by_name[k].win_rate for k in ["CDM", "FZM", "MR"] if k in by_name}
+            mdd_vals = {k: by_name[k].max_drawdown for k in ["CDM", "FZM", "MR"] if k in by_name}
+            sharpe_vals = {k: by_name[k].sharpe_ratio for k in ["CDM", "FZM", "MR"] if k in by_name}
+            pf_vals = {k: by_name[k].profit_factor for k in ["CDM", "FZM", "MR"] if k in by_name}
+            avgw_vals = {k: by_name[k].avg_winning for k in ["CDM", "FZM", "MR"] if k in by_name}
+            avgl_vals = {k: by_name[k].avg_losing for k in ["CDM", "FZM", "MR"] if k in by_name}
+            conf_vals = {k: by_name[k].rank_score for k in ["CDM", "FZM", "MR"] if k in by_name}
+            tc_vals = {k: float(by_name[k].trades_count) for k in ["CDM", "FZM", "MR"] if k in by_name}
+
+            best_annual = _best(annual_vals, True)
+            best_win = _best(win_vals, True)
+            best_mdd = _best(mdd_vals, False)
+            best_rec = _best({k: v for k, v in rec_days_vals.items() if pd.notna(v)}, False)
+            best_sharpe = _best(sharpe_vals, True)
+            best_pf = _best(pf_vals, True)
+            best_avgw = _best(avgw_vals, True)
+            best_avgl = _best(avgl_vals, True)
+            best_conf = _best(conf_vals, True)
+            best_tc = _best(tc_vals, False)
+            win_streak_vals = {k: float(by_name[k].win_streak) for k in ["CDM", "FZM", "MR"] if k in by_name}
+            loss_streak_vals = {k: float(by_name[k].loss_streak) for k in ["CDM", "FZM", "MR"] if k in by_name}
+            best_wstreak = _best(win_streak_vals, True)
+            best_lstreak = _best(loss_streak_vals, False)
+
+            def _fmt(name: str, v: float, suffix: str = "", best: str = "") -> str:
+                if pd.isna(v):
+                    return "-"
+                mark = " ✅" if (best and name == best) else ""
+                if suffix == "%":
+                    return f"{float(v):+.1f}%{mark}"
+                if suffix == "p":
+                    return f"{float(v):.2f}{mark}"
+                if suffix == "n":
+                    return f"{int(v)}{mark}"
+                if suffix == "d":
+                    return f"{int(v)} 天{mark}"
+                return f"{float(v):.2f}{mark}"
+
+            rows = []
+            for metric_name, vals, suffix, best in [
+                ("年化收益", annual_vals, "%", best_annual),
+                ("月平均收益", {k: by_name[k].monthly_return for k in by_name}, "%", _best({k: by_name[k].monthly_return for k in by_name}, True)),
+                ("勝率", win_vals, "%", best_win),
+                ("平均獲利", avgw_vals, "%", best_avgw),
+                ("平均虧損", avgl_vals, "%", best_avgl),
+                ("盈虧比", pf_vals, "p", best_pf),
+                ("最大回撤", mdd_vals, "%", best_mdd),
+                ("回撤恢復天數", rec_days_vals, "d", best_rec),
+                ("夏普比率", sharpe_vals, "p", best_sharpe),
+                ("信心指數", conf_vals, "p", best_conf),
+                ("交易次數", tc_vals, "n", best_tc),
+                ("連勝紀錄", win_streak_vals, "n", best_wstreak),
+                ("連敗紀錄", loss_streak_vals, "n", best_lstreak),
+            ]:
+                rows.append(
+                    {
+                        "指標": metric_name,
+                        "CDM": _fmt("CDM", vals.get("CDM", np.nan), suffix=suffix, best=best),
+                        "FZM": _fmt("FZM", vals.get("FZM", np.nan), suffix=suffix, best=best),
+                        "MR": _fmt("MR", vals.get("MR", np.nan), suffix=suffix, best=best),
+                    }
+                )
+            prof_scene = {"CDM": "中長線", "FZM": "短線", "MR": "偏離"}
+            prof_diff = {"CDM": "簡單", "FZM": "中等", "MR": "複雜"}
+            prof_freq = {"CDM": "中等", "FZM": "低", "MR": "高"}
+            prof_false = {"CDM": "中等", "FZM": "低", "MR": "高"}
+            rows.extend(
+                [
+                    {"指標": "適用場景", "CDM": prof_scene["CDM"], "FZM": prof_scene["FZM"], "MR": prof_scene["MR"]},
+                    {"指標": "參數調整難度", "CDM": prof_diff["CDM"] + " ✅", "FZM": prof_diff["FZM"], "MR": prof_diff["MR"]},
+                    {"指標": "信號頻率", "CDM": prof_freq["CDM"], "FZM": prof_freq["FZM"] + " ✅", "MR": prof_freq["MR"]},
+                    {"指標": "虛假信號比例", "CDM": prof_false["CDM"], "FZM": prof_false["FZM"] + " ✅", "MR": prof_false["MR"]},
+                ]
+            )
+            df_tbl = pd.DataFrame(rows)
+            st.dataframe(df_tbl, use_container_width=True, hide_index=True)
+
+            if export_clicked:
+                try:
+                    import openpyxl
+
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                        df_tbl.to_excel(writer, sheet_name="對比指標", index=False)
+                        for r in results_list:
+                            if not r.trades:
+                                continue
+                            tdf = pd.DataFrame(r.trades)
+                            tdf.to_excel(writer, sheet_name=f"{r.strategy_name}_trades", index=False)
+                    output.seek(0)
+                    st.download_button(
+                        "📥 下載 Excel 對比報告",
+                        data=output.getvalue(),
+                        file_name=f"策略對標_{current_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                except Exception:
+                    st.download_button(
+                        "📥 下載 CSV 對比報告",
+                        data=df_tbl.to_csv(index=False).encode("utf-8-sig"),
+                        file_name=f"策略對標_{current_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+
+    with sub4:
+        st.markdown("### 🎯 策略推薦")
+        comp_out = st.session_state.get("comparison_results")
+        if not comp_out:
+            st.info("先到「策略對標」執行對標，才能生成推薦。")
+        else:
+            results_list: List[StrategyComparisonResult] = comp_out["results"]
+            ranked = sorted(results_list, key=lambda r: r.rank_score, reverse=True)
+            best = ranked[0]
+            second = ranked[1] if len(ranked) > 1 else None
+            worst = ranked[-1] if len(ranked) > 2 else None
+
+            st.markdown(f"#### 🥇 推薦策略: {best.strategy_name} ({best.rating}) - 綜合評分 {best.rank_score:.1f}/100")
+            prof = _strategy_profile(best.strategy_name)
+            if prof:
+                st.markdown(f"**策略原理**：{prof.get('principle','')}")
+                st.markdown(f"**適用場景**：{prof.get('scene','')}")
+
+            def _advantages(x: StrategyComparisonResult, all_r: List[StrategyComparisonResult]) -> List[str]:
+                adv = []
+                if x.annual_return == max(r.annual_return for r in all_r):
+                    adv.append(f"年化收益最高 ({x.annual_return:+.1f}%)")
+                if x.win_rate == max(r.win_rate for r in all_r):
+                    adv.append(f"勝率最高 ({x.win_rate:.1f}%)")
+                if x.max_drawdown == min(r.max_drawdown for r in all_r):
+                    adv.append(f"最大回撤最小 ({x.max_drawdown:.1f}%)")
+                if x.trades_count == min(r.trades_count for r in all_r):
+                    adv.append("交易次數最少，手續費負擔較低")
+                if x.sharpe_ratio == max(r.sharpe_ratio for r in all_r):
+                    adv.append(f"風險調整收益最優 (夏普比 {x.sharpe_ratio:.2f})")
+                return adv
+
+            def _disadvantages(x: StrategyComparisonResult, all_r: List[StrategyComparisonResult]) -> List[str]:
+                dis = []
+                if x.max_drawdown > min(r.max_drawdown for r in all_r) * 1.2:
+                    dis.append(f"最大回撤偏大 ({x.max_drawdown:.1f}%)")
+                if x.trades_count > min(r.trades_count for r in all_r) * 1.6:
+                    dis.append("交易次數偏多，手續費負擔較高")
+                if x.win_rate < 60:
+                    dis.append(f"勝率偏低 ({x.win_rate:.1f}%)")
+                return dis
+
+            st.write("---")
+            st.markdown("**優點**")
+            for a in _advantages(best, ranked):
+                st.write(f"- ✅ {a}")
+            st.markdown("**缺點**")
+            for d in _disadvantages(best, ranked):
+                st.write(f"- ❌ {d}")
+
+            st.write("---")
+            st.markdown("### 💡 操作建議")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.write("**1️⃣【首選】**")
+                st.write(f"採用 {best.strategy_name} 策略")
+                b1, b2, b3 = st.columns(3)
+                with b1:
+                    if st.button(f"✅ 採用 {best.strategy_name}", use_container_width=True, key=f"rec_adopt_best_{current_code}"):
+                        st.session_state.selected_strategy = best.strategy_name
+                        st.session_state.backtest_params = _apply_strategy_to_params(best.strategy_name, st.session_state.backtest_params)
+                        st.success(f"已採用 {best.strategy_name} 策略到回測設定")
+                with b2:
+                    if st.button("🔄 交叉驗證", use_container_width=True, key=f"rec_cv_{current_code}"):
+                        cs = st.session_state.get("cmp_start", st.session_state.get("bt_start"))
+                        ce = st.session_state.get("cmp_end", st.session_state.get("bt_end"))
+                        if cs and ce:
+                            cs_dt = pd.to_datetime(cs)
+                            ce_dt = pd.to_datetime(ce)
+                            if cs_dt > ce_dt:
+                                cs_dt, ce_dt = ce_dt, cs_dt
+                            span = ce_dt - cs_dt
+                            cv_end = cs_dt
+                            cv_start = cs_dt - span
+                            df_cv = df[(df.index >= cv_start) & (df.index <= cv_end)].copy()
+                            if len(df_cv) >= 50:
+                                p_cmp = dict(st.session_state.strategy_compare_params or {})
+                                st.session_state.cv_results = run_strategy_comparison_cached(
+                                    current_code,
+                                    df_cv,
+                                    float(p_cmp.get("capital", 10000)),
+                                    float(p_cmp.get("commission_rate", 0.2)),
+                                    str(p_cmp.get("sell_logic", "🎯 止盈 (+5%)")),
+                                    float(p_cmp.get("cdm_threshold", 5.0)),
+                                    float(p_cmp.get("mr_threshold", 3.0)),
+                                    float(p_cmp.get("wr_threshold", -80.0)),
+                                    watchlist_data.get(current_code, {}),
+                                )
+                            else:
+                                st.warning("交叉驗證區間數據不足（至少 50 個交易日）。")
+                with b3:
+                    if st.button("📊 查看詳細回測", use_container_width=True, key=f"rec_view_bt_{current_code}"):
+                        st.session_state.backtest_params = _apply_strategy_to_params(best.strategy_name, st.session_state.backtest_params)
+                        st.session_state.backtest_output = run_backtest_cached(current_code, df_bt, st.session_state.backtest_params, watchlist_data.get(current_code, {}))
+                        st.success("已切換到單策略回測並重新計算")
+
+                cv_out = st.session_state.get("cv_results")
+                if cv_out:
+                    cv_ranked = sorted(cv_out["results"], key=lambda r: r.rank_score, reverse=True)
+                    with st.expander("交叉驗證結果（前一個同長度區間）", expanded=False):
+                        for r in cv_ranked:
+                            st.write(f"{r.strategy_name} | 年化 {r.annual_return:+.1f}% | 勝率 {r.win_rate:.1f}% | 回撤 {r.max_drawdown:.1f}% | 評分 {r.rank_score:.1f}/100")
+            with c2:
+                st.write("**2️⃣【備選】**")
+                if second:
+                    st.write(f"{second.strategy_name} | 評分 {second.rank_score:.1f}/100")
+            with c3:
+                st.write("**3️⃣【風險管理】**")
+                st.write("回測不代表未來，請務必設定止損並控制倉位。")
+
+            st.write("---")
+            st.warning("⚠️ 回測數據基於歷史，無法保證未來表現；市場環境變化時最優策略可能改變。請避免過度槓桿，並控制單次虧損在總資金 2% 以內。")
+
+            prof = _strategy_profile(best.strategy_name)
+            if prof:
+                st.write("---")
+                st.markdown("### 📊 策略特性分析")
+                st.markdown(f"**【策略原理】**\n\n{prof.get('principle','')}")
+                st.markdown("**【參數設置】**")
+                p_cmp = dict(st.session_state.strategy_compare_params or {})
+                st.write(f"CDM 閾值: {float(p_cmp.get('cdm_threshold', 5.0)):.1f}% | MR 閾值: {float(p_cmp.get('mr_threshold', 3.0)):.1f}% | WR 閾值: {float(p_cmp.get('wr_threshold', -80.0)):.0f} | 賣出: {str(p_cmp.get('sell_logic',''))}")
+                ce = st.session_state.get("cmp_end", st.session_state.get("bt_end", max_d))
+                recent = _recent_performance(best.trades, ce, days=30)
+                st.markdown("**【最近表現】(最近 30 天)**")
+                st.write(f"勝率: {recent['win_rate']:.0f}% ({recent['winning_trades']}/{recent['total_trades']} 筆交易獲利)")
+                st.write(f"月均收益: {recent['monthly_return']:+.1f}%")
+                st.write(f"最大單筆虧損: {recent['max_loss']:+.1f}%")
+
+            now = datetime.now()
+            next_eval = now + timedelta(days=30)
+            st.caption(f"📌 最後更新: {now.strftime('%Y-%m-%d %H:%M')}｜🔄 下次自動評估: {next_eval.strftime('%Y-%m-%d')}")
+
+
+@st.cache_data(ttl=300)
+def get_comparison_data(watchlist_codes: List[str], ref_date: str, watchlist_params: Dict[str, Any]) -> Dict[str, Any]:
+    comparison_data = {}
+    ref_dt = pd.to_datetime(ref_date)
+
+    for ticker in watchlist_codes:
+        yt = get_yahoo_ticker(ticker)
+        try:
+            df = yf.download(yt, period="3y", progress=False, auto_adjust=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df[df.index <= ref_dt]
+            if df is None or df.empty or len(df) < 30:
+                continue
+
+            curr_close = float(df["Close"].iloc[-1])
+            prev_close = df["Close"].shift(1).iloc[-1]
+            prev_close = float(prev_close) if pd.notna(prev_close) and float(prev_close) != 0 else np.nan
+            chg_pct = ((curr_close - prev_close) / prev_close * 100) if pd.notna(prev_close) else np.nan
+
+            sma7 = df["Close"].rolling(7).mean().iloc[-1] if len(df) >= 7 else np.nan
+            sma14 = df["Close"].rolling(14).mean().iloc[-1] if len(df) >= 14 else np.nan
+            sma28 = df["Close"].rolling(28).mean().iloc[-1] if len(df) >= 28 else np.nan
+            sma57 = df["Close"].rolling(57).mean().iloc[-1] if len(df) >= 57 else np.nan
+            sma106 = df["Close"].rolling(106).mean().iloc[-1] if len(df) >= 106 else np.nan
+            sma212 = df["Close"].rolling(212).mean().iloc[-1] if len(df) >= 212 else np.nan
+
+            avgp_vals = [curr_close, sma7, sma14, sma28, sma57, sma106, sma212]
+            valid_avgp = [float(v) for v in avgp_vals if pd.notna(v) and float(v) > 0]
+            avg_avgp = (sum(valid_avgp) / len(valid_avgp)) if valid_avgp else np.nan
+            mr_pct = ((curr_close / avg_avgp) - 1) * 100 if pd.notna(avg_avgp) and float(avg_avgp) != 0 else np.nan
+
+            amp0 = np.nan
+            if pd.notna(prev_close) and float(prev_close) != 0:
+                amp0 = (float(df["High"].iloc[-1]) - float(df["Low"].iloc[-1])) / float(prev_close) * 100
+
+            amp_series = (df["High"] - df["Low"]) / df["Close"].shift(1).replace(0, np.nan) * 100
+            amp_rolling = []
+            for p in [7, 14, 28, 57, 106, 212]:
+                v = amp_series.rolling(p).mean().iloc[-1] if len(amp_series) >= p else np.nan
+                amp_rolling.append(float(v) if pd.notna(v) else np.nan)
+            valid_amp = [v for v in amp_rolling if pd.notna(v) and v > 0]
+            avg_amp = (sum(valid_amp) / len(valid_amp)) if valid_amp else np.nan
+            amp_mr_pct = ((float(amp0) / float(avg_amp)) - 1) * 100 if pd.notna(amp0) and pd.notna(avg_amp) and float(avg_amp) != 0 else np.nan
+
+            amp_level = "🟢 低"
+            if pd.notna(avg_amp) and pd.notna(amp0) and float(avg_amp) != 0:
+                ratio = float(amp0) / float(avg_amp)
+                if ratio > 1.5:
+                    amp_level = "🔴 高"
+                elif 1.2 < ratio <= 1.5:
+                    amp_level = "🟠 中等"
+
+            risk_level = "🟡 低風險"
+            if pd.notna(amp_mr_pct):
+                if float(amp_mr_pct) > 50:
+                    risk_level = "🔴 高風險"
+                elif 20 < float(amp_mr_pct) <= 50:
+                    risk_level = "🟠 中風險"
+                elif float(amp_mr_pct) <= 20:
+                    risk_level = "🟡 低風險"
+                if float(amp_mr_pct) < -20:
+                    risk_level = "🟢 超低風險"
+
+            trend_score = _trend_score(curr_close, sma7, sma14, sma28)
+            trend_icon = _trend_icon(trend_score)
+
+            cdm = _cdm_metrics(df, watchlist_params.get(ticker, {}))
+
+            comparison_data[ticker] = {
+                "ticker": ticker,
+                "price": curr_close,
+                "change_pct": float(chg_pct) if pd.notna(chg_pct) else np.nan,
+                "sma7": float(sma7) if pd.notna(sma7) else np.nan,
+                "sma14": float(sma14) if pd.notna(sma14) else np.nan,
+                "sma28": float(sma28) if pd.notna(sma28) else np.nan,
+                "trend_score": trend_score,
+                "trend_icon": trend_icon,
+                "mr_pct": float(mr_pct) if pd.notna(mr_pct) else np.nan,
+                "mr_rating": _mr_rating(mr_pct),
+                "mr_reco": _mr_recommendation(trend_icon, mr_pct),
+                "amp0": float(amp0) if pd.notna(amp0) else np.nan,
+                "avg_amp": float(avg_amp) if pd.notna(avg_amp) else np.nan,
+                "amp_mr_pct": float(amp_mr_pct) if pd.notna(amp_mr_pct) else np.nan,
+                "amp_level": amp_level,
+                "risk_level": risk_level,
+                "amp_pred": (
+                    f"{float(avg_amp) * 0.8:.2f}% - {float(avg_amp) * 1.2:.2f}%"
+                    if pd.notna(avg_amp)
+                    else "-"
+                ),
+                "cdm_status": cdm["status"],
+                "cdm_target": cdm["target"],
+                "cdm_diff_pct": cdm["diff_pct"],
+                "cdm_tor_ok": cdm["tor_ok"],
+                "cdm_confidence": cdm["confidence"],
+                "cdm_tor_info": cdm["tor_info"],
+            }
+        except Exception:
+            continue
+
+    return comparison_data
+
+def _apply_comparison_filters(df: pd.DataFrame, filters: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    if not filters:
+        return df
+
+    out = df.copy()
+
+    trend = filters.get("trend")
+    if trend:
+        allowed = set()
+        for t in trend:
+            if "⬆️⬆️⬆️" in t:
+                allowed.add("⬆️⬆️⬆️")
+            elif "⬆️⬆️" in t:
+                allowed.add("⬆️⬆️")
+            elif "⬆️" in t:
+                allowed.add("⬆️")
+            elif "⬇️" in t:
+                allowed.add("⬇️⬇️⬇️")
+        if allowed:
+            out = out[out["趨勢"].isin(allowed)]
+
+    mr = filters.get("mr")
+    if mr and "MR級別" in out.columns:
+        allowed = set([m.split(" ")[0] for m in mr])
+        out = out[out["MR級別"].str.split(" ").str[0].isin(allowed)]
+
+    cdm = filters.get("cdm")
+    if cdm and "CDM狀態" in out.columns:
+        allowed = set([c.split(" ")[0] for c in cdm])
+        out = out[out["CDM狀態"].str.split(" ").str[0].isin(allowed)]
+
+    return out
+
+def _render_table_with_ticker_buttons(title: str, rows: list[dict], columns: list[tuple[str, str]]):
+    st.subheader(title)
+    if not rows:
+        st.info("無資料")
+        return
+
+    header_cols = st.columns([1] + [1 for _ in columns])
+    header_cols[0].markdown("**股票**")
+    for i, (col_key, col_label) in enumerate(columns, start=1):
+        header_cols[i].markdown(f"**{col_label}**")
+
+    for r in rows:
+        cols = st.columns([1] + [1 for _ in columns])
+        t = r.get("股票", "")
+        if cols[0].button(str(t), key=f"compare_nav_{title}_{t}_{r.get('_row_id', '')}", use_container_width=True):
+            st.session_state.current_view = str(t)
+            st.session_state.comparison_mode = False
+            st.rerun()
+        for i, (col_key, _) in enumerate(columns, start=1):
+            cols[i].write(r.get(col_key, ""))
+
+def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, Any]):
+    st.title("📊 港股收藏夾對比面板")
+
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+    with col1:
+        if st.button("🏠 回到主頁面", use_container_width=True):
+            st.session_state.comparison_mode = False
+            st.rerun()
+    with col2:
+        if st.button("🔄 刷新數據", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+    with col4:
+        if st.button("🔧 篩選設定", use_container_width=True):
+            st.session_state.show_filter = not st.session_state.get("show_filter", False)
+    download_slot = col3.empty()
+
+    st.write("---")
+
+    if st.session_state.get("show_filter", False):
+        with st.expander("🔧 篩選設定", expanded=True):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                filter_trend = st.multiselect(
+                    "篩選趨勢",
+                    ["⬆️⬆️⬆️ 強勢", "⬆️⬆️ 上升", "⬆️ 弱勢", "⬇️ 下跌"],
+                    default=["⬆️⬆️⬆️ 強勢", "⬆️⬆️ 上升"],
+                )
+            with c2:
+                filter_mr = st.multiselect(
+                    "篩選偏差",
+                    ["🔴 極度", "🟠 中度", "🟡 輕度", "🟢 正常"],
+                    default=["🔴 極度", "🟠 中度"],
+                )
+            with c3:
+                filter_cdm = st.multiselect(
+                    "篩選 CDM 狀態",
+                    ["🔴 觸發", "⏳ 待觀察", "❌ 未觸發", "⚙️ 未配置"],
+                    default=["🔴 觸發", "⏳ 待觀察"],
+                )
+            if st.button("✅ 應用篩選", use_container_width=True):
+                st.session_state.comparison_filters = {"trend": filter_trend, "mr": filter_mr, "cdm": filter_cdm}
+
+    with st.spinner("彙總對比數據中..."):
+        comp = get_comparison_data(watchlist_list, st.session_state.ref_date.strftime("%Y-%m-%d"), watchlist_data)
+
+    if not comp:
+        st.warning("無法獲取對比數據（可能是網路或資料不足）。")
+        return
+
+    base_rows = []
+    for t, d in comp.items():
+        base_rows.append(
+            {
+                "股票": t,
+                "現價": d["price"],
+                "變化%": d["change_pct"],
+                "SMA7": d["sma7"],
+                "SMA14": d["sma14"],
+                "SMA28": d["sma28"],
+                "趨勢": d["trend_icon"],
+                "趨勢分數": d["trend_score"],
+                "AvgP MR%": d["mr_pct"],
+                "MR級別": d["mr_rating"],
+                "推薦度": d["mr_reco"],
+                "CDM狀態": d["cdm_status"],
+                "CDM目標價": d["cdm_target"],
+                "CDM偏差%": d["cdm_diff_pct"],
+                "TOR信號": ("✅" if d["cdm_tor_ok"] is True else "❌" if d["cdm_tor_ok"] is False else "-"),
+                "信心度": d["cdm_confidence"],
+                "AMP(%)": d["amp0"],
+                "Avg AMP": d["avg_amp"],
+                "AMP MR%": d["amp_mr_pct"],
+                "級別": d["amp_level"],
+                "預測振幅": d["amp_pred"],
+                "風險等級": d["risk_level"],
+            }
+        )
+
+    df_base = pd.DataFrame(base_rows)
+
+    filters = st.session_state.get("comparison_filters")
+
+    df_trend = df_base[["股票", "現價", "變化%", "SMA7", "SMA14", "SMA28", "趨勢", "趨勢分數"]].copy()
+    df_trend["現價"] = df_trend["現價"].map(lambda x: "-" if pd.isna(x) else f"{float(x):.2f}")
+    df_trend["變化%"] = df_trend["變化%"].map(lambda x: "-" if pd.isna(x) else f"{float(x):+.2f}%")
+    for k in ["SMA7", "SMA14", "SMA28"]:
+        df_trend[k] = df_trend[k].map(lambda x: "-" if pd.isna(x) else f"{float(x):.2f}")
+    df_trend = df_trend.sort_values("趨勢分數", ascending=False).drop(columns=["趨勢分數"])
+    df_trend = _apply_comparison_filters(df_trend, filters)
+
+    trend_rows = []
+    for idx, row in df_trend.iterrows():
+        trend_rows.append({**row.to_dict(), "_row_id": str(idx)})
+    _render_table_with_ticker_buttons(
+        "📈 【SMA 上升趨勢排序】",
+        trend_rows,
+        [("現價", "現價"), ("變化%", "變化%"), ("SMA7", "SMA7"), ("SMA14", "SMA14"), ("SMA28", "SMA28"), ("趨勢", "趨勢")],
+    )
+
+    df_mr = df_base[["股票", "現價", "AvgP MR%", "MR級別", "趨勢", "推薦度", "趨勢分數"]].copy()
+    df_mr["現價"] = df_mr["現價"].map(lambda x: "-" if pd.isna(x) else f"{float(x):.2f}")
+    df_mr["AvgP MR%"] = df_mr["AvgP MR%"].map(lambda x: "-" if pd.isna(x) else f"{float(x):+.2f}%")
+    df_mr["_abs_mr"] = df_base["AvgP MR%"].abs()
+    df_mr = df_mr.sort_values(["_abs_mr", "趨勢分數"], ascending=[False, False]).drop(columns=["_abs_mr", "趨勢分數"])
+    df_mr = _apply_comparison_filters(df_mr.rename(columns={"趨勢": "趨勢"}), filters)
+    mr_rows = []
+    for rank, (idx, row) in enumerate(df_mr.iterrows(), start=1):
+        r = row.to_dict()
+        r["排名"] = rank
+        mr_rows.append({**r, "_row_id": str(idx)})
+    _render_table_with_ticker_buttons(
+        "💰 【MR 偏差排序 - 機會大小】",
+        mr_rows,
+        [("排名", "排名"), ("現價", "現價"), ("AvgP MR%", "AvgP MR%"), ("MR級別", "評級"), ("趨勢", "上升勢"), ("推薦度", "推薦")],
+    )
+
+    df_cdm = df_base[["股票", "CDM狀態", "CDM目標價", "CDM偏差%", "TOR信號", "信心度", "趨勢"]].copy()
+    df_cdm["CDM目標價"] = df_cdm["CDM目標價"].map(lambda x: "-" if pd.isna(x) else f"{float(x):.2f}")
+    df_cdm["CDM偏差%"] = df_cdm["CDM偏差%"].map(lambda x: "-" if pd.isna(x) else f"{float(x):+.2f}%")
+    df_cdm["信心度"] = df_cdm["信心度"].map(lambda x: "-" if pd.isna(x) else f"{float(x):.0f}%")
+    df_cdm = _apply_comparison_filters(df_cdm, filters)
+    cdm_rows = []
+    for idx, row in df_cdm.iterrows():
+        cdm_rows.append({**row.to_dict(), "_row_id": str(idx)})
+    _render_table_with_ticker_buttons(
+        "🔴 【CDM 觸發狀態 - 即時機會】",
+        cdm_rows,
+        [("CDM狀態", "CDM狀態"), ("CDM目標價", "目標價"), ("CDM偏差%", "偏差%"), ("TOR信號", "TOR信號"), ("信心度", "信心度")],
+    )
+
+    df_amp = df_base[["股票", "AMP(%)", "AMP MR%", "級別", "預測振幅", "風險等級", "趨勢"]].copy()
+    df_amp["_amp_mr_sort"] = df_base["AMP MR%"]
+    df_amp["AMP(%)"] = df_amp["AMP(%)"].map(lambda x: "-" if pd.isna(x) else f"{float(x):.2f}%")
+    df_amp["AMP MR%"] = df_amp["AMP MR%"].map(lambda x: "-" if pd.isna(x) else f"{float(x):+.0f}%")
+    df_amp = df_amp.sort_values("_amp_mr_sort", ascending=False).drop(columns=["_amp_mr_sort"])
+    df_amp = _apply_comparison_filters(df_amp, filters)
+    amp_rows = []
+    for idx, row in df_amp.iterrows():
+        amp_rows.append({**row.to_dict(), "_row_id": str(idx)})
+    _render_table_with_ticker_buttons(
+        "📊 【振幅對比 - 交易機會大小】",
+        amp_rows,
+        [("AMP(%)", "AMP(%)"), ("AMP MR%", "AMP MR%"), ("級別", "級別"), ("預測振幅", "預測振幅"), ("風險等級", "風險等級")],
+    )
+
+    def _trend_points(icon: str) -> float:
+        if icon == "⬆️⬆️⬆️":
+            return 10.0
+        if icon == "⬆️⬆️":
+            return 7.0
+        if icon == "⬆️":
+            return 5.0
+        return 2.0
+
+    def _cdm_points(status: str) -> float:
+        if "🔴" in status:
+            return 10.0
+        if "⏳" in status:
+            return 6.0
+        if "❌" in status:
+            return 2.0
+        return 0.0
+
+    def _dev_points(trend_icon: str, mr_pct: float) -> float:
+        if pd.isna(mr_pct):
+            return 0.0
+        v = abs(float(mr_pct))
+        if v <= 1:
+            return 4.0
+        if 1 < v <= 3:
+            return 7.0
+        if 3 < v <= 5:
+            return 10.0 if trend_icon in ("⬆️⬆️⬆️", "⬆️⬆️") else 6.0
+        return 8.0 if trend_icon in ("⬆️⬆️⬆️", "⬆️⬆️") else 4.0
+
+    def _amp_points(trend_icon: str, amp_level: str) -> float:
+        if "🔴" in amp_level or "🟠" in amp_level:
+            return 10.0 if trend_icon in ("⬆️⬆️⬆️", "⬆️⬆️") else 4.0
+        if "🟢" in amp_level:
+            return 3.0
+        return 0.0
+
+    score_rows = []
+    for r in base_rows:
+        tr = r.get("趨勢", "⬇️⬇️⬇️")
+        mr_v = r.get("AvgP MR%")
+        cdm_s = r.get("CDM狀態", "⚙️ 未配置")
+        amp_level = r.get("級別", "🟢 低")
+        score = (
+            _trend_points(tr) * 0.25
+            + _dev_points(tr, mr_v) * 0.30
+            + _cdm_points(cdm_s) * 0.25
+            + _amp_points(tr, amp_level) * 0.20
+        )
+        if score >= 8.5:
+            action = "🟢 買入重點"
+        elif 7.0 <= score < 8.5:
+            action = "🟡 可考慮"
+        elif 5.5 <= score < 7.0:
+            action = "🔵 觀望"
+        else:
+            action = "🔴 謹慎"
+
+        score_rows.append(
+            {
+                "股票": r["股票"],
+                "評分": float(score),
+                "趨勢": tr,
+                "偏差": r.get("MR級別", "-"),
+                "振幅": r.get("級別", "-"),
+                "推薦操作": action,
+                "CDM": cdm_s,
+            }
+        )
+
+    df_score = pd.DataFrame(score_rows).sort_values("評分", ascending=False)
+    df_score = _apply_comparison_filters(df_score.rename(columns={"CDM": "CDM狀態", "偏差": "MR級別"}), filters).rename(
+        columns={"CDM狀態": "CDM", "MR級別": "偏差"}
+    )
+    score_table_rows = []
+    for rank, (idx, row) in enumerate(df_score.iterrows(), start=1):
+        medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else str(rank)
+        score_table_rows.append(
+            {
+                "_row_id": str(idx),
+                "股票": row["股票"],
+                "排名": medal,
+                "評分": f"{float(row['評分']):.2f}",
+                "趨勢": row["趨勢"],
+                "偏差": row["偏差"],
+                "振幅": row["振幅"],
+                "推薦操作": row["推薦操作"],
+            }
+        )
+    _render_table_with_ticker_buttons(
+        "⭐ 【綜合評分排序 - 當日最佳機會】",
+        score_table_rows,
+        [("排名", "排名"), ("評分", "評分"), ("趨勢", "趨勢"), ("偏差", "偏差"), ("振幅", "振幅"), ("推薦操作", "推薦操作")],
+    )
+
+    try:
+        import openpyxl
+
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df_trend.to_excel(writer, sheet_name="SMA趨勢", index=False)
+            df_mr.drop(columns=["趨勢"], errors="ignore").to_excel(writer, sheet_name="MR偏差", index=False)
+            df_cdm.to_excel(writer, sheet_name="CDM狀態", index=False)
+            df_amp.to_excel(writer, sheet_name="振幅對比", index=False)
+            df_score.to_excel(writer, sheet_name="綜合評分", index=False)
+        output.seek(0)
+
+        download_slot.download_button(
+            label="⬇️ 下載報告",
+            data=output.getvalue(),
+            file_name=f"港股對比報告_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    except Exception:
+        csv_data = df_base.to_csv(index=False).encode("utf-8-sig")
+        download_slot.download_button(
+            label="⬇️ 下載報告(CSV)",
+            data=csv_data,
+            file_name=f"港股對比報告_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    colf1, colf2 = st.columns([3, 1])
+    with colf1:
+        st.caption(f"📌 最後更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (已同步)")
+    with colf2:
+        st.caption("💡 點擊股票代號可查看詳細圖表")
+
 # v9.6 新增：模擬買賣盤數據
 def simulate_bs_data(df, tsi):
     """
@@ -214,6 +2142,7 @@ def run_analysis_logic(df, symbol, params):
     CDM_COEF1, CDM_COEF2, CDM_THRESHOLD = 0.7, 0.5, 0.05
     curr_price = df['Close'].iloc[-1]
     today = datetime.now().date()
+    down6_trigger = is_consecutive_down(df["Close"], 6)
     
     # CDM 運算
     cdm_status, target_price_str, diff_str = "未設定參數", "N/A", "N/A"
@@ -294,10 +2223,12 @@ def run_analysis_logic(df, symbol, params):
     cond_b = (val_willr < -80) 
     fzm_status = "🔴 <b>觸發</b>" if (cond_a and cond_b) else "未觸發"
     trend_str = "站上雙均線" if cond_a else "均線下方"
+    down6_status = "🔴 <b>觸發</b>" if down6_trigger else "未觸發"
 
     report = f"""<b>[股票警示] {symbol} 分析報告</b>
 <b>1. CDM: {cdm_status}</b> (目標: {target_price_str}, 偏差: {diff_str}%, {tor_info})
 <b>2. FZM: {fzm_status}</b> (WR: {val_willr:.2f}, {trend_str})
+<b>3. 連跌6日: {down6_status}</b>
 建議止損: {lowest_low:.2f}
 """
     return report
@@ -307,6 +2238,12 @@ if 'ref_date' not in st.session_state:
     st.session_state.ref_date = datetime.now().date()
 if 'current_view' not in st.session_state:
     st.session_state.current_view = ""
+if "comparison_mode" not in st.session_state:
+    st.session_state.comparison_mode = False
+if "show_filter" not in st.session_state:
+    st.session_state.show_filter = False
+if "comparison_filters" not in st.session_state:
+    st.session_state.comparison_filters = {}
 
 # --- 6. 側邊欄 ---
 with st.sidebar:
@@ -314,8 +2251,10 @@ with st.sidebar:
     
     # Telegram 設定
     with st.expander("✈️ Telegram 設定", expanded=False):
-        def_token = st.secrets["telegram"]["token"] if "telegram" in st.secrets else ""
-        def_chat_id = st.secrets["telegram"]["chat_id"] if "telegram" in st.secrets else ""
+        secrets = get_secrets_dict()
+        telegram_cfg = secrets.get("telegram", {}) if isinstance(secrets.get("telegram", {}), dict) else {}
+        def_token = telegram_cfg.get("token", "")
+        def_chat_id = telegram_cfg.get("chat_id", "")
         tg_token = st.text_input("Bot Token", value=def_token, type="password")
         tg_chat_id = st.text_input("Chat ID", value=def_chat_id)
         
@@ -396,107 +2335,118 @@ if not current_code:
     if not watchlist_list:
         st.info("👈 您的收藏清單為空，請從左側加入股票。")
     else:
-        if st.button("🔄 刷新所有數據"): st.rerun()
+        c_btn_1, c_btn_2 = st.columns(2)
+        with c_btn_1:
+            if st.button("🔄 刷新所有數據", use_container_width=True):
+                st.rerun()
+        with c_btn_2:
+            if st.button("📊 比較模式", use_container_width=True, type="primary"):
+                st.session_state.comparison_mode = True
+                st.rerun()
         st.write("---")
+
+        if st.session_state.get("comparison_mode", False):
+            render_comparison_page(watchlist_list, watchlist_data)
+        else:
         
-        # 遍歷收藏清單，顯示卡片
-        for ticker in watchlist_list:
-            yt = get_yahoo_ticker(ticker)
-            with st.spinner(f"正在分析 {ticker}..."):
-                try:
-                    df_w = yf.download(yt, period="1y", progress=False, auto_adjust=False)
-                    if isinstance(df_w.columns, pd.MultiIndex): df_w.columns = df_w.columns.get_level_values(0)
-                    # 切割日期
-                    end_dt = pd.to_datetime(st.session_state.ref_date)
-                    df_w = df_w[df_w.index <= end_dt]
+            # 遍歷收藏清單，顯示卡片
+            for ticker in watchlist_list:
+                yt = get_yahoo_ticker(ticker)
+                with st.spinner(f"正在分析 {ticker}..."):
+                    try:
+                        df_w = yf.download(yt, period="1y", progress=False, auto_adjust=False)
+                        if isinstance(df_w.columns, pd.MultiIndex): df_w.columns = df_w.columns.get_level_values(0)
+                        # 切割日期
+                        end_dt = pd.to_datetime(st.session_state.ref_date)
+                        df_w = df_w[df_w.index <= end_dt]
 
-                    # 獲取 TSI
-                    t_obj = yf.Ticker(yt)
-                    try: tsi = t_obj.fast_info.get('shares', None)
-                    except: tsi = None
-                    if tsi is None: 
-                        try: tsi = t_obj.info.get('sharesOutstanding', 100000000)
-                        except: tsi = 100000000
+                        # 獲取 TSI
+                        t_obj = yf.Ticker(yt)
+                        try: tsi = t_obj.fast_info.get('shares', None)
+                        except: tsi = None
+                        if tsi is None: 
+                            try: tsi = t_obj.info.get('sharesOutstanding', 100000000)
+                            except: tsi = 100000000
 
-                    if len(df_w) > 20:
-                        curr_p = df_w['Close'].iloc[-1]
-                        prev_close_w = df_w['Close'].shift(1).replace(0, np.nan)
-                        prev_close_last = prev_close_w.iloc[-1]
-                        prev_close_last = float(prev_close_last) if pd.notna(prev_close_last) else 0.0
-                        chg = (curr_p - prev_close_last) if prev_close_last else 0.0
-                        pct = (chg / prev_close_last * 100) if prev_close_last else 0.0
-                        intervals = [7, 14, 28, 57, 106, 212]
+                        if len(df_w) > 20:
+                            curr_p = df_w['Close'].iloc[-1]
+                            prev_close_w = df_w['Close'].shift(1).replace(0, np.nan)
+                            prev_close_last = prev_close_w.iloc[-1]
+                            prev_close_last = float(prev_close_last) if pd.notna(prev_close_last) else 0.0
+                            chg = (curr_p - prev_close_last) if prev_close_last else 0.0
+                            pct = (chg / prev_close_last * 100) if prev_close_last else 0.0
+                            intervals = [7, 14, 28, 57, 106, 212]
 
-                        # 1. Price Logic
-                        avgp_vals = [curr_p]
-                        for p in intervals:
-                            avgp_vals.append(df_w['Close'].rolling(p).mean().iloc[-1] if len(df_w)>=p else 0)
-                        valid_avgp = [v for v in avgp_vals if v > 0]
-                        avg_avgp = sum(valid_avgp) / len(valid_avgp) if valid_avgp else 0
-                        avgp_mr_vals = [((v / avg_avgp) - 1)*100 if avg_avgp else 0 for v in avgp_vals]
+                            # 1. Price Logic
+                            avgp_vals = [curr_p]
+                            for p in intervals:
+                                avgp_vals.append(df_w['Close'].rolling(p).mean().iloc[-1] if len(df_w)>=p else 0)
+                            valid_avgp = [v for v in avgp_vals if v > 0]
+                            avg_avgp = sum(valid_avgp) / len(valid_avgp) if valid_avgp else 0
+                            avgp_mr_vals = [((v / avg_avgp) - 1)*100 if avg_avgp else 0 for v in avgp_vals]
 
-                        # 2. AMP Logic
-                        df_w['AMP'] = (df_w['High'] - df_w['Low']) / prev_close_w * 100
-                        val_amp0 = df_w['AMP'].iloc[-1]
-                        amp_rolling_vals = []
-                        for p in intervals:
-                            amp_rolling_vals.append(df_w['AMP'].rolling(p).mean().iloc[-1] if len(df_w)>=p else 0)
-                        
-                        valid_rolling = [v for v in amp_rolling_vals if v > 0]
-                        avg_amp = sum(valid_rolling) / len(valid_rolling) if valid_rolling else 0
-                        amp_mr_vals = [((val_amp0 / avg_amp) - 1)*100 if avg_amp else 0] # MR0
-                        for v in amp_rolling_vals:
-                            amp_mr_vals.append(((v / avg_amp) - 1)*100 if avg_amp else 0)
+                            # 2. AMP Logic
+                            df_w['AMP'] = (df_w['High'] - df_w['Low']) / prev_close_w * 100
+                            val_amp0 = df_w['AMP'].iloc[-1]
+                            amp_rolling_vals = []
+                            for p in intervals:
+                                amp_rolling_vals.append(df_w['AMP'].rolling(p).mean().iloc[-1] if len(df_w)>=p else 0)
+                            
+                            valid_rolling = [v for v in amp_rolling_vals if v > 0]
+                            avg_amp = sum(valid_rolling) / len(valid_rolling) if valid_rolling else 0
+                            amp_mr_vals = [((val_amp0 / avg_amp) - 1)*100 if avg_amp else 0] # MR0
+                            for v in amp_rolling_vals:
+                                amp_mr_vals.append(((v / avg_amp) - 1)*100 if avg_amp else 0)
 
-                        # 3. Buy/Sell Analysis (v9.6 New Feature)
-                        df_w = simulate_bs_data(df_w, tsi)
-                        last_7 = df_w.iloc[-7:][::-1]
-                        
-                        # Data Prep
-                        days_mmb = [f"{x:.4f}%" for x in last_7['MMB'].tolist()]
-                        days_mms = [f"{x:.4f}%" for x in last_7['MMS'].tolist()]
-                        days_rtb = [f"{x:.4f}%" for x in last_7['RTB'].tolist()]
-                        days_rts = [f"{x:.4f}%" for x in last_7['RTS'].tolist()]
-                        
-                        while len(days_mmb) < 7: days_mmb.append("-")
-                        while len(days_mms) < 7: days_mms.append("-")
-                        while len(days_rtb) < 7: days_rtb.append("-")
-                        while len(days_rts) < 7: days_rts.append("-")
+                            # 3. Buy/Sell Analysis (v9.6 New Feature)
+                            df_w = simulate_bs_data(df_w, tsi)
+                            last_7 = df_w.iloc[-7:][::-1]
+                            
+                            # Data Prep
+                            days_mmb = [f"{x:.4f}%" for x in last_7['MMB'].tolist()]
+                            days_mms = [f"{x:.4f}%" for x in last_7['MMS'].tolist()]
+                            days_rtb = [f"{x:.4f}%" for x in last_7['RTB'].tolist()]
+                            days_rts = [f"{x:.4f}%" for x in last_7['RTS'].tolist()]
+                            
+                            while len(days_mmb) < 7: days_mmb.append("-")
+                            while len(days_mms) < 7: days_mms.append("-")
+                            while len(days_rtb) < 7: days_rtb.append("-")
+                            while len(days_rts) < 7: days_rts.append("-")
 
-                        sum_mmb, sum_mms, sum_rtb, sum_rts = [], [], [], []
-                        for p in intervals:
-                            if len(df_w) >= p:
-                                sum_mmb.append(f"{df_w['MMB'].tail(p).sum():.4f}%")
-                                sum_mms.append(f"{df_w['MMS'].tail(p).sum():.4f}%")
-                                sum_rtb.append(f"{df_w['RTB'].tail(p).sum():.4f}%")
-                                sum_rts.append(f"{df_w['RTS'].tail(p).sum():.4f}%")
-                            else:
-                                for l in [sum_mmb, sum_mms, sum_rtb, sum_rts]: l.append("-")
+                            sum_mmb, sum_mms, sum_rtb, sum_rts = [], [], [], []
+                            for p in intervals:
+                                if len(df_w) >= p:
+                                    sum_mmb.append(f"{df_w['MMB'].tail(p).sum():.4f}%")
+                                    sum_mms.append(f"{df_w['MMS'].tail(p).sum():.4f}%")
+                                    sum_rtb.append(f"{df_w['RTB'].tail(p).sum():.4f}%")
+                                    sum_rts.append(f"{df_w['RTS'].tail(p).sum():.4f}%")
+                                else:
+                                    for l in [sum_mmb, sum_mms, sum_rtb, sum_rts]: l.append("-")
 
-                        # --- Card HTML ---
-                        html = f'<div style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 8px; background-color: #f9f9f9;">'
-                        chg_color = "#2ca02c" if chg > 0 else "#d62728" if chg < 0 else "#666"
-                        html += f'<h4 style="margin-top:0;">{ticker} <span style="font-size:0.8em; color:#666;">Price: {curr_p:.2f}</span> <span style="font-size:0.8em; color:{chg_color};">({chg:+.2f}, {pct:+.2f}%)</span></h4>'
-                        
-                        # Price & AMP Table
-                        html += '<table class="big-font-table">'
-                        html += '<tr class="header-row"><td>Metric</td><td>Base</td><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td></tr>'
-                        html += '<tr class="data-row"><td><b>AvgP</b></td><td>{:.2f}</td>'.format(avg_avgp) + "".join([f"<td>{v:.2f}</td>" for v in avgp_vals]) + '</tr>'
-                        html += '<tr class="data-row"><td><b>AvgP MR</b></td><td>-</td>' + "".join([f"<td class='{'pos-val' if v>0 else 'neg-val'}'>{v:.2f}%</td>" for v in avgp_mr_vals]) + '</tr>'
-                        html += '<tr class="data-row"><td><b>AMP MR</b></td><td>{:.2f}</td>'.format(avg_amp) + "".join([f"<td class='{'pos-val' if v>0 else 'neg-val'}'>{v:.2f}%</td>" for v in amp_mr_vals]) + '</tr>'
-                        html += '</table>'
+                            # --- Card HTML ---
+                            html = f'<div style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 8px; background-color: #f9f9f9;">'
+                            chg_color = "#2ca02c" if chg > 0 else "#d62728" if chg < 0 else "#666"
+                            html += f'<h4 style="margin-top:0;">{ticker} <span style="font-size:0.8em; color:#666;">Price: {curr_p:.2f}</span> <span style="font-size:0.8em; color:{chg_color};">({chg:+.2f}, {pct:+.2f}%)</span></h4>'
+                            
+                            # Price & AMP Table
+                            html += '<table class="big-font-table">'
+                            html += '<tr class="header-row"><td>Metric</td><td>Base</td><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td></tr>'
+                            html += '<tr class="data-row"><td><b>AvgP</b></td><td>{:.2f}</td>'.format(avg_avgp) + "".join([f"<td>{v:.2f}</td>" for v in avgp_vals]) + '</tr>'
+                            html += '<tr class="data-row"><td><b>AvgP MR</b></td><td>-</td>' + "".join([f"<td class='{'pos-val' if v>0 else 'neg-val'}'>{v:.2f}%</td>" for v in avgp_mr_vals]) + '</tr>'
+                            html += '<tr class="data-row"><td><b>AMP MR</b></td><td>{:.2f}</td>'.format(avg_amp) + "".join([f"<td class='{'pos-val' if v>0 else 'neg-val'}'>{v:.2f}%</td>" for v in amp_mr_vals]) + '</tr>'
+                            html += '</table>'
 
-                        # BS Analysis Table
-                        html += '<table class="big-font-table" style="margin-top: 10px;">'
-                        html += '<tr class="header-row"><td>Day</td><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td></tr>'
-                        for name, data in [("MMB", days_mmb), ("MMS", days_mms), ("RTB", days_rtb), ("RTS", days_rts)]:
-                            html += f'<tr class="data-row"><td style="background-color:#fff !important; font-weight:bold;">{name}</td>' + "".join([f"<td>{d}</td>" for d in data]) + '</tr>'
-                        html += '</table>'
-                        
-                        html += '</div>'
-                        st.markdown(html, unsafe_allow_html=True)
+                            # BS Analysis Table
+                            html += '<table class="big-font-table" style="margin-top: 10px;">'
+                            html += '<tr class="header-row"><td>Day</td><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td></tr>'
+                            for name, data in [("MMB", days_mmb), ("MMS", days_mms), ("RTB", days_rtb), ("RTS", days_rts)]:
+                                html += f'<tr class="data-row"><td style="background-color:#fff !important; font-weight:bold;">{name}</td>' + "".join([f"<td>{d}</td>" for d in data]) + '</tr>'
+                            html += '</table>'
+                            
+                            html += '</div>'
+                            st.markdown(html, unsafe_allow_html=True)
 
-                except Exception as e: st.error(f"Error {ticker}: {e}")
+                    except Exception as e: st.error(f"Error {ticker}: {e}")
 
 # === 模式 B: 單股詳細模式 (v9.4 + v9.6 Merged) ===
 else:
@@ -521,7 +2471,7 @@ else:
     @st.cache_data(ttl=900)
     def get_data_v7(symbol, end_date):
         try:
-            df = yf.download(symbol, period="3y", auto_adjust=False)
+            df = yf.download(symbol, period="5y", auto_adjust=False)
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             df = df[df.index <= pd.to_datetime(end_date)]
             t = yf.Ticker(symbol)
@@ -625,6 +2575,7 @@ else:
         cond_above = (pd.notna(val_sma7) and pd.notna(val_sma14) and (curr_close > float(val_sma7)) and (curr_close > float(val_sma14)))
         cond_wr = (pd.notna(val_wr35) and (float(val_wr35) < -80))
         fzm_trigger = bool(cond_above and cond_wr)
+        down6_trigger = is_consecutive_down(df_sig["Close"], 6)
 
         labels = ["Price", "SMA7", "SMA14", "SMA28", "SMA57", "SMA106", "SMA212"]
         vals = [
@@ -660,10 +2611,22 @@ else:
             st.markdown(f"振蕩(MR)：{'🔴 觸發' if mr_trigger else '未觸發'}")
             st.write(f"基準均價: {avg_of_avgs:.3f}" if avg_of_avgs else "基準均價: -")
             st.write(f"高乖離數(>0.62%): {mr_count}")
+            st.markdown(f"連跌6日：{'🔴 觸發' if down6_trigger else '未觸發'}")
 
         if mr_rows:
             with st.expander("信號詳情", expanded=False):
                 st.dataframe(pd.DataFrame(mr_rows), hide_index=True, use_container_width=True)
+
+        st.write("---")
+        tab_data, tab_backtest = st.tabs(["📋 數據列表", "🧪 歷史回測"])
+        with tab_data:
+            show_cols = [c for c in ["Open", "High", "Low", "Close", "Volume", "Turnover_Rate"] if c in df.columns]
+            if show_cols:
+                st.dataframe(df[show_cols].tail(60), use_container_width=True)
+            else:
+                st.info("無可顯示欄位。")
+        with tab_backtest:
+            render_backtest_page(df, current_code, watchlist_data)
 
         with st.expander("互動模式控制區", expanded=False):
             min_date = df.index.min().date() if len(df) else st.session_state.ref_date
