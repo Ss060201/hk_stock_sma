@@ -13,23 +13,30 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional
 from streamlit.errors import StreamlitSecretNotFoundError
 
-# --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股 SMA 矩陣", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
+# ===== [改动1] 导入移动端优化工具 =====
+from mobile_optimizer import (
+    setup_page, 
+    action_buttons, 
+    responsive_cols, 
+    responsive_table,
+    responsive_chart,
+    init_mobile_optimizer
+)
 
-# --- 2. CSS 樣式 (合併 v9.4 與 v9.6) ---
+# ===== [改动2] 页面初始化 (替代 st.set_page_config) =====
+setup_page(
+    title="港股 SMA 矩陣 v9.7",
+    icon="📈",
+    layout="auto",
+    initial_sidebar_state="auto"
+)
+
+optimizer = init_mobile_optimizer()
+is_mobile = st.session_state.get('is_mobile', False)
+
+# --- CSS 樣式 ---
 st.markdown("""
 <style>
-    :root {
-        --mobile-padding: 8px;
-        --desktop-padding: 16px;
-        --card-radius: 8px;
-        --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
-        --shadow-md: 0 4px 6px rgba(0,0,0,0.10);
-    }
-    * {
-        box-sizing: border-box;
-        -webkit-tap-highlight-color: transparent;
-    }
     /* 全局表格樣式 */
     .big-font-table { 
         font-size: 14px !important; 
@@ -51,18 +58,15 @@ st.markdown("""
         border: 1px solid #dee2e6; 
         color: #31333F; 
     }
-    /* 第一欄樣式 */
     .big-font-table td:first-child {
         font-weight: bold;
         text-align: left;
         background-color: #fff;
         width: 140px;
     }
-    /* 數值顏色 */
-    .pos-val { color: #d9534f; font-weight: bold; } /* 紅色 */
-    .neg-val { color: #28a745; font-weight: bold; } /* 綠色 */
+    .pos-val { color: #d9534f; font-weight: bold; }
+    .neg-val { color: #28a745; font-weight: bold; }
     
-    /* v9.6 特有樣式 (Header/Data Rows) */
     .header-row td {
         background-color: #ffffff !important; 
         font-weight: bold;
@@ -70,12 +74,12 @@ st.markdown("""
         border-bottom: 2px solid #dee2e6;
     }
     .data-row td {
-        background-color: #d4edda !important; /* 淺綠背景 */
+        background-color: #d4edda !important;
         color: #000;
         font-weight: normal;
     }
     .section-title {
-        background-color: #FFFF00 !important; /* 黃色背景 */
+        background-color: #FFFF00 !important;
         color: #000;
         font-weight: bold;
         text-align: left;
@@ -84,21 +88,16 @@ st.markdown("""
         border: 1px solid #dee2e6;
     }
     
-    /* 按鈕樣式 */
-    .stButton>button { width: 100%; min-height: 44px; padding: 12px 16px !important; border-radius: 6px; font-size: 14px; box-shadow: var(--shadow-sm); }
-    .stButton>button:active { transform: scale(0.98); box-shadow: var(--shadow-md); }
-    input, textarea, select { min-height: 44px; font-size: 16px; }
-
+    .stButton>button { width: 100%; height: 3em; font-size: 18px; }
+    
+    /* 手机端优化 */
     @media (max-width: 768px) {
-        .main .block-container { padding: var(--mobile-padding) !important; max-width: 100% !important; }
-        div[data-testid="stHorizontalBlock"] { flex-direction: column !important; }
-        div[data-testid="stHorizontalBlock"] > div { width: 100% !important; margin-bottom: 12px; }
-        table { font-size: 12px; }
-        th, td { padding: 8px; }
-    }
-
-    @media (min-width: 1024px) {
-        .main .block-container { padding: var(--desktop-padding) !important; }
+        .big-font-table {
+            font-size: 12px !important;
+        }
+        .big-font-table td {
+            padding: 6px !important;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
