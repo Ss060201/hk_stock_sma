@@ -153,13 +153,144 @@ st.markdown("""
         color: #6c757d;
         line-height: 1.35;
     }
+    .nav-card {
+        background: #ffffff;
+        border: 1px solid #e9ecef;
+        border-radius: 12px;
+        padding: 10px 12px;
+        margin: 0 0 8px 0;
+        box-shadow: var(--shadow-sm);
+    }
+    .nav-card.active {
+        border-color: #86b7fe;
+        background: #f4f8ff;
+    }
+    .nav-card .nav-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 6px;
+    }
+    .nav-card .nav-title {
+        font-size: 14px;
+        font-weight: 700;
+        color: #31333F;
+        line-height: 1.2;
+    }
+    .nav-card .nav-badge {
+        font-size: 10px;
+        font-weight: 700;
+        color: #0d6efd;
+        background: #e7f1ff;
+        border-radius: 999px;
+        padding: 2px 8px;
+        white-space: nowrap;
+    }
+    .nav-card .nav-desc {
+        margin: 0;
+        padding-left: 18px;
+        color: #6c757d;
+        font-size: 12px;
+        line-height: 1.45;
+    }
+    .nav-card .nav-desc li {
+        margin: 2px 0;
+    }
+    .compare-card {
+        background: #ffffff;
+        border: 1px solid #e9ecef;
+        border-left: 4px solid #adb5bd;
+        border-radius: 12px;
+        padding: 12px;
+        margin-bottom: 8px;
+        box-shadow: var(--shadow-sm);
+    }
+    .compare-card.compare-positive {
+        border-color: #d1e7dd;
+        border-left-color: #198754;
+        background: #f4fbf7;
+    }
+    .compare-card.compare-watch {
+        border-color: #ffe69c;
+        border-left-color: #f59f00;
+        background: #fffaf0;
+    }
+    .compare-card.compare-risk {
+        border-color: #f1c0c7;
+        border-left-color: #dc3545;
+        background: #fff5f5;
+    }
+    .compare-card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 10px;
+    }
+    .compare-card-stock {
+        font-size: 16px;
+        font-weight: 700;
+        color: #31333F;
+        line-height: 1.2;
+    }
+    .compare-card-badge {
+        font-size: 11px;
+        font-weight: 700;
+        color: #0d6efd;
+        background: #e7f1ff;
+        border-radius: 999px;
+        padding: 3px 8px;
+        white-space: nowrap;
+    }
+    .compare-card-badge.compare-positive {
+        color: #0f5132;
+        background: #d1e7dd;
+    }
+    .compare-card-badge.compare-watch {
+        color: #7c5700;
+        background: #fff3cd;
+    }
+    .compare-card-badge.compare-risk {
+        color: #842029;
+        background: #f8d7da;
+    }
+    .compare-card-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+    }
+    .compare-card-item {
+        background: #f8f9fa;
+        border-radius: 8px;
+        padding: 8px 10px;
+    }
+    .compare-card-label {
+        font-size: 11px;
+        color: #6c757d;
+        margin-bottom: 4px;
+        line-height: 1.2;
+    }
+    .compare-card-value {
+        font-size: 13px;
+        font-weight: 700;
+        color: #31333F;
+        line-height: 1.3;
+        word-break: break-word;
+    }
+    .bottom-nav-note {
+        font-size: 12px;
+        color: #6c757d;
+        text-align: center;
+        margin: 4px 0 8px 0;
+    }
     div[data-baseweb="select"] > div {
         min-height: 44px;
         border-radius: 8px;
     }
 
     @media (max-width: 768px) {
-        .main .block-container { padding: var(--mobile-padding) !important; max-width: 100% !important; }
+        .main .block-container { padding: var(--mobile-padding) !important; padding-bottom: 88px !important; max-width: 100% !important; }
         div[data-testid="stHorizontalBlock"] { flex-direction: column !important; }
         div[data-testid="stHorizontalBlock"] > div { width: 100% !important; margin-bottom: 12px; }
         table { font-size: 12px; }
@@ -170,6 +301,18 @@ st.markdown("""
         .compact-card .value { font-size: 16px; }
         .compact-card .sub, .signal-card .meta { font-size: 11px; }
         .signal-card .title { font-size: 12px; }
+        .nav-card { padding: 9px 10px; border-radius: 10px; }
+        .nav-card .nav-title { font-size: 13px; }
+        .nav-card .nav-badge { font-size: 9px; padding: 2px 6px; }
+        .nav-card .nav-desc { font-size: 11px; padding-left: 16px; }
+        .compare-card { padding: 10px; border-radius: 10px; }
+        .compare-card-stock { font-size: 14px; }
+        .compare-card-badge { font-size: 10px; padding: 2px 6px; }
+        .compare-card-grid { gap: 6px; }
+        .compare-card-item { padding: 7px 8px; }
+        .compare-card-label { font-size: 10px; }
+        .compare-card-value { font-size: 12px; }
+        .bottom-nav-note { font-size: 11px; margin: 2px 0 6px 0; }
         .stButton>button { font-size: 13px; min-height: 42px; padding: 10px 12px !important; }
     }
 
@@ -1891,20 +2034,63 @@ def _render_table_with_ticker_buttons(title: str, rows: list[dict], columns: lis
     if not rows:
         st.info("無資料")
         return
+    st.caption("卡片模式：手機可直向滑動查看，點擊股票即可進入單股分析。")
 
-    header_cols = st.columns([1] + [1 for _ in columns])
-    header_cols[0].markdown("**股票**")
-    for i, (col_key, col_label) in enumerate(columns, start=1):
-        header_cols[i].markdown(f"**{col_label}**")
+    def _card_variant(row: dict) -> str:
+        trend = str(row.get("趨勢", ""))
+        cdm = str(row.get("CDM狀態", ""))
+        reco = str(row.get("推薦度", ""))
+        action = str(row.get("推薦操作", ""))
+        mr_level = str(row.get("MR級別", ""))
+        risk = str(row.get("風險等級", ""))
+        amp_level = str(row.get("級別", ""))
+        if "買入重點" in action or "⭐⭐⭐" in reco or cdm.startswith("🔴 觸發") or trend == "⬆️⬆️⬆️":
+            return "compare-positive"
+        if "⏳" in cdm or "可考慮" in action or "觀望" in action or "⭐⭐" in reco or trend == "⬆️⬆️" or "🟠" in amp_level:
+            return "compare-watch"
+        if "⚠️" in reco or "謹慎" in action or trend == "⬇️⬇️⬇️" or "🔴" in risk or "🔴" in mr_level or cdm.startswith("❌"):
+            return "compare-risk"
+        return "compare-watch" if trend == "⬆️" or "🟠" in mr_level else ""
 
-    for r in rows:
-        cols = st.columns([1] + [1 for _ in columns])
-        t = r.get("股票", "")
-        if cols[0].button(str(t), key=f"compare_nav_{title}_{t}_{r.get('_row_id', '')}", use_container_width=True):
-            set_current_page("stock", str(t))
-            st.rerun()
-        for i, (col_key, _) in enumerate(columns, start=1):
-            cols[i].write(r.get(col_key, ""))
+    for idx in range(0, len(rows), 2):
+        pair = rows[idx:idx + 2]
+        row_cols = st.columns(len(pair))
+        for col, r in zip(row_cols, pair):
+            t = str(r.get("股票", ""))
+            variant = _card_variant(r)
+            badge = (
+                r.get("排名")
+                or r.get("CDM狀態")
+                or r.get("推薦度")
+                or r.get("趨勢")
+                or ""
+            )
+            metrics_html = "".join(
+                [
+                    f"""
+                    <div class="compare-card-item">
+                        <div class="compare-card-label">{col_label}</div>
+                        <div class="compare-card-value">{r.get(col_key, "-")}</div>
+                    </div>
+                    """
+                    for col_key, col_label in columns
+                ]
+            )
+            col.markdown(
+                f"""
+                <div class="compare-card {variant}">
+                    <div class="compare-card-head">
+                        <div class="compare-card-stock">{t}</div>
+                        <div class="compare-card-badge {variant}">{badge}</div>
+                    </div>
+                    <div class="compare-card-grid">{metrics_html}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if col.button(f"查看 {t}", key=f"compare_nav_{title}_{t}_{r.get('_row_id', '')}", use_container_width=True):
+                set_current_page("stock", t)
+                st.rerun()
 
 def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, Any]):
     st.title("📊 港股收藏夾對比面板")
@@ -2335,33 +2521,9 @@ def set_current_page(page: str, code: Optional[str] = None):
     st.session_state.comparison_mode = (page == "comparison")
 
 def render_top_navigation():
-    st.caption("功能導航")
-    nav_items = [
-        ("🏠 首頁總覽", "home"),
-        ("📊 比較模式", "comparison"),
-        ("📈 單股分析", "stock"),
-        ("🧪 歷史回測", "backtest"),
-        ("⚙️ 設定", "settings"),
-    ]
-    label_to_page = {label: page for label, page in nav_items}
-    page_to_label = {page: label for label, page in nav_items}
     current_page = st.session_state.get("current_page", "home")
-    current_label = page_to_label.get(current_page, "🏠 首頁總覽")
 
-    if st.session_state.get("nav_select") != current_label:
-        st.session_state["nav_select"] = current_label
-
-    selected_label = st.selectbox(
-        "功能導航",
-        list(label_to_page.keys()),
-        key="nav_select",
-        label_visibility="collapsed",
-    )
-    selected_page = label_to_page[selected_label]
-    if selected_page != current_page:
-        set_current_page(selected_page)
-        st.rerun()
-
+    st.caption("快捷導航")
     quick_cols = st.columns(3)
     with quick_cols[0]:
         if st.button("🏠 總覽", key="quick_nav_home", use_container_width=True, type="primary" if current_page == "home" else "secondary"):
@@ -2377,6 +2539,90 @@ def render_top_navigation():
             st.rerun()
     st.write("---")
 
+def render_bottom_navigation():
+    current_page = st.session_state.get("current_page", "home")
+    st.write("---")
+    st.markdown('<div class="bottom-nav-note">底部快捷導航：看完內容可直接切換，不用再拉回頁首。</div>', unsafe_allow_html=True)
+    labels = {
+        "home": "🏠 總覽",
+        "stock": "📈 單股",
+        "backtest": "🧪 回測",
+    }
+    active_labels = {
+        "home": "● 總覽",
+        "stock": "● 單股",
+        "backtest": "● 回測",
+    }
+    bottom_cols = st.columns(3)
+    with bottom_cols[0]:
+        if st.button(active_labels["home"] if current_page == "home" else labels["home"], key="bottom_nav_home", use_container_width=True, type="primary" if current_page == "home" else "secondary"):
+            set_current_page("home")
+            st.rerun()
+    with bottom_cols[1]:
+        if st.button(active_labels["stock"] if current_page == "stock" else labels["stock"], key="bottom_nav_stock", use_container_width=True, type="primary" if current_page == "stock" else "secondary"):
+            set_current_page("stock")
+            st.rerun()
+    with bottom_cols[2]:
+        if st.button(active_labels["backtest"] if current_page == "backtest" else labels["backtest"], key="bottom_nav_backtest", use_container_width=True, type="primary" if current_page == "backtest" else "secondary"):
+            set_current_page("backtest")
+            st.rerun()
+
+def render_navigation_expander():
+    current_page = st.session_state.get("current_page", "home")
+    page_defs = [
+        {
+            "title": "🏠 總覽",
+            "page": "home",
+            "desc": ["收藏股總覽卡片", "刷新所有數據", "快速進入比較模式"],
+            "hint": "先看整體，再決定下一步",
+        },
+        {
+            "title": "📊 比較模式",
+            "page": "comparison",
+            "desc": ["SMA 趨勢排序", "MR / CDM / 振幅對比", "綜合評分與下載報告"],
+            "hint": "適合橫向比較收藏股",
+        },
+        {
+            "title": "📈 單股分析",
+            "page": "stock",
+            "desc": ["價格摘要與 K 線圖", "快速信號", "數據列表"],
+            "hint": "適合查看單一股票細節",
+        },
+        {
+            "title": "🧪 歷史回測",
+            "page": "backtest",
+            "desc": ["回測設定", "單策略回測", "策略對標與推薦"],
+            "hint": "適合驗證策略表現",
+        },
+        {
+            "title": "⚙️ 設定",
+            "page": "settings",
+            "desc": ["Telegram 設定", "SMA 參數", "基準日期"],
+            "hint": "集中管理分析與通知設定",
+        },
+    ]
+
+    with st.expander("導航", expanded=False):
+        st.caption("按頁面由上到下切換，適合手機瀏覽時快速找到功能。")
+        for item in page_defs:
+            btn_type = "primary" if current_page == item["page"] else "secondary"
+            badge = "目前頁面" if current_page == item["page"] else item["hint"]
+            desc_html = "".join([f"<li>{line}</li>" for line in item["desc"]])
+            st.markdown(
+                f"""
+                <div class="nav-card {'active' if current_page == item['page'] else ''}">
+                    <div class="nav-top">
+                        <div class="nav-title">{item['title']}</div>
+                        <div class="nav-badge">{badge}</div>
+                    </div>
+                    <ul class="nav-desc">{desc_html}</ul>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(item["title"], key=f"sidebar_nav_{item['page']}", use_container_width=True, type=btn_type):
+                set_current_page(item["page"])
+                st.rerun()
 def render_settings_page():
     st.title("⚙️ 設定")
 
@@ -2513,7 +2759,8 @@ with st.sidebar:
                     except Exception as e: st.error(str(e))
             else:
                 st.toast("請先選擇股票並設定 Token", icon="⚠️")
-    
+
+    render_navigation_expander()
     st.divider()
     
     # 日期與搜尋
@@ -3561,3 +3808,5 @@ else:
                 st.dataframe(out_df, hide_index=True, use_container_width=True)
         except Exception as e:
             st.error(str(e))
+
+render_bottom_navigation()
