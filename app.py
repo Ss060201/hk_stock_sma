@@ -89,12 +89,88 @@ st.markdown("""
     .stButton>button:active { transform: scale(0.98); box-shadow: var(--shadow-md); }
     input, textarea, select { min-height: 44px; font-size: 16px; }
 
+    .compact-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin: 8px 0 12px 0;
+    }
+    .compact-card {
+        background: #ffffff;
+        border: 1px solid #e9ecef;
+        border-radius: 10px;
+        padding: 10px 12px;
+        box-shadow: var(--shadow-sm);
+    }
+    .compact-card .label {
+        font-size: 12px;
+        color: #6c757d;
+        margin-bottom: 4px;
+        line-height: 1.2;
+    }
+    .compact-card .value {
+        font-size: 18px;
+        font-weight: 700;
+        color: #31333F;
+        line-height: 1.2;
+    }
+    .compact-card .sub {
+        font-size: 12px;
+        margin-top: 6px;
+        line-height: 1.3;
+    }
+    .compact-card .sub.pos {
+        color: #28a745;
+        font-weight: 600;
+    }
+    .compact-card .sub.neg {
+        color: #dc3545;
+        font-weight: 600;
+    }
+    .signal-card {
+        background: #ffffff;
+        border: 1px solid #e9ecef;
+        border-left: 4px solid #6c757d;
+        border-radius: 10px;
+        padding: 10px 12px;
+        box-shadow: var(--shadow-sm);
+    }
+    .signal-card.trigger {
+        border-left-color: #dc3545;
+        background: #fff5f5;
+    }
+    .signal-card.idle {
+        border-left-color: #adb5bd;
+    }
+    .signal-card .title {
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 6px;
+        color: #31333F;
+    }
+    .signal-card .meta {
+        font-size: 12px;
+        color: #6c757d;
+        line-height: 1.35;
+    }
+    div[data-baseweb="select"] > div {
+        min-height: 44px;
+        border-radius: 8px;
+    }
+
     @media (max-width: 768px) {
         .main .block-container { padding: var(--mobile-padding) !important; max-width: 100% !important; }
         div[data-testid="stHorizontalBlock"] { flex-direction: column !important; }
         div[data-testid="stHorizontalBlock"] > div { width: 100% !important; margin-bottom: 12px; }
         table { font-size: 12px; }
         th, td { padding: 8px; }
+        .compact-grid { gap: 6px; margin: 6px 0 10px 0; }
+        .compact-card, .signal-card { padding: 9px 10px; border-radius: 8px; }
+        .compact-card .label { font-size: 11px; }
+        .compact-card .value { font-size: 16px; }
+        .compact-card .sub, .signal-card .meta { font-size: 11px; }
+        .signal-card .title { font-size: 12px; }
+        .stButton>button { font-size: 13px; min-height: 42px; padding: 10px 12px !important; }
     }
 
     @media (min-width: 1024px) {
@@ -1825,8 +1901,7 @@ def _render_table_with_ticker_buttons(title: str, rows: list[dict], columns: lis
         cols = st.columns([1] + [1 for _ in columns])
         t = r.get("股票", "")
         if cols[0].button(str(t), key=f"compare_nav_{title}_{t}_{r.get('_row_id', '')}", use_container_width=True):
-            st.session_state.current_view = str(t)
-            st.session_state.comparison_mode = False
+            set_current_page("stock", str(t))
             st.rerun()
         for i, (col_key, _) in enumerate(columns, start=1):
             cols[i].write(r.get(col_key, ""))
@@ -1837,7 +1912,7 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
     col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
     with col1:
         if st.button("🏠 回到主頁面", use_container_width=True):
-            st.session_state.comparison_mode = False
+            set_current_page("home")
             st.rerun()
     with col2:
         if st.button("🔄 刷新數據", use_container_width=True):
@@ -2143,6 +2218,7 @@ def run_analysis_logic(df, symbol, params):
     curr_price = df['Close'].iloc[-1]
     today = datetime.now().date()
     down6_trigger = is_consecutive_down(df["Close"], 6)
+    tor_down5_trigger = bool("Turnover_Rate" in df.columns and is_consecutive_down(df["Turnover_Rate"], 5))
     
     # CDM 運算
     cdm_status, target_price_str, diff_str = "未設定參數", "N/A", "N/A"
@@ -2224,26 +2300,180 @@ def run_analysis_logic(df, symbol, params):
     fzm_status = "🔴 <b>觸發</b>" if (cond_a and cond_b) else "未觸發"
     trend_str = "站上雙均線" if cond_a else "均線下方"
     down6_status = "🔴 <b>觸發</b>" if down6_trigger else "未觸發"
+    tor_down5_status = "🔴 <b>觸發</b>" if tor_down5_trigger else "未觸發"
+    tor_latest = df["Turnover_Rate"].iloc[-1] if "Turnover_Rate" in df.columns and len(df) else np.nan
 
     report = f"""<b>[股票警示] {symbol} 分析報告</b>
 <b>1. CDM: {cdm_status}</b> (目標: {target_price_str}, 偏差: {diff_str}%, {tor_info})
 <b>2. FZM: {fzm_status}</b> (WR: {val_willr:.2f}, {trend_str})
 <b>3. 連跌6日: {down6_status}</b>
+<b>4. 換手率連跌5日: {tor_down5_status}</b> (TOR: {'-' if pd.isna(tor_latest) else f'{float(tor_latest):.2f}%'} )
 建議止損: {lowest_low:.2f}
 """
     return report
+
+@st.cache_data(ttl=900)
+def get_data_v7(symbol, end_date):
+    try:
+        df = yf.download(symbol, period="5y", auto_adjust=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df[df.index <= pd.to_datetime(end_date)]
+        t = yf.Ticker(symbol)
+        try:
+            s = t.fast_info.get('shares', None)
+        except Exception:
+            s = t.info.get('sharesOutstanding', None)
+        return df, s
+    except Exception:
+        return None, None
+
+def set_current_page(page: str, code: Optional[str] = None):
+    st.session_state.current_page = page
+    if code is not None:
+        st.session_state.current_view = clean_ticker_input(code)
+    st.session_state.comparison_mode = (page == "comparison")
+
+def render_top_navigation():
+    st.caption("功能導航")
+    nav_items = [
+        ("🏠 首頁總覽", "home"),
+        ("📊 比較模式", "comparison"),
+        ("📈 單股分析", "stock"),
+        ("🧪 歷史回測", "backtest"),
+        ("⚙️ 設定", "settings"),
+    ]
+    label_to_page = {label: page for label, page in nav_items}
+    page_to_label = {page: label for label, page in nav_items}
+    current_page = st.session_state.get("current_page", "home")
+    current_label = page_to_label.get(current_page, "🏠 首頁總覽")
+
+    if st.session_state.get("nav_select") != current_label:
+        st.session_state["nav_select"] = current_label
+
+    selected_label = st.selectbox(
+        "功能導航",
+        list(label_to_page.keys()),
+        key="nav_select",
+        label_visibility="collapsed",
+    )
+    selected_page = label_to_page[selected_label]
+    if selected_page != current_page:
+        set_current_page(selected_page)
+        st.rerun()
+
+    quick_cols = st.columns(3)
+    with quick_cols[0]:
+        if st.button("🏠 總覽", key="quick_nav_home", use_container_width=True, type="primary" if current_page == "home" else "secondary"):
+            set_current_page("home")
+            st.rerun()
+    with quick_cols[1]:
+        if st.button("📈 單股", key="quick_nav_stock", use_container_width=True, type="primary" if current_page == "stock" else "secondary"):
+            set_current_page("stock")
+            st.rerun()
+    with quick_cols[2]:
+        if st.button("🧪 回測", key="quick_nav_backtest", use_container_width=True, type="primary" if current_page == "backtest" else "secondary"):
+            set_current_page("backtest")
+            st.rerun()
+    st.write("---")
+
+def render_settings_page():
+    st.title("⚙️ 設定")
+
+    st.subheader("✈️ Telegram 設定")
+    s1, s2 = st.columns(2)
+    with s1:
+        tg_token_page = st.text_input("Bot Token", value=st.session_state.get("tg_token", ""), type="password", key="settings_tg_token")
+    with s2:
+        tg_chat_id_page = st.text_input("Chat ID", value=st.session_state.get("tg_chat_id", ""), key="settings_tg_chat_id")
+    st.session_state.tg_token = tg_token_page
+    st.session_state.tg_chat_id = tg_chat_id_page
+
+    st.write("---")
+    st.subheader("📐 分析參數")
+    p1, p2 = st.columns(2)
+    with p1:
+        st.session_state.sma1 = int(st.number_input("SMA 1", min_value=1, value=int(st.session_state.get("sma1", 20)), key="settings_sma1"))
+    with p2:
+        st.session_state.sma2 = int(st.number_input("SMA 2", min_value=1, value=int(st.session_state.get("sma2", 50)), key="settings_sma2"))
+
+    st.write("---")
+    st.subheader("📅 基準日期")
+    settings_date = st.date_input("基準日期", value=st.session_state.ref_date, key="settings_ref_date")
+    if settings_date != st.session_state.ref_date:
+        st.session_state.ref_date = settings_date
+        st.rerun()
+
+    st.write("---")
+    st.subheader("🧭 使用方式")
+    st.markdown(
+        "- `首頁總覽`：查看收藏股的總覽卡片\n"
+        "- `比較模式`：對收藏股做橫向對比\n"
+        "- `單股分析`：查看單一股票的圖表與快速信號\n"
+        "- `歷史回測`：執行回測、策略對標與推薦\n"
+        "- `設定`：集中管理 Telegram、SMA 與日期參數"
+    )
+
+def render_backtest_hub_page(current_code: str, watchlist_data: Dict[str, Any], watchlist_list: List[str]):
+    st.title("🧪 歷史回測")
+    input_col, btn_col = st.columns([4, 1])
+    with input_col:
+        ticker_input = st.text_input("輸入股票代號", value=current_code or "", placeholder="例如: 700", key="backtest_page_ticker")
+    with btn_col:
+        st.write("")
+        if st.button("前往單股", use_container_width=True, key="backtest_go_stock"):
+            if ticker_input:
+                set_current_page("stock", ticker_input)
+                st.rerun()
+
+    if ticker_input:
+        cleaned = clean_ticker_input(ticker_input)
+        if cleaned and cleaned != current_code:
+            st.session_state.current_view = cleaned
+            current_code = cleaned
+
+    if not current_code:
+        st.info("請先輸入或從左側收藏清單選擇股票，然後開始回測。")
+        if watchlist_list:
+            st.caption("快速選擇收藏股")
+            cols = st.columns(min(4, len(watchlist_list)))
+            for idx, ticker in enumerate(watchlist_list[:8]):
+                with cols[idx % len(cols)]:
+                    if st.button(ticker, key=f"bt_pick_{ticker}", use_container_width=True):
+                        set_current_page("backtest", ticker)
+                        st.rerun()
+        return
+
+    yahoo_ticker = get_yahoo_ticker(current_code)
+    df, shares_outstanding = get_data_v7(yahoo_ticker, st.session_state.ref_date)
+    if df is None or len(df) <= 5:
+        st.warning("無法取得足夠數據進行回測。")
+        return
+    render_backtest_page(df, current_code, watchlist_data)
 
 # --- 5. 初始化 Session State ---
 if 'ref_date' not in st.session_state:
     st.session_state.ref_date = datetime.now().date()
 if 'current_view' not in st.session_state:
     st.session_state.current_view = ""
+if "current_page" not in st.session_state:
+    st.session_state.current_page = "home"
 if "comparison_mode" not in st.session_state:
     st.session_state.comparison_mode = False
 if "show_filter" not in st.session_state:
     st.session_state.show_filter = False
 if "comparison_filters" not in st.session_state:
     st.session_state.comparison_filters = {}
+secrets = get_secrets_dict()
+telegram_cfg = secrets.get("telegram", {}) if isinstance(secrets.get("telegram", {}), dict) else {}
+if "tg_token" not in st.session_state:
+    st.session_state.tg_token = telegram_cfg.get("token", "")
+if "tg_chat_id" not in st.session_state:
+    st.session_state.tg_chat_id = telegram_cfg.get("chat_id", "")
+if "sma1" not in st.session_state:
+    st.session_state.sma1 = 20
+if "sma2" not in st.session_state:
+    st.session_state.sma2 = 50
 
 # --- 6. 側邊欄 ---
 with st.sidebar:
@@ -2251,15 +2481,11 @@ with st.sidebar:
     
     # Telegram 設定
     with st.expander("✈️ Telegram 設定", expanded=False):
-        secrets = get_secrets_dict()
-        telegram_cfg = secrets.get("telegram", {}) if isinstance(secrets.get("telegram", {}), dict) else {}
-        def_token = telegram_cfg.get("token", "")
-        def_chat_id = telegram_cfg.get("chat_id", "")
-        tg_token = st.text_input("Bot Token", value=def_token, type="password")
-        tg_chat_id = st.text_input("Chat ID", value=def_chat_id)
+        st.session_state.tg_token = st.text_input("Bot Token", value=st.session_state.get("tg_token", ""), type="password", key="sidebar_tg_token")
+        st.session_state.tg_chat_id = st.text_input("Chat ID", value=st.session_state.get("tg_chat_id", ""), key="sidebar_tg_chat_id")
         
         if st.button("🚀 發送單股報告", type="primary"):
-            if st.session_state.current_view and tg_token and tg_chat_id:
+            if st.session_state.current_view and st.session_state.tg_token and st.session_state.tg_chat_id:
                 yt = get_yahoo_ticker(st.session_state.current_view)
                 with st.spinner("分析中..."):
                     try:
@@ -2280,7 +2506,7 @@ with st.sidebar:
                         if len(d) > 50:
                             w = get_watchlist_from_db()
                             msg = run_analysis_logic(d, st.session_state.current_view, w.get(st.session_state.current_view, {}))
-                            ok, res = send_telegram_msg(tg_token, tg_chat_id, msg)
+                            ok, res = send_telegram_msg(st.session_state.tg_token, st.session_state.tg_chat_id, msg)
                             if ok: st.toast("Sent!", icon="✅")
                             else: st.error(res)
                         else: st.error("數據不足")
@@ -2299,7 +2525,8 @@ with st.sidebar:
     search_input = st.text_input("輸入股票代號", placeholder="例如: 700", key="search_bar")
     if search_input:
         cleaned = clean_ticker_input(search_input)
-        if cleaned: st.session_state.current_view = cleaned
+        if cleaned:
+            set_current_page("stock", cleaned)
 
     st.divider()
     
@@ -2311,25 +2538,45 @@ with st.sidebar:
     if watchlist_list:
         for ticker in watchlist_list:
             if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
-                st.session_state.current_view = ticker
+                set_current_page("stock", ticker)
+                st.rerun()
     else:
         st.caption("暫無收藏")
     
     st.divider()
     if st.button("🏠 回到總覽 (Overview)", use_container_width=True):
         st.session_state.current_view = ""
+        set_current_page("home")
         st.rerun()
 
     st.divider()
-    sma1 = st.number_input("SMA 1", value=20)
-    sma2 = st.number_input("SMA 2", value=50)
+    st.session_state.sma1 = int(st.number_input("SMA 1", value=int(st.session_state.get("sma1", 20)), key="sidebar_sma1"))
+    st.session_state.sma2 = int(st.number_input("SMA 2", value=int(st.session_state.get("sma2", 50)), key="sidebar_sma2"))
 
 # --- 7. 主程式邏輯 ---
 current_code = st.session_state.current_view
+current_page = st.session_state.current_page
 ref_date_str = st.session_state.ref_date.strftime('%Y-%m-%d')
+sma1 = int(st.session_state.get("sma1", 20))
+sma2 = int(st.session_state.get("sma2", 50))
 
-# === 模式 A: 總覽模式 (v9.6 Logic) ===
-if not current_code:
+render_top_navigation()
+
+# === 主頁面路由 ===
+if current_page == "settings":
+    render_settings_page()
+
+elif current_page == "comparison":
+    if not watchlist_list:
+        st.title("📊 港股收藏夾對比面板")
+        st.info("👈 您的收藏清單為空，請先從左側加入股票。")
+    else:
+        render_comparison_page(watchlist_list, watchlist_data)
+
+elif current_page == "backtest":
+    render_backtest_hub_page(current_code, watchlist_data, watchlist_list)
+
+elif current_page == "home":
     st.title("📊 港股 SMA 矩陣 - 收藏總覽")
     
     if not watchlist_list:
@@ -2341,114 +2588,106 @@ if not current_code:
                 st.rerun()
         with c_btn_2:
             if st.button("📊 比較模式", use_container_width=True, type="primary"):
-                st.session_state.comparison_mode = True
+                set_current_page("comparison")
                 st.rerun()
         st.write("---")
+        # 遍歷收藏清單，顯示卡片
+        for ticker in watchlist_list:
+            yt = get_yahoo_ticker(ticker)
+            with st.spinner(f"正在分析 {ticker}..."):
+                try:
+                    df_w = yf.download(yt, period="1y", progress=False, auto_adjust=False)
+                    if isinstance(df_w.columns, pd.MultiIndex): df_w.columns = df_w.columns.get_level_values(0)
+                    # 切割日期
+                    end_dt = pd.to_datetime(st.session_state.ref_date)
+                    df_w = df_w[df_w.index <= end_dt]
 
-        if st.session_state.get("comparison_mode", False):
-            render_comparison_page(watchlist_list, watchlist_data)
-        else:
-        
-            # 遍歷收藏清單，顯示卡片
-            for ticker in watchlist_list:
-                yt = get_yahoo_ticker(ticker)
-                with st.spinner(f"正在分析 {ticker}..."):
-                    try:
-                        df_w = yf.download(yt, period="1y", progress=False, auto_adjust=False)
-                        if isinstance(df_w.columns, pd.MultiIndex): df_w.columns = df_w.columns.get_level_values(0)
-                        # 切割日期
-                        end_dt = pd.to_datetime(st.session_state.ref_date)
-                        df_w = df_w[df_w.index <= end_dt]
+                    # 獲取 TSI
+                    t_obj = yf.Ticker(yt)
+                    try: tsi = t_obj.fast_info.get('shares', None)
+                    except: tsi = None
+                    if tsi is None: 
+                        try: tsi = t_obj.info.get('sharesOutstanding', 100000000)
+                        except: tsi = 100000000
 
-                        # 獲取 TSI
-                        t_obj = yf.Ticker(yt)
-                        try: tsi = t_obj.fast_info.get('shares', None)
-                        except: tsi = None
-                        if tsi is None: 
-                            try: tsi = t_obj.info.get('sharesOutstanding', 100000000)
-                            except: tsi = 100000000
+                    if len(df_w) > 20:
+                        curr_p = df_w['Close'].iloc[-1]
+                        prev_close_w = df_w['Close'].shift(1).replace(0, np.nan)
+                        prev_close_last = prev_close_w.iloc[-1]
+                        prev_close_last = float(prev_close_last) if pd.notna(prev_close_last) else 0.0
+                        chg = (curr_p - prev_close_last) if prev_close_last else 0.0
+                        pct = (chg / prev_close_last * 100) if prev_close_last else 0.0
+                        intervals = [7, 14, 28, 57, 106, 212]
 
-                        if len(df_w) > 20:
-                            curr_p = df_w['Close'].iloc[-1]
-                            prev_close_w = df_w['Close'].shift(1).replace(0, np.nan)
-                            prev_close_last = prev_close_w.iloc[-1]
-                            prev_close_last = float(prev_close_last) if pd.notna(prev_close_last) else 0.0
-                            chg = (curr_p - prev_close_last) if prev_close_last else 0.0
-                            pct = (chg / prev_close_last * 100) if prev_close_last else 0.0
-                            intervals = [7, 14, 28, 57, 106, 212]
+                        # 1. Price Logic
+                        avgp_vals = [curr_p]
+                        for p in intervals:
+                            avgp_vals.append(df_w['Close'].rolling(p).mean().iloc[-1] if len(df_w)>=p else 0)
+                        valid_avgp = [v for v in avgp_vals if v > 0]
+                        avg_avgp = sum(valid_avgp) / len(valid_avgp) if valid_avgp else 0
+                        avgp_mr_vals = [((v / avg_avgp) - 1)*100 if avg_avgp else 0 for v in avgp_vals]
 
-                            # 1. Price Logic
-                            avgp_vals = [curr_p]
-                            for p in intervals:
-                                avgp_vals.append(df_w['Close'].rolling(p).mean().iloc[-1] if len(df_w)>=p else 0)
-                            valid_avgp = [v for v in avgp_vals if v > 0]
-                            avg_avgp = sum(valid_avgp) / len(valid_avgp) if valid_avgp else 0
-                            avgp_mr_vals = [((v / avg_avgp) - 1)*100 if avg_avgp else 0 for v in avgp_vals]
+                        # 2. AMP Logic
+                        df_w['AMP'] = (df_w['High'] - df_w['Low']) / prev_close_w * 100
+                        val_amp0 = df_w['AMP'].iloc[-1]
+                        amp_rolling_vals = []
+                        for p in intervals:
+                            amp_rolling_vals.append(df_w['AMP'].rolling(p).mean().iloc[-1] if len(df_w)>=p else 0)
+                        
+                        valid_rolling = [v for v in amp_rolling_vals if v > 0]
+                        avg_amp = sum(valid_rolling) / len(valid_rolling) if valid_rolling else 0
+                        amp_mr_vals = [((val_amp0 / avg_amp) - 1)*100 if avg_amp else 0] # MR0
+                        for v in amp_rolling_vals:
+                            amp_mr_vals.append(((v / avg_amp) - 1)*100 if avg_amp else 0)
 
-                            # 2. AMP Logic
-                            df_w['AMP'] = (df_w['High'] - df_w['Low']) / prev_close_w * 100
-                            val_amp0 = df_w['AMP'].iloc[-1]
-                            amp_rolling_vals = []
-                            for p in intervals:
-                                amp_rolling_vals.append(df_w['AMP'].rolling(p).mean().iloc[-1] if len(df_w)>=p else 0)
-                            
-                            valid_rolling = [v for v in amp_rolling_vals if v > 0]
-                            avg_amp = sum(valid_rolling) / len(valid_rolling) if valid_rolling else 0
-                            amp_mr_vals = [((val_amp0 / avg_amp) - 1)*100 if avg_amp else 0] # MR0
-                            for v in amp_rolling_vals:
-                                amp_mr_vals.append(((v / avg_amp) - 1)*100 if avg_amp else 0)
+                        # 3. Buy/Sell Analysis (v9.6 New Feature)
+                        df_w = simulate_bs_data(df_w, tsi)
+                        last_7 = df_w.iloc[-7:][::-1]
+                        
+                        # Data Prep
+                        days_mmb = [f"{x:.4f}%" for x in last_7['MMB'].tolist()]
+                        days_mms = [f"{x:.4f}%" for x in last_7['MMS'].tolist()]
+                        days_rtb = [f"{x:.4f}%" for x in last_7['RTB'].tolist()]
+                        days_rts = [f"{x:.4f}%" for x in last_7['RTS'].tolist()]
+                        
+                        while len(days_mmb) < 7: days_mmb.append("-")
+                        while len(days_mms) < 7: days_mms.append("-")
+                        while len(days_rtb) < 7: days_rtb.append("-")
+                        while len(days_rts) < 7: days_rts.append("-")
 
-                            # 3. Buy/Sell Analysis (v9.6 New Feature)
-                            df_w = simulate_bs_data(df_w, tsi)
-                            last_7 = df_w.iloc[-7:][::-1]
-                            
-                            # Data Prep
-                            days_mmb = [f"{x:.4f}%" for x in last_7['MMB'].tolist()]
-                            days_mms = [f"{x:.4f}%" for x in last_7['MMS'].tolist()]
-                            days_rtb = [f"{x:.4f}%" for x in last_7['RTB'].tolist()]
-                            days_rts = [f"{x:.4f}%" for x in last_7['RTS'].tolist()]
-                            
-                            while len(days_mmb) < 7: days_mmb.append("-")
-                            while len(days_mms) < 7: days_mms.append("-")
-                            while len(days_rtb) < 7: days_rtb.append("-")
-                            while len(days_rts) < 7: days_rts.append("-")
+                        sum_mmb, sum_mms, sum_rtb, sum_rts = [], [], [], []
+                        for p in intervals:
+                            if len(df_w) >= p:
+                                sum_mmb.append(f"{df_w['MMB'].tail(p).sum():.4f}%")
+                                sum_mms.append(f"{df_w['MMS'].tail(p).sum():.4f}%")
+                                sum_rtb.append(f"{df_w['RTB'].tail(p).sum():.4f}%")
+                                sum_rts.append(f"{df_w['RTS'].tail(p).sum():.4f}%")
+                            else:
+                                for l in [sum_mmb, sum_mms, sum_rtb, sum_rts]: l.append("-")
 
-                            sum_mmb, sum_mms, sum_rtb, sum_rts = [], [], [], []
-                            for p in intervals:
-                                if len(df_w) >= p:
-                                    sum_mmb.append(f"{df_w['MMB'].tail(p).sum():.4f}%")
-                                    sum_mms.append(f"{df_w['MMS'].tail(p).sum():.4f}%")
-                                    sum_rtb.append(f"{df_w['RTB'].tail(p).sum():.4f}%")
-                                    sum_rts.append(f"{df_w['RTS'].tail(p).sum():.4f}%")
-                                else:
-                                    for l in [sum_mmb, sum_mms, sum_rtb, sum_rts]: l.append("-")
+                        html = f'<div style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 8px; background-color: #f9f9f9;">'
+                        chg_color = "#2ca02c" if chg > 0 else "#d62728" if chg < 0 else "#666"
+                        html += f'<h4 style="margin-top:0;">{ticker} <span style="font-size:0.8em; color:#666;">Price: {curr_p:.2f}</span> <span style="font-size:0.8em; color:{chg_color};">({chg:+.2f}, {pct:+.2f}%)</span></h4>'
+                        html += '<table class="big-font-table">'
+                        html += '<tr class="header-row"><td>Metric</td><td>Base</td><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td></tr>'
+                        html += '<tr class="data-row"><td><b>AvgP</b></td><td>{:.2f}</td>'.format(avg_avgp) + "".join([f"<td>{v:.2f}</td>" for v in avgp_vals]) + '</tr>'
+                        html += '<tr class="data-row"><td><b>AvgP MR</b></td><td>-</td>' + "".join([f"<td class='{'pos-val' if v>0 else 'neg-val'}'>{v:.2f}%</td>" for v in avgp_mr_vals]) + '</tr>'
+                        html += '<tr class="data-row"><td><b>AMP MR</b></td><td>{:.2f}</td>'.format(avg_amp) + "".join([f"<td class='{'pos-val' if v>0 else 'neg-val'}'>{v:.2f}%</td>" for v in amp_mr_vals]) + '</tr>'
+                        html += '</table>'
+                        html += '<table class="big-font-table" style="margin-top: 10px;">'
+                        html += '<tr class="header-row"><td>Day</td><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td></tr>'
+                        for name, data in [("MMB", days_mmb), ("MMS", days_mms), ("RTB", days_rtb), ("RTS", days_rts)]:
+                            html += f'<tr class="data-row"><td style="background-color:#fff !important; font-weight:bold;">{name}</td>' + "".join([f"<td>{d}</td>" for d in data]) + '</tr>'
+                        html += '</table>'
+                        html += '</div>'
+                        st.markdown(html, unsafe_allow_html=True)
 
-                            # --- Card HTML ---
-                            html = f'<div style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 8px; background-color: #f9f9f9;">'
-                            chg_color = "#2ca02c" if chg > 0 else "#d62728" if chg < 0 else "#666"
-                            html += f'<h4 style="margin-top:0;">{ticker} <span style="font-size:0.8em; color:#666;">Price: {curr_p:.2f}</span> <span style="font-size:0.8em; color:{chg_color};">({chg:+.2f}, {pct:+.2f}%)</span></h4>'
-                            
-                            # Price & AMP Table
-                            html += '<table class="big-font-table">'
-                            html += '<tr class="header-row"><td>Metric</td><td>Base</td><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td></tr>'
-                            html += '<tr class="data-row"><td><b>AvgP</b></td><td>{:.2f}</td>'.format(avg_avgp) + "".join([f"<td>{v:.2f}</td>" for v in avgp_vals]) + '</tr>'
-                            html += '<tr class="data-row"><td><b>AvgP MR</b></td><td>-</td>' + "".join([f"<td class='{'pos-val' if v>0 else 'neg-val'}'>{v:.2f}%</td>" for v in avgp_mr_vals]) + '</tr>'
-                            html += '<tr class="data-row"><td><b>AMP MR</b></td><td>{:.2f}</td>'.format(avg_amp) + "".join([f"<td class='{'pos-val' if v>0 else 'neg-val'}'>{v:.2f}%</td>" for v in amp_mr_vals]) + '</tr>'
-                            html += '</table>'
+                except Exception as e: st.error(f"Error {ticker}: {e}")
 
-                            # BS Analysis Table
-                            html += '<table class="big-font-table" style="margin-top: 10px;">'
-                            html += '<tr class="header-row"><td>Day</td><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td></tr>'
-                            for name, data in [("MMB", days_mmb), ("MMS", days_mms), ("RTB", days_rtb), ("RTS", days_rts)]:
-                                html += f'<tr class="data-row"><td style="background-color:#fff !important; font-weight:bold;">{name}</td>' + "".join([f"<td>{d}</td>" for d in data]) + '</tr>'
-                            html += '</table>'
-                            
-                            html += '</div>'
-                            st.markdown(html, unsafe_allow_html=True)
+elif not current_code:
+    st.title("📈 單股分析")
+    st.info("請先從左側輸入股票代號或點擊收藏清單，再查看單股功能。")
 
-                    except Exception as e: st.error(f"Error {ticker}: {e}")
-
-# === 模式 B: 單股詳細模式 (v9.4 + v9.6 Merged) ===
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
     display_ticker = current_code.zfill(5)
@@ -2466,19 +2705,6 @@ else:
             if st.button("☆ 加入", use_container_width=True):
                 update_stock_in_db(current_code)
                 st.rerun()
-
-    # Reuse data fetching
-    @st.cache_data(ttl=900)
-    def get_data_v7(symbol, end_date):
-        try:
-            df = yf.download(symbol, period="5y", auto_adjust=False)
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            df = df[df.index <= pd.to_datetime(end_date)]
-            t = yf.Ticker(symbol)
-            try: s = t.fast_info.get('shares', None)
-            except: s = t.info.get('sharesOutstanding', None)
-            return df, s
-        except: return None, None
 
     df, shares_outstanding = get_data_v7(yahoo_ticker, st.session_state.ref_date)
 
@@ -2531,15 +2757,37 @@ else:
         pct = (chg / prev_close * 100) if prev_close else 0.0
         amp = ((curr_high - curr_low) / prev_close * 100) if prev_close else 0.0
 
-        c_sum_1, c_sum_2 = st.columns(2)
-        with c_sum_1:
-            st.metric("現價", f"{curr_close:.3f}", f"{chg:+.3f} ({pct:+.2f}%)")
-            st.metric("前收市", f"{prev_close:.3f}" if prev_close else "-")
-            st.metric("波幅(AA)", f"{amp:.2f}%" if prev_close else "-")
-        with c_sum_2:
-            st.metric("開市", f"{curr_open:.3f}")
-            st.metric("最高", f"{curr_high:.3f}")
-            st.metric("最低", f"{curr_low:.3f}")
+        delta_cls = "pos" if chg >= 0 else "neg"
+        summary_cards = f"""
+        <div class="compact-grid">
+            <div class="compact-card">
+                <div class="label">現價</div>
+                <div class="value">{curr_close:.3f}</div>
+                <div class="sub {delta_cls}">{chg:+.3f} ({pct:+.2f}%)</div>
+            </div>
+            <div class="compact-card">
+                <div class="label">前收市</div>
+                <div class="value">{f"{prev_close:.3f}" if prev_close else "-"}</div>
+            </div>
+            <div class="compact-card">
+                <div class="label">開市</div>
+                <div class="value">{curr_open:.3f}</div>
+            </div>
+            <div class="compact-card">
+                <div class="label">波幅(AA)</div>
+                <div class="value">{f"{amp:.2f}%" if prev_close else "-"}</div>
+            </div>
+            <div class="compact-card">
+                <div class="label">最高</div>
+                <div class="value">{curr_high:.3f}</div>
+            </div>
+            <div class="compact-card">
+                <div class="label">最低</div>
+                <div class="value">{curr_low:.3f}</div>
+            </div>
+        </div>
+        """
+        st.markdown(summary_cards, unsafe_allow_html=True)
 
         end_date_dt = pd.to_datetime(st.session_state.ref_date)
         start_date_6m = end_date_dt - timedelta(days=180)
@@ -2576,6 +2824,7 @@ else:
         cond_wr = (pd.notna(val_wr35) and (float(val_wr35) < -80))
         fzm_trigger = bool(cond_above and cond_wr)
         down6_trigger = is_consecutive_down(df_sig["Close"], 6)
+        tor_down5_trigger = bool("Turnover_Rate" in df_sig.columns and is_consecutive_down(df_sig["Turnover_Rate"], 5))
 
         labels = ["Price", "SMA7", "SMA14", "SMA28", "SMA57", "SMA106", "SMA212"]
         vals = [
@@ -2602,16 +2851,29 @@ else:
                     mr_rows.append({"項目": label, "值": float(v), "MR(%)": mr_val})
             mr_trigger = mr_count >= 3
 
-        c_sig_1, c_sig_2 = st.columns(2)
-        with c_sig_1:
-            st.markdown(f"超底(FZM)：{'🔴 觸發' if fzm_trigger else '未觸發'}")
-            st.write(f"WR35: {'-' if pd.isna(val_wr35) else f'{float(val_wr35):.2f}'}")
-            st.write(f"SMA7/14: {'-' if pd.isna(val_sma7) else f'{float(val_sma7):.3f}'} / {'-' if pd.isna(val_sma14) else f'{float(val_sma14):.3f}'}")
-        with c_sig_2:
-            st.markdown(f"振蕩(MR)：{'🔴 觸發' if mr_trigger else '未觸發'}")
-            st.write(f"基準均價: {avg_of_avgs:.3f}" if avg_of_avgs else "基準均價: -")
-            st.write(f"高乖離數(>0.62%): {mr_count}")
-            st.markdown(f"連跌6日：{'🔴 觸發' if down6_trigger else '未觸發'}")
+        signal_cards = f"""
+        <div class="compact-grid">
+            <div class="signal-card {'trigger' if fzm_trigger else 'idle'}">
+                <div class="title">超底(FZM)：{'🔴 觸發' if fzm_trigger else '未觸發'}</div>
+                <div class="meta">WR35: {'-' if pd.isna(val_wr35) else f'{float(val_wr35):.2f}'}</div>
+                <div class="meta">SMA7/14: {'-' if pd.isna(val_sma7) else f'{float(val_sma7):.3f}'} / {'-' if pd.isna(val_sma14) else f'{float(val_sma14):.3f}'}</div>
+            </div>
+            <div class="signal-card {'trigger' if mr_trigger else 'idle'}">
+                <div class="title">振蕩(MR)：{'🔴 觸發' if mr_trigger else '未觸發'}</div>
+                <div class="meta">{f'基準均價: {avg_of_avgs:.3f}' if avg_of_avgs else '基準均價: -'}</div>
+                <div class="meta">高乖離數(>0.62%): {mr_count}</div>
+            </div>
+            <div class="signal-card {'trigger' if down6_trigger else 'idle'}">
+                <div class="title">連跌6日：{'🔴 觸發' if down6_trigger else '未觸發'}</div>
+                <div class="meta">最近 6 個交易日收市價連續下跌</div>
+            </div>
+            <div class="signal-card {'trigger' if tor_down5_trigger else 'idle'}">
+                <div class="title">換手率連跌5日：{'🔴 觸發' if tor_down5_trigger else '未觸發'}</div>
+                <div class="meta">最近 5 個交易日 TOR 連續下降</div>
+            </div>
+        </div>
+        """
+        st.markdown(signal_cards, unsafe_allow_html=True)
 
         if mr_rows:
             with st.expander("信號詳情", expanded=False):
@@ -3299,6 +3561,3 @@ else:
                 st.dataframe(out_df, hide_index=True, use_container_width=True)
         except Exception as e:
             st.error(str(e))
-
-
-
