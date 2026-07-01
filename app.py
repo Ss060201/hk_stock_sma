@@ -3037,10 +3037,10 @@ else:
     show_data = show_all or (stock_section == "data")
     show_interactive = show_all or (stock_section == "interactive")
     show_sma_line = show_all or (stock_section == "sma_line")
-    show_sma_matrix = show_all or (stock_section == "sma_matrix")
-    show_price_interface = show_all or (stock_section == "price_interface")
-    show_turnover = show_all or (stock_section == "turnover")
-    show_cdm = show_all or (stock_section == "cdm")
+    show_sma_matrix = True
+    show_price_interface = True
+    show_turnover = True
+    show_cdm = True
 
     col_t, col_b = st.columns([0.85, 0.15])
     with col_t: st.title(f"📊 {display_ticker}")
@@ -3244,7 +3244,7 @@ else:
             with tab_backtest:
                 render_backtest_page(df, current_code, watchlist_data)
 
-        with st.expander("互動模式控制區", expanded=show_interactive):
+        with st.expander("互動模式控制區", expanded=True):
             min_date = df.index.min().date() if len(df) else st.session_state.ref_date
             max_date = df.index.max().date() if len(df) else st.session_state.ref_date
             default_end = max_date
