@@ -2716,6 +2716,8 @@ def render_sidebar_context_navigation():
         render_comparison_section_navigation()
     elif current_page == "backtest":
         render_backtest_section_navigation()
+    else:
+        render_navigation_expander()
 
 
 def render_settings_page():
@@ -2825,6 +2827,7 @@ if "sma2" not in st.session_state:
 # --- 6. 側邊欄 ---
 with st.sidebar:
     st.header("HK Stock Analysis")
+    nav_slot = st.empty()
     
     # Telegram 設定
     with st.expander("✈️ Telegram 設定", expanded=False):
@@ -2861,7 +2864,6 @@ with st.sidebar:
             else:
                 st.toast("請先選擇股票並設定 Token", icon="⚠️")
 
-    render_sidebar_context_navigation()
     st.divider()
     
     # 日期與搜尋
@@ -2875,6 +2877,9 @@ with st.sidebar:
         cleaned = clean_ticker_input(search_input)
         if cleaned:
             set_current_page("stock", cleaned)
+
+    with nav_slot.container():
+        render_sidebar_context_navigation()
 
     st.divider()
     
