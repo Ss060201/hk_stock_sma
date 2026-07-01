@@ -2642,11 +2642,12 @@ def render_navigation_expander():
                 st.rerun()
 def render_stock_section_navigation() -> str:
     opts = [
+        ("all", "全部顯示"),
         ("header", "股票名字位置"), ("sma_line", "SMA線"), ("quick", "快速信號"),
         ("data", "數據列表"), ("interactive", "互動模式"), ("sma_matrix", "SMA Matrix"),
         ("price_interface", "Price界面"), ("turnover", "Turnover Rate"), ("cdm", "CDM")
     ]
-    current = st.session_state.get("stock_section", "header")
+    current = st.session_state.get("stock_section", "all")
     label_map = {k: v for k, v in opts}
     value_map = {v: k for k, v in opts}
     labels = [v for _, v in opts]
@@ -2654,7 +2655,7 @@ def render_stock_section_navigation() -> str:
         st.caption("切換單股頁內區段，手機查看更集中。")
         choice = st.radio(
             "單股區段", labels,
-            index=labels.index(label_map.get(current, "股票名字位置")),
+            index=labels.index(label_map.get(current, "全部顯示")),
             key="stock_section_radio", label_visibility="collapsed"
         )
     st.session_state.stock_section = value_map[choice]
@@ -2792,7 +2793,7 @@ if "current_page" not in st.session_state:
 if "comparison_mode" not in st.session_state:
     st.session_state.comparison_mode = False
 if "stock_section" not in st.session_state:
-    st.session_state.stock_section = "header"
+    st.session_state.stock_section = "all"
 if "comparison_section" not in st.session_state:
     st.session_state.comparison_section = "trend"
 if "backtest_section" not in st.session_state:
@@ -3030,15 +3031,15 @@ else:
     yahoo_ticker = get_yahoo_ticker(current_code)
     display_ticker = current_code.zfill(5)
     stock_section = render_stock_section_navigation()
-    show_header = stock_section == "header"
-    show_quick = stock_section == "quick"
-    show_data = stock_section == "data"
-    show_interactive = stock_section == "interactive"
-    show_sma_line = stock_section == "sma_line"
-    show_sma_matrix = stock_section == "sma_matrix"
-    show_price_interface = stock_section == "price_interface"
-    show_turnover = stock_section == "turnover"
-    show_cdm = stock_section == "cdm"
+    show_header = stock_section in ("all", "header")
+    show_quick = stock_section in ("all", "quick")
+    show_data = stock_section in ("all", "data")
+    show_interactive = stock_section in ("all", "interactive")
+    show_sma_line = stock_section in ("all", "sma_line")
+    show_sma_matrix = stock_section in ("all", "sma_matrix")
+    show_price_interface = stock_section in ("all", "price_interface")
+    show_turnover = stock_section in ("all", "turnover")
+    show_cdm = stock_section in ("all", "cdm")
 
     col_t, col_b = st.columns([0.85, 0.15])
     with col_t: st.title(f"📊 {display_ticker}")
