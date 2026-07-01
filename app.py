@@ -1211,7 +1211,7 @@ def render_backtest_page(
     if "bt_end" not in st.session_state:
         st.session_state.bt_end = max_d
 
-    backtest_section = render_backtest_section_navigation()
+    backtest_section = st.session_state.get("backtest_section", "settings")
     show_settings = backtest_section == "settings"
     show_single = backtest_section == "single"
     show_compare = backtest_section == "compare"
@@ -2098,7 +2098,7 @@ def _render_table_with_ticker_buttons(title: str, rows: list[dict], columns: lis
 
 def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, Any]):
     st.title("📊 港股收藏夾對比面板")
-    comparison_section = render_comparison_section_navigation()
+    comparison_section = st.session_state.get("comparison_section", "trend")
     show_trend = comparison_section == "trend"
     show_mr = comparison_section == "mr"
     show_cdm = comparison_section == "cdm"
@@ -2708,6 +2708,15 @@ def render_backtest_section_navigation() -> str:
     st.session_state.backtest_section = value_map[choice]
     return st.session_state.backtest_section
 
+def render_sidebar_context_navigation():
+    current_page = st.session_state.get("current_page", "home")
+    if current_page == "stock":
+        render_stock_section_navigation()
+    elif current_page == "comparison":
+        render_comparison_section_navigation()
+    elif current_page == "backtest":
+        render_backtest_section_navigation()
+
 
 def render_settings_page():
     st.title("⚙️ 設定")
@@ -2852,7 +2861,7 @@ with st.sidebar:
             else:
                 st.toast("請先選擇股票並設定 Token", icon="⚠️")
 
-    render_navigation_expander()
+    render_sidebar_context_navigation()
     st.divider()
     
     # 日期與搜尋
@@ -3030,7 +3039,7 @@ elif not current_code:
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
     display_ticker = current_code.zfill(5)
-    stock_section = render_stock_section_navigation()
+    stock_section = st.session_state.get("stock_section", "all")
     show_all = stock_section in ("all", "interactive")
     show_header = show_all or (stock_section == "header")
     show_quick = show_all or (stock_section == "quick")
