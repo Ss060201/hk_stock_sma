@@ -3591,8 +3591,8 @@ else:
 
 
         # --- D. 數據呈現 ---
-        req_len = 13
-        if len(df) < req_len:
+        req_len = min(13, len(df))
+        if req_len < 2:
             st.warning("數據長度不足")
         else:
             data_slice = df.iloc[-req_len:][::-1]
@@ -3802,6 +3802,8 @@ else:
                 st.subheader("📋 Turnover Rate Matrix")
                 if not has_turnover:
                     st.error("無流通股數數據。")
+                elif len(data_slice) < 13:
+                    st.warning("數據不足 13 個交易日，無法顯示 Turnover Matrix。")
                 else:
                     dates_d2_d7 = [data_slice.index[i].strftime('%m-%d') for i in range(1, 7)]
                     vals_d2_d7 = [f"{data_slice['Turnover_Rate'].iloc[i]:.2f}%" for i in range(1, 7)]
