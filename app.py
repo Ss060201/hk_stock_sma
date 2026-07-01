@@ -1211,9 +1211,13 @@ def render_backtest_page(
     if "bt_end" not in st.session_state:
         st.session_state.bt_end = max_d
 
-    sub1, sub2, sub3, sub4 = st.tabs(["⚙️ 回測設定", "📊 單策略回測", "🆚 策略對標", "🎯 策略推薦"])
+    backtest_section = render_backtest_section_navigation()
+    show_settings = backtest_section == "settings"
+    show_single = backtest_section == "single"
+    show_compare = backtest_section == "compare"
+    show_recommend = backtest_section == "recommend"
 
-    with sub1:
+    if show_settings:
         st.markdown("### ⚙️ 回測設定")
 
         c1, c2, c3, c4, c5 = st.columns([1.5, 1.5, 0.8, 0.8, 0.8])
@@ -1291,7 +1295,7 @@ def render_backtest_page(
         start_date, end_date = end_date, start_date
     df_bt = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))].copy()
 
-    with sub2:
+    if show_single:
         st.markdown("### 📊 單策略回測")
         if len(df_bt) < 50:
             st.warning("回測數據不足（至少需要 50 個交易日）。")
@@ -1429,7 +1433,7 @@ def render_backtest_page(
                     st.dataframe(df_tr, use_container_width=True, hide_index=True)
                     st.download_button("📥 導出 CSV", data=df_tr.to_csv(index=False).encode("utf-8-sig"), file_name=f"交易明細_{current_code}_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True)
 
-    with sub3:
+    if show_compare:
         st.markdown("### 🆚 策略對標")
         if "cmp_start" not in st.session_state:
             st.session_state.cmp_start = st.session_state.bt_start
@@ -1758,7 +1762,7 @@ def render_backtest_page(
                         use_container_width=True,
                     )
 
-    with sub4:
+    if show_recommend:
         st.markdown("### 🎯 策略推薦")
         comp_out = st.session_state.get("comparison_results")
         if not comp_out:
@@ -2094,6 +2098,12 @@ def _render_table_with_ticker_buttons(title: str, rows: list[dict], columns: lis
 
 def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, Any]):
     st.title("📊 港股收藏夾對比面板")
+    comparison_section = render_comparison_section_navigation()
+    show_trend = comparison_section == "trend"
+    show_mr = comparison_section == "mr"
+    show_cdm = comparison_section == "cdm"
+    show_amp = comparison_section == "amp"
+    show_score = comparison_section == "score"
 
     col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
     with col1:
@@ -2186,11 +2196,12 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
     trend_rows = []
     for idx, row in df_trend.iterrows():
         trend_rows.append({**row.to_dict(), "_row_id": str(idx)})
-    _render_table_with_ticker_buttons(
-        "📈 【SMA 上升趨勢排序】",
-        trend_rows,
-        [("現價", "現價"), ("變化%", "變化%"), ("SMA7", "SMA7"), ("SMA14", "SMA14"), ("SMA28", "SMA28"), ("趨勢", "趨勢")],
-    )
+    if show_trend:
+        _render_table_with_ticker_buttons(
+            "📈 【SMA 上升趨勢排序】",
+            trend_rows,
+            [("現價", "現價"), ("變化%", "變化%"), ("SMA7", "SMA7"), ("SMA14", "SMA14"), ("SMA28", "SMA28"), ("趨勢", "趨勢")],
+        )
 
     df_mr = df_base[["股票", "現價", "AvgP MR%", "MR級別", "趨勢", "推薦度", "趨勢分數"]].copy()
     df_mr["現價"] = df_mr["現價"].map(lambda x: "-" if pd.isna(x) else f"{float(x):.2f}")
@@ -2203,11 +2214,12 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
         r = row.to_dict()
         r["排名"] = rank
         mr_rows.append({**r, "_row_id": str(idx)})
-    _render_table_with_ticker_buttons(
-        "💰 【MR 偏差排序 - 機會大小】",
-        mr_rows,
-        [("排名", "排名"), ("現價", "現價"), ("AvgP MR%", "AvgP MR%"), ("MR級別", "評級"), ("趨勢", "上升勢"), ("推薦度", "推薦")],
-    )
+    if show_mr:
+        _render_table_with_ticker_buttons(
+            "💰 【MR 偏差排序 - 機會大小】",
+            mr_rows,
+            [("排名", "排名"), ("現價", "現價"), ("AvgP MR%", "AvgP MR%"), ("MR級別", "評級"), ("趨勢", "上升勢"), ("推薦度", "推薦")],
+        )
 
     df_cdm = df_base[["股票", "CDM狀態", "CDM目標價", "CDM偏差%", "TOR信號", "信心度", "趨勢"]].copy()
     df_cdm["CDM目標價"] = df_cdm["CDM目標價"].map(lambda x: "-" if pd.isna(x) else f"{float(x):.2f}")
@@ -2217,11 +2229,12 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
     cdm_rows = []
     for idx, row in df_cdm.iterrows():
         cdm_rows.append({**row.to_dict(), "_row_id": str(idx)})
-    _render_table_with_ticker_buttons(
-        "🔴 【CDM 觸發狀態 - 即時機會】",
-        cdm_rows,
-        [("CDM狀態", "CDM狀態"), ("CDM目標價", "目標價"), ("CDM偏差%", "偏差%"), ("TOR信號", "TOR信號"), ("信心度", "信心度")],
-    )
+    if show_cdm:
+        _render_table_with_ticker_buttons(
+            "🔴 【CDM 觸發狀態 - 即時機會】",
+            cdm_rows,
+            [("CDM狀態", "CDM狀態"), ("CDM目標價", "目標價"), ("CDM偏差%", "偏差%"), ("TOR信號", "TOR信號"), ("信心度", "信心度")],
+        )
 
     df_amp = df_base[["股票", "AMP(%)", "AMP MR%", "級別", "預測振幅", "風險等級", "趨勢"]].copy()
     df_amp["_amp_mr_sort"] = df_base["AMP MR%"]
@@ -2232,11 +2245,12 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
     amp_rows = []
     for idx, row in df_amp.iterrows():
         amp_rows.append({**row.to_dict(), "_row_id": str(idx)})
-    _render_table_with_ticker_buttons(
-        "📊 【振幅對比 - 交易機會大小】",
-        amp_rows,
-        [("AMP(%)", "AMP(%)"), ("AMP MR%", "AMP MR%"), ("級別", "級別"), ("預測振幅", "預測振幅"), ("風險等級", "風險等級")],
-    )
+    if show_amp:
+        _render_table_with_ticker_buttons(
+            "📊 【振幅對比 - 交易機會大小】",
+            amp_rows,
+            [("AMP(%)", "AMP(%)"), ("AMP MR%", "AMP MR%"), ("級別", "級別"), ("預測振幅", "預測振幅"), ("風險等級", "風險等級")],
+        )
 
     def _trend_points(icon: str) -> float:
         if icon == "⬆️⬆️⬆️":
@@ -2327,11 +2341,12 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
                 "推薦操作": row["推薦操作"],
             }
         )
-    _render_table_with_ticker_buttons(
-        "⭐ 【綜合評分排序 - 當日最佳機會】",
-        score_table_rows,
-        [("排名", "排名"), ("評分", "評分"), ("趨勢", "趨勢"), ("偏差", "偏差"), ("振幅", "振幅"), ("推薦操作", "推薦操作")],
-    )
+    if show_score:
+        _render_table_with_ticker_buttons(
+            "⭐ 【綜合評分排序 - 當日最佳機會】",
+            score_table_rows,
+            [("排名", "排名"), ("評分", "評分"), ("趨勢", "趨勢"), ("偏差", "偏差"), ("振幅", "振幅"), ("推薦操作", "推薦操作")],
+        )
 
     try:
         import openpyxl
@@ -2519,6 +2534,8 @@ def set_current_page(page: str, code: Optional[str] = None):
     if code is not None:
         st.session_state.current_view = clean_ticker_input(code)
     st.session_state.comparison_mode = (page == "comparison")
+    if page == "stock" and code is not None:
+        st.session_state.stock_section = "header"
 
 def render_top_navigation():
     current_page = st.session_state.get("current_page", "home")
@@ -2623,6 +2640,74 @@ def render_navigation_expander():
             if st.button(item["title"], key=f"sidebar_nav_{item['page']}", use_container_width=True, type=btn_type):
                 set_current_page(item["page"])
                 st.rerun()
+def render_stock_section_navigation() -> str:
+    opts = [
+        ("header", "股票名字位置"), ("sma_line", "SMA線"), ("quick", "快速信號"),
+        ("data", "數據列表"), ("interactive", "互動模式"), ("sma_matrix", "SMA Matrix"),
+        ("price_interface", "Price界面"), ("turnover", "Turnover Rate"), ("cdm", "CDM")
+    ]
+    current = st.session_state.get("stock_section", "header")
+    label_map = {k: v for k, v in opts}
+    value_map = {v: k for k, v in opts}
+    labels = [v for _, v in opts]
+    with st.expander("單股導航", expanded=False):
+        st.caption("切換單股頁內區段，手機查看更集中。")
+        choice = st.radio(
+            "單股區段", labels,
+            index=labels.index(label_map.get(current, "股票名字位置")),
+            key="stock_section_radio", label_visibility="collapsed"
+        )
+    st.session_state.stock_section = value_map[choice]
+    return st.session_state.stock_section
+
+def render_comparison_section_navigation() -> str:
+    opts = [
+        ("trend", "SMA趨勢"),
+        ("mr", "MR偏差"),
+        ("cdm", "CDM狀態"),
+        ("amp", "振幅對比"),
+        ("score", "綜合評分"),
+    ]
+    current = st.session_state.get("comparison_section", "trend")
+    label_map = {k: v for k, v in opts}
+    value_map = {v: k for k, v in opts}
+    labels = [v for _, v in opts]
+    with st.expander("比較頁導航", expanded=False):
+        st.caption("切換比較頁內區段，手機查看更集中。")
+        choice = st.radio(
+            "比較頁區段",
+            labels,
+            index=labels.index(label_map.get(current, "SMA趨勢")),
+            key="comparison_section_radio",
+            label_visibility="collapsed",
+        )
+    st.session_state.comparison_section = value_map[choice]
+    return st.session_state.comparison_section
+
+def render_backtest_section_navigation() -> str:
+    opts = [
+        ("settings", "回測設定"),
+        ("single", "單策略回測"),
+        ("compare", "策略對標"),
+        ("recommend", "策略推薦"),
+    ]
+    current = st.session_state.get("backtest_section", "settings")
+    label_map = {k: v for k, v in opts}
+    value_map = {v: k for k, v in opts}
+    labels = [v for _, v in opts]
+    with st.expander("回測導航", expanded=False):
+        st.caption("切換回測頁內區段，手機查看更集中。")
+        choice = st.radio(
+            "回測區段",
+            labels,
+            index=labels.index(label_map.get(current, "回測設定")),
+            key="backtest_section_radio",
+            label_visibility="collapsed",
+        )
+    st.session_state.backtest_section = value_map[choice]
+    return st.session_state.backtest_section
+
+
 def render_settings_page():
     st.title("⚙️ 設定")
 
@@ -2706,6 +2791,12 @@ if "current_page" not in st.session_state:
     st.session_state.current_page = "home"
 if "comparison_mode" not in st.session_state:
     st.session_state.comparison_mode = False
+if "stock_section" not in st.session_state:
+    st.session_state.stock_section = "header"
+if "comparison_section" not in st.session_state:
+    st.session_state.comparison_section = "trend"
+if "backtest_section" not in st.session_state:
+    st.session_state.backtest_section = "settings"
 if "show_filter" not in st.session_state:
     st.session_state.show_filter = False
 if "comparison_filters" not in st.session_state:
@@ -2938,6 +3029,16 @@ elif not current_code:
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
     display_ticker = current_code.zfill(5)
+    stock_section = render_stock_section_navigation()
+    show_header = stock_section == "header"
+    show_quick = stock_section == "quick"
+    show_data = stock_section == "data"
+    show_interactive = stock_section == "interactive"
+    show_sma_line = stock_section == "sma_line"
+    show_sma_matrix = stock_section == "sma_matrix"
+    show_price_interface = stock_section == "price_interface"
+    show_turnover = stock_section == "turnover"
+    show_cdm = stock_section == "cdm"
 
     col_t, col_b = st.columns([0.85, 0.15])
     with col_t: st.title(f"📊 {display_ticker}")
@@ -3034,7 +3135,8 @@ else:
             </div>
         </div>
         """
-        st.markdown(summary_cards, unsafe_allow_html=True)
+        if show_header:
+            st.markdown(summary_cards, unsafe_allow_html=True)
 
         end_date_dt = pd.to_datetime(st.session_state.ref_date)
         start_date_6m = end_date_dt - timedelta(days=180)
@@ -3056,9 +3158,11 @@ else:
         if "SMA_14" in display_df.columns:
             fig_main.add_trace(go.Scatter(x=display_df.index, y=display_df["SMA_14"], line=dict(color="blue"), name="SMA 14"))
         fig_main.update_layout(height=520, xaxis_rangeslider_visible=True, template="plotly_white", dragmode="pan", uirevision=f"main_price_{current_code}")
-        st.plotly_chart(fig_main, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
+        if show_header:
+            st.plotly_chart(fig_main, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
 
-        st.markdown("**快速信號**")
+        if show_quick:
+            st.markdown("**快速信號**")
         df_sig = df.tail(260).copy()
         df_sig["WR35"] = calculate_willr(df_sig["High"], df_sig["Low"], df_sig["Close"], 35)
         last_sig = df_sig.iloc[-1]
@@ -3120,24 +3224,25 @@ else:
             </div>
         </div>
         """
-        st.markdown(signal_cards, unsafe_allow_html=True)
+        if show_quick:
+            st.markdown(signal_cards, unsafe_allow_html=True)
+            if mr_rows:
+                with st.expander("信號詳情", expanded=False):
+                    st.dataframe(pd.DataFrame(mr_rows), hide_index=True, use_container_width=True)
 
-        if mr_rows:
-            with st.expander("信號詳情", expanded=False):
-                st.dataframe(pd.DataFrame(mr_rows), hide_index=True, use_container_width=True)
+        if show_data:
+            st.write("---")
+            tab_data, tab_backtest = st.tabs(["📋 數據列表", "🧪 歷史回測"])
+            with tab_data:
+                show_cols = [c for c in ["Open", "High", "Low", "Close", "Volume", "Turnover_Rate"] if c in df.columns]
+                if show_cols:
+                    st.dataframe(df[show_cols].tail(60), use_container_width=True)
+                else:
+                    st.info("無可顯示欄位。")
+            with tab_backtest:
+                render_backtest_page(df, current_code, watchlist_data)
 
-        st.write("---")
-        tab_data, tab_backtest = st.tabs(["📋 數據列表", "🧪 歷史回測"])
-        with tab_data:
-            show_cols = [c for c in ["Open", "High", "Low", "Close", "Volume", "Turnover_Rate"] if c in df.columns]
-            if show_cols:
-                st.dataframe(df[show_cols].tail(60), use_container_width=True)
-            else:
-                st.info("無可顯示欄位。")
-        with tab_backtest:
-            render_backtest_page(df, current_code, watchlist_data)
-
-        with st.expander("互動模式控制區", expanded=False):
+        with st.expander("互動模式控制區", expanded=show_interactive):
             min_date = df.index.min().date() if len(df) else st.session_state.ref_date
             max_date = df.index.max().date() if len(df) else st.session_state.ref_date
             default_end = max_date
@@ -3499,10 +3604,12 @@ else:
                 if col_name in curve_data.columns:
                     fig_sma_trend.add_trace(go.Scatter(x=curve_data.index, y=curve_data[col_name], mode='lines', name=f"SMA({p})", line=dict(color=colors_map.get(p, 'grey'), width=2)))
             fig_sma_trend.update_layout(height=350, margin=dict(l=10, r=10, t=30, b=10), title="SMA 曲線 (近7個交易日)", template="plotly_white", legend=dict(orientation="h", y=1.1), dragmode="pan", uirevision=f"sma_trend_{current_code}")
-            st.plotly_chart(fig_sma_trend, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
+            if show_sma_line:
+                st.plotly_chart(fig_sma_trend, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
 
            # 2. SMA Matrix (New Format v10.0)
-            st.subheader("📋 SMA Matrix")
+            if show_sma_matrix:
+                st.subheader("📋 SMA Matrix")
             
             # 定義列與對應的 Interval
             matrix_intervals = [7, 14, 28, 57, 106, 212]
@@ -3564,7 +3671,8 @@ else:
                 sma_html += '</tr>'
 
             sma_html += "</tbody></table>"
-            st.markdown(sma_html, unsafe_allow_html=True)
+            if show_sma_matrix:
+                st.markdown(sma_html, unsafe_allow_html=True)
             
           # --- NEW: Price Interface Data List (修正版) ---
             st.write("") # Spacer
@@ -3681,45 +3789,45 @@ else:
             pi_html += '<tr class="data-row">' + "".join([f"<td>{d:.2f}%</td>" for d in row4_data]) + '</tr>'
             
             pi_html += '</table>'
-            st.markdown(pi_html, unsafe_allow_html=True)
+            if show_price_interface:
+                st.markdown(pi_html, unsafe_allow_html=True)
 
             # 3. Turnover Matrix (此行不用複製，已存在於你的代碼下方)
 
 
             # 3. Turnover Matrix
-            st.subheader("📋 Turnover Rate Matrix")
-            if not has_turnover:
-                st.error("無流通股數數據。")
-            else:
-                dates_d2_d7 = [data_slice.index[i].strftime('%m-%d') for i in range(1, 7)]
-                vals_d2_d7 = [f"{data_slice['Turnover_Rate'].iloc[i]:.2f}%" for i in range(1, 7)]
-                dates_d8_d13 = [data_slice.index[i].strftime('%m-%d') for i in range(7, 13)]
-                vals_d8_d13 = [f"{data_slice['Turnover_Rate'].iloc[i]:.2f}%" for i in range(7, 13)]
-                
-                intervals_tor = [7, 14, 28, 57, 106, 212]
-                sums = [f"{df['Turnover_Rate'].tail(p).sum():.2f}%" for p in intervals_tor]
-                maxs = [f"{df['Turnover_Rate'].tail(p).max():.2f}%" for p in intervals_tor]
-                mins = [f"{df['Turnover_Rate'].tail(p).min():.2f}%" for p in intervals_tor]
-                avgs = [f"{df['Turnover_Rate'].tail(p).mean():.2f}%" for p in intervals_tor]
-                avg_tor_7 = f"{df['Turnover_Rate'].mean():.2f}%"
+            if show_turnover:
+                st.subheader("📋 Turnover Rate Matrix")
+                if not has_turnover:
+                    st.error("無流通股數數據。")
+                else:
+                    dates_d2_d7 = [data_slice.index[i].strftime('%m-%d') for i in range(1, 7)]
+                    vals_d2_d7 = [f"{data_slice['Turnover_Rate'].iloc[i]:.2f}%" for i in range(1, 7)]
+                    dates_d8_d13 = [data_slice.index[i].strftime('%m-%d') for i in range(7, 13)]
+                    vals_d8_d13 = [f"{data_slice['Turnover_Rate'].iloc[i]:.2f}%" for i in range(7, 13)]
+                    intervals_tor = [7, 14, 28, 57, 106, 212]
+                    sums = [f"{df['Turnover_Rate'].tail(p).sum():.2f}%" for p in intervals_tor]
+                    maxs = [f"{df['Turnover_Rate'].tail(p).max():.2f}%" for p in intervals_tor]
+                    mins = [f"{df['Turnover_Rate'].tail(p).min():.2f}%" for p in intervals_tor]
+                    avgs = [f"{df['Turnover_Rate'].tail(p).mean():.2f}%" for p in intervals_tor]
+                    avg_tor_7 = f"{df['Turnover_Rate'].mean():.2f}%"
+                    tor_html = '<table class="big-font-table">'
+                    tor_html += f'<tr style="background-color: #e8eaf6;"><th>Day 2<br><small>{dates_d2_d7[0]}</small></th><th>Day 3<br><small>{dates_d2_d7[1]}</small></th><th>Day 4<br><small>{dates_d2_d7[2]}</small></th><th>Day 5<br><small>{dates_d2_d7[3]}</small></th><th>Day 6<br><small>{dates_d2_d7[4]}</small></th><th>Day 7<br><small>{dates_d2_d7[5]}</small></th></tr>'
+                    tor_html += f'<tr><td>{vals_d2_d7[0]}</td><td>{vals_d2_d7[1]}</td><td>{vals_d2_d7[2]}</td><td>{vals_d2_d7[3]}</td><td>{vals_d2_d7[4]}</td><td>{vals_d2_d7[5]}</td></tr>'
+                    tor_html += f'<tr style="background-color: #e8eaf6;"><th>Day 8<br><small>{dates_d8_d13[0]}</small></th><th>Day 9<br><small>{dates_d8_d13[1]}</small></th><th>Day 10<br><small>{dates_d8_d13[2]}</small></th><th>Day 11<br><small>{dates_d8_d13[3]}</small></th><th>Day 12<br><small>{dates_d8_d13[4]}</small></th><th>Day 13<br><small>{dates_d8_d13[5]}</small></th></tr>'
+                    tor_html += f'<tr><td>{vals_d8_d13[0]}</td><td>{vals_d8_d13[1]}</td><td>{vals_d8_d13[2]}</td><td>{vals_d8_d13[3]}</td><td>{vals_d8_d13[4]}</td><td>{vals_d8_d13[5]}</td></tr></table><br>'
+                    tor_html += '<table class="big-font-table"><tr style="background-color: #ffe0b2;"><th>Metrics</th>' + "".join([f"<th>Int: {p}</th>" for p in intervals_tor]) + '</tr>'
+                    tor_html += f'<tr><td><b>Sum(TOR)</b></td>' + "".join([f"<td>{v}</td>" for v in sums]) + '</tr>'
+                    tor_html += f'<tr><td><b>Max</b></td>' + "".join([f"<td>{v}</td>" for v in maxs]) + '</tr>'
+                    tor_html += f'<tr><td><b>Min</b></td>' + "".join([f"<td>{v}</td>" for v in mins]) + '</tr>'
+                    tor_html += f'<tr style="background-color: #c8e6c9;"><td><b>AVG Label</b></td><td>AVGTOR 1</td><td>AVGTOR 2</td><td>AVGTOR 3</td><td>AVGTOR 4</td><td>AVGTOR 5</td><td>AVGTOR 6</td></tr>'
+                    tor_html += f'<tr><td><b>AVGTOR</b></td>' + "".join([f"<td>{v}</td>" for v in avgs]) + '</tr></table>'
+                    tor_html += f'<table class="big-font-table" style="margin-top: 10px;"><tr style="background-color: #c8e6c9;"><th style="width:50%">AVGTOR 7 (Total Average)</th><th style="width:50%">Data</th></tr><tr><td>{avg_tor_7}</td><td>{avg_tor_7}</td></tr></table>'
+                    st.markdown(tor_html, unsafe_allow_html=True)
 
-                tor_html = '<table class="big-font-table">'
-                tor_html += f'<tr style="background-color: #e8eaf6;"><th>Day 2<br><small>{dates_d2_d7[0]}</small></th><th>Day 3<br><small>{dates_d2_d7[1]}</small></th><th>Day 4<br><small>{dates_d2_d7[2]}</small></th><th>Day 5<br><small>{dates_d2_d7[3]}</small></th><th>Day 6<br><small>{dates_d2_d7[4]}</small></th><th>Day 7<br><small>{dates_d2_d7[5]}</small></th></tr>'
-                tor_html += f'<tr><td>{vals_d2_d7[0]}</td><td>{vals_d2_d7[1]}</td><td>{vals_d2_d7[2]}</td><td>{vals_d2_d7[3]}</td><td>{vals_d2_d7[4]}</td><td>{vals_d2_d7[5]}</td></tr>'
-                tor_html += f'<tr style="background-color: #e8eaf6;"><th>Day 8<br><small>{dates_d8_d13[0]}</small></th><th>Day 9<br><small>{dates_d8_d13[1]}</small></th><th>Day 10<br><small>{dates_d8_d13[2]}</small></th><th>Day 11<br><small>{dates_d8_d13[3]}</small></th><th>Day 12<br><small>{dates_d8_d13[4]}</small></th><th>Day 13<br><small>{dates_d8_d13[5]}</small></th></tr>'
-                tor_html += f'<tr><td>{vals_d8_d13[0]}</td><td>{vals_d8_d13[1]}</td><td>{vals_d8_d13[2]}</td><td>{vals_d8_d13[3]}</td><td>{vals_d8_d13[4]}</td><td>{vals_d8_d13[5]}</td></tr></table><br>'
-                
-                tor_html += '<table class="big-font-table"><tr style="background-color: #ffe0b2;"><th>Metrics</th>' + "".join([f"<th>Int: {p}</th>" for p in intervals_tor]) + '</tr>'
-                tor_html += f'<tr><td><b>Sum(TOR)</b></td>' + "".join([f"<td>{v}</td>" for v in sums]) + '</tr>'
-                tor_html += f'<tr><td><b>Max</b></td>' + "".join([f"<td>{v}</td>" for v in maxs]) + '</tr>'
-                tor_html += f'<tr><td><b>Min</b></td>' + "".join([f"<td>{v}</td>" for v in mins]) + '</tr>'
-                tor_html += f'<tr style="background-color: #c8e6c9;"><td><b>AVG Label</b></td><td>AVGTOR 1</td><td>AVGTOR 2</td><td>AVGTOR 3</td><td>AVGTOR 4</td><td>AVGTOR 5</td><td>AVGTOR 6</td></tr>'
-                tor_html += f'<tr><td><b>AVGTOR</b></td>' + "".join([f"<td>{v}</td>" for v in avgs]) + '</tr></table>'
-                tor_html += f'<table class="big-font-table" style="margin-top: 10px;"><tr style="background-color: #c8e6c9;"><th style="width:50%">AVGTOR 7 (Total Average)</th><th style="width:50%">Data</th></tr><tr><td>{avg_tor_7}</td><td>{avg_tor_7}</td></tr></table>'
-                st.markdown(tor_html, unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown("### 📈 CDM 目標價偏差(%)")
+    if show_cdm:
+        st.markdown("---")
+        st.markdown("### 📈 CDM 目標價偏差(%)")
 
     curr_params = watchlist_data.get(current_code, {})
 
@@ -3741,9 +3849,11 @@ else:
     b2_e = curr_params.get("box2_end")
 
     if not band2_peak:
-        st.info("請先到『⚙️ 設定 CDM 自動檢測參數』輸入 Band2 峰值價格（P2 反彈最高價格），才會顯示 CDM 偏差曲線與列表。")
+        if show_cdm:
+            st.info("請先到『⚙️ 設定 CDM 自動檢測參數』輸入 Band2 峰值價格（P2 反彈最高價格），才會顯示 CDM 偏差曲線與列表。")
     elif not (b1_s and b1_e and b2_s and b2_e):
-        st.info("請先完成 CDM 的 Box 1/Box 2 日期設定，才會顯示 CDM 偏差曲線與列表。")
+        if show_cdm:
+            st.info("請先完成 CDM 的 Box 1/Box 2 日期設定，才會顯示 CDM 偏差曲線與列表。")
     else:
         try:
             s1, e1 = pd.to_datetime(b1_s), pd.to_datetime(b1_e)
@@ -3774,7 +3884,8 @@ else:
                 )
 
             if not rows:
-                st.warning("近 14 天無法計算（可能是 Box1 起點太新或資料不足）。")
+                if show_cdm:
+                    st.warning("近 14 天無法計算（可能是 Box1 起點太新或資料不足）。")
             else:
                 out_df = pd.DataFrame(rows)
                 out_df["實際價"] = out_df["實際價"].map(lambda x: "-" if pd.isna(x) else f"{float(x):.3f}")
@@ -3800,13 +3911,15 @@ else:
                 )
                 fig_cdm.update_xaxes(rangeslider_visible=False)
 
-                st.plotly_chart(
-                    fig_cdm,
-                    use_container_width=True,
-                    config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True},
-                )
-                st.dataframe(out_df, hide_index=True, use_container_width=True)
+                if show_cdm:
+                    st.plotly_chart(
+                        fig_cdm,
+                        use_container_width=True,
+                        config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True},
+                    )
+                    st.dataframe(out_df, hide_index=True, use_container_width=True)
         except Exception as e:
-            st.error(str(e))
+            if show_cdm:
+                st.error(str(e))
 
 render_bottom_navigation()
