@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -283,6 +284,12 @@ st.markdown("""
         color: #6c757d;
         text-align: center;
         margin: 4px 0 8px 0;
+    }
+    .section-anchor {
+        display: block;
+        position: relative;
+        top: -10px;
+        visibility: hidden;
     }
     div[data-baseweb="select"] > div {
         min-height: 44px;
@@ -1211,13 +1218,13 @@ def render_backtest_page(
     if "bt_end" not in st.session_state:
         st.session_state.bt_end = max_d
 
-    backtest_section = st.session_state.get("backtest_section", "settings")
-    show_settings = backtest_section == "settings"
-    show_single = backtest_section == "single"
-    show_compare = backtest_section == "compare"
-    show_recommend = backtest_section == "recommend"
+    show_settings = True
+    show_single = True
+    show_compare = True
+    show_recommend = True
 
     if show_settings:
+        render_scroll_anchor("backtest-settings")
         st.markdown("### ⚙️ 回測設定")
 
         c1, c2, c3, c4, c5 = st.columns([1.5, 1.5, 0.8, 0.8, 0.8])
@@ -1296,6 +1303,7 @@ def render_backtest_page(
     df_bt = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))].copy()
 
     if show_single:
+        render_scroll_anchor("backtest-single")
         st.markdown("### 📊 單策略回測")
         if len(df_bt) < 50:
             st.warning("回測數據不足（至少需要 50 個交易日）。")
@@ -1434,6 +1442,7 @@ def render_backtest_page(
                     st.download_button("📥 導出 CSV", data=df_tr.to_csv(index=False).encode("utf-8-sig"), file_name=f"交易明細_{current_code}_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True)
 
     if show_compare:
+        render_scroll_anchor("backtest-compare")
         st.markdown("### 🆚 策略對標")
         if "cmp_start" not in st.session_state:
             st.session_state.cmp_start = st.session_state.bt_start
@@ -1763,6 +1772,7 @@ def render_backtest_page(
                     )
 
     if show_recommend:
+        render_scroll_anchor("backtest-recommend")
         st.markdown("### 🎯 策略推薦")
         comp_out = st.session_state.get("comparison_results")
         if not comp_out:
@@ -2098,12 +2108,11 @@ def _render_table_with_ticker_buttons(title: str, rows: list[dict], columns: lis
 
 def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, Any]):
     st.title("📊 港股收藏夾對比面板")
-    comparison_section = st.session_state.get("comparison_section", "trend")
-    show_trend = comparison_section == "trend"
-    show_mr = comparison_section == "mr"
-    show_cdm = comparison_section == "cdm"
-    show_amp = comparison_section == "amp"
-    show_score = comparison_section == "score"
+    show_trend = True
+    show_mr = True
+    show_cdm = True
+    show_amp = True
+    show_score = True
 
     col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
     with col1:
@@ -2197,6 +2206,7 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
     for idx, row in df_trend.iterrows():
         trend_rows.append({**row.to_dict(), "_row_id": str(idx)})
     if show_trend:
+        render_scroll_anchor("comparison-trend")
         _render_table_with_ticker_buttons(
             "📈 【SMA 上升趨勢排序】",
             trend_rows,
@@ -2215,6 +2225,7 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
         r["排名"] = rank
         mr_rows.append({**r, "_row_id": str(idx)})
     if show_mr:
+        render_scroll_anchor("comparison-mr")
         _render_table_with_ticker_buttons(
             "💰 【MR 偏差排序 - 機會大小】",
             mr_rows,
@@ -2230,6 +2241,7 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
     for idx, row in df_cdm.iterrows():
         cdm_rows.append({**row.to_dict(), "_row_id": str(idx)})
     if show_cdm:
+        render_scroll_anchor("comparison-cdm")
         _render_table_with_ticker_buttons(
             "🔴 【CDM 觸發狀態 - 即時機會】",
             cdm_rows,
@@ -2246,6 +2258,7 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
     for idx, row in df_amp.iterrows():
         amp_rows.append({**row.to_dict(), "_row_id": str(idx)})
     if show_amp:
+        render_scroll_anchor("comparison-amp")
         _render_table_with_ticker_buttons(
             "📊 【振幅對比 - 交易機會大小】",
             amp_rows,
@@ -2342,6 +2355,7 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
             }
         )
     if show_score:
+        render_scroll_anchor("comparison-score")
         _render_table_with_ticker_buttons(
             "⭐ 【綜合評分排序 - 當日最佳機會】",
             score_table_rows,
@@ -2537,6 +2551,54 @@ def set_current_page(page: str, code: Optional[str] = None):
     if page == "stock" and code is not None:
         st.session_state.stock_section = "header"
 
+def queue_scroll_to_anchor(anchor_id: str):
+    st.session_state.pending_scroll_target = anchor_id
+
+def render_scroll_anchor(anchor_id: str):
+    st.markdown(f'<span id="{anchor_id}" class="section-anchor"></span>', unsafe_allow_html=True)
+
+def render_section_anchor_nav(title: str, caption: str, sections: List[tuple], key_prefix: str):
+    with st.expander(title, expanded=False):
+        st.caption(caption)
+        cols = st.columns(2)
+        for idx, (anchor_id, label) in enumerate(sections):
+            with cols[idx % 2]:
+                if st.button(label, key=f"{key_prefix}_{anchor_id}", use_container_width=True):
+                    queue_scroll_to_anchor(anchor_id)
+                    st.rerun()
+
+def consume_pending_scroll_anchor():
+    anchor_id = st.session_state.pop("pending_scroll_target", None)
+    if not anchor_id:
+        return
+    components.html(
+        f"""
+        <script>
+        const anchorId = {json.dumps(anchor_id)};
+        let attempts = 0;
+        const scrollToAnchor = () => {{
+            const doc = window.parent.document;
+            const target = doc.getElementById(anchorId);
+            if (target) {{
+                target.scrollIntoView({{ behavior: "smooth", block: "start" }});
+                return true;
+            }}
+            return false;
+        }};
+        if (!scrollToAnchor()) {{
+            const timer = setInterval(() => {{
+                attempts += 1;
+                if (scrollToAnchor() || attempts >= 20) {{
+                    clearInterval(timer);
+                }}
+            }}, 150);
+        }}
+        </script>
+        """,
+        height=0,
+    )
+
+
 def render_top_navigation():
     current_page = st.session_state.get("current_page", "home")
 
@@ -2641,72 +2703,40 @@ def render_navigation_expander():
                 set_current_page(item["page"])
                 st.rerun()
 def render_stock_section_navigation() -> str:
-    opts = [
-        ("all", "全部顯示"),
-        ("header", "股票名字位置"), ("sma_line", "SMA線"), ("quick", "快速信號"),
-        ("data", "數據列表"), ("interactive", "互動模式"), ("sma_matrix", "SMA Matrix"),
-        ("price_interface", "Price界面"), ("turnover", "Turnover Rate"), ("cdm", "CDM")
+    sections = [
+        ("stock-header", "股票名字位置"),
+        ("stock-sma-line", "SMA線"),
+        ("stock-quick", "快速信號"),
+        ("stock-data", "數據列表"),
+        ("stock-interactive", "互動模式"),
+        ("stock-sma-matrix", "SMA Matrix"),
+        ("stock-price-interface", "Price界面"),
+        ("stock-turnover", "Turnover Rate"),
+        ("stock-cdm", "CDM"),
     ]
-    current = st.session_state.get("stock_section", "all")
-    label_map = {k: v for k, v in opts}
-    value_map = {v: k for k, v in opts}
-    labels = [v for _, v in opts]
-    with st.expander("單股導航", expanded=False):
-        st.caption("切換單股頁內區段，手機查看更集中。")
-        choice = st.radio(
-            "單股區段", labels,
-            index=labels.index(label_map.get(current, "全部顯示")),
-            key="stock_section_radio", label_visibility="collapsed"
-        )
-    st.session_state.stock_section = value_map[choice]
-    return st.session_state.stock_section
+    render_section_anchor_nav("單股導航", "點擊後自動滾動到對應區段，保留整頁內容連續瀏覽。", sections, "stock_anchor")
+    return "all"
 
 def render_comparison_section_navigation() -> str:
-    opts = [
-        ("trend", "SMA趨勢"),
-        ("mr", "MR偏差"),
-        ("cdm", "CDM狀態"),
-        ("amp", "振幅對比"),
-        ("score", "綜合評分"),
+    sections = [
+        ("comparison-trend", "SMA趨勢"),
+        ("comparison-mr", "MR偏差"),
+        ("comparison-cdm", "CDM狀態"),
+        ("comparison-amp", "振幅對比"),
+        ("comparison-score", "綜合評分"),
     ]
-    current = st.session_state.get("comparison_section", "trend")
-    label_map = {k: v for k, v in opts}
-    value_map = {v: k for k, v in opts}
-    labels = [v for _, v in opts]
-    with st.expander("比較頁導航", expanded=False):
-        st.caption("切換比較頁內區段，手機查看更集中。")
-        choice = st.radio(
-            "比較頁區段",
-            labels,
-            index=labels.index(label_map.get(current, "SMA趨勢")),
-            key="comparison_section_radio",
-            label_visibility="collapsed",
-        )
-    st.session_state.comparison_section = value_map[choice]
-    return st.session_state.comparison_section
+    render_section_anchor_nav("比較頁導航", "點擊後自動滾動到對應區段，適合快速查看不同排序表。", sections, "comparison_anchor")
+    return "trend"
 
 def render_backtest_section_navigation() -> str:
-    opts = [
-        ("settings", "回測設定"),
-        ("single", "單策略回測"),
-        ("compare", "策略對標"),
-        ("recommend", "策略推薦"),
+    sections = [
+        ("backtest-settings", "回測設定"),
+        ("backtest-single", "單策略回測"),
+        ("backtest-compare", "策略對標"),
+        ("backtest-recommend", "策略推薦"),
     ]
-    current = st.session_state.get("backtest_section", "settings")
-    label_map = {k: v for k, v in opts}
-    value_map = {v: k for k, v in opts}
-    labels = [v for _, v in opts]
-    with st.expander("回測導航", expanded=False):
-        st.caption("切換回測頁內區段，手機查看更集中。")
-        choice = st.radio(
-            "回測區段",
-            labels,
-            index=labels.index(label_map.get(current, "回測設定")),
-            key="backtest_section_radio",
-            label_visibility="collapsed",
-        )
-    st.session_state.backtest_section = value_map[choice]
-    return st.session_state.backtest_section
+    render_section_anchor_nav("回測導航", "點擊後自動滾動到對應區段，方便在設定、對標與推薦間切換。", sections, "backtest_anchor")
+    return "settings"
 
 def render_sidebar_context_navigation():
     current_page = st.session_state.get("current_page", "home")
@@ -3044,18 +3074,17 @@ elif not current_code:
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
     display_ticker = current_code.zfill(5)
-    stock_section = st.session_state.get("stock_section", "all")
-    show_all = stock_section == "all"
-    show_header = show_all or (stock_section == "header")
-    show_quick = show_all or (stock_section == "quick")
-    show_data = show_all or (stock_section == "data")
-    show_interactive = show_all or (stock_section == "interactive")
-    show_sma_line = show_all or (stock_section == "sma_line")
-    show_sma_matrix = show_all or (stock_section == "sma_matrix")
-    show_price_interface = show_all or (stock_section == "price_interface")
-    show_turnover = show_all or (stock_section == "turnover")
-    show_cdm = show_all or (stock_section == "cdm")
+    show_header = True
+    show_quick = True
+    show_data = True
+    show_interactive = True
+    show_sma_line = True
+    show_sma_matrix = True
+    show_price_interface = True
+    show_turnover = True
+    show_cdm = True
 
+    render_scroll_anchor("stock-header")
     col_t, col_b = st.columns([0.85, 0.15])
     with col_t: st.title(f"📊 {display_ticker}")
     with col_b:
@@ -3177,6 +3206,7 @@ else:
         if show_header:
             st.plotly_chart(fig_main, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
 
+        render_scroll_anchor("stock-quick")
         if show_quick:
             st.markdown("**快速信號**")
         df_sig = df.tail(260).copy()
@@ -3247,6 +3277,7 @@ else:
                     st.dataframe(pd.DataFrame(mr_rows), hide_index=True, use_container_width=True)
 
         if show_data:
+            render_scroll_anchor("stock-data")
             st.write("---")
             tab_data, tab_backtest = st.tabs(["📋 數據列表", "🧪 歷史回測"])
             with tab_data:
@@ -3259,6 +3290,7 @@ else:
                 render_backtest_page(df, current_code, watchlist_data)
 
         if show_interactive:
+            render_scroll_anchor("stock-interactive")
             with st.expander("互動模式控制區", expanded=True):
                 min_date = df.index.min().date() if len(df) else st.session_state.ref_date
                 max_date = df.index.max().date() if len(df) else st.session_state.ref_date
@@ -3622,10 +3654,12 @@ else:
                     fig_sma_trend.add_trace(go.Scatter(x=curve_data.index, y=curve_data[col_name], mode='lines', name=f"SMA({p})", line=dict(color=colors_map.get(p, 'grey'), width=2)))
             fig_sma_trend.update_layout(height=350, margin=dict(l=10, r=10, t=30, b=10), title="SMA 曲線 (近7個交易日)", template="plotly_white", legend=dict(orientation="h", y=1.1), dragmode="pan", uirevision=f"sma_trend_{current_code}")
             if show_sma_line:
+                render_scroll_anchor("stock-sma-line")
                 st.plotly_chart(fig_sma_trend, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
 
            # 2. SMA Matrix (New Format v10.0)
             if show_sma_matrix:
+                render_scroll_anchor("stock-sma-matrix")
                 st.subheader("📋 SMA Matrix")
             
             # 定義列與對應的 Interval
@@ -3807,6 +3841,7 @@ else:
             
             pi_html += '</table>'
             if show_price_interface:
+                render_scroll_anchor("stock-price-interface")
                 st.markdown(pi_html, unsafe_allow_html=True)
 
             # 3. Turnover Matrix (此行不用複製，已存在於你的代碼下方)
@@ -3814,6 +3849,7 @@ else:
 
             # 3. Turnover Matrix
             if show_turnover:
+                render_scroll_anchor("stock-turnover")
                 st.subheader("📋 Turnover Rate Matrix")
                 if not has_turnover:
                     st.error("無流通股數數據。")
@@ -3845,6 +3881,7 @@ else:
                     st.markdown(tor_html, unsafe_allow_html=True)
 
     if show_cdm:
+        render_scroll_anchor("stock-cdm")
         st.markdown("---")
         st.markdown("### 📈 CDM 目標價偏差(%)")
 
@@ -3942,3 +3979,4 @@ else:
                 st.error(str(e))
 
 render_bottom_navigation()
+consume_pending_scroll_anchor()
