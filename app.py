@@ -2079,32 +2079,33 @@ def _render_table_with_ticker_buttons(title: str, rows: list[dict], columns: lis
                 or r.get("趨勢")
                 or ""
             )
-            metrics_html = "".join(
-                [
-                    (
-                        f'<div class="compare-card-item">'
-                        f'<div class="compare-card-label">{col_label}</div>'
-                        f'<div class="compare-card-value">{r.get(col_key, "-")}</div>'
-                        f'</div>'
+            with col:
+                with st.container(border=True):
+                    col.markdown(
+                        f"""
+                        <div class="compare-card {variant}">
+                            <div class="compare-card-head">
+                                <div class="compare-card-stock">{t}</div>
+                                <div class="compare-card-badge {variant}">{badge}</div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
-                    for col_key, col_label in columns
-                ]
-            )
-            col.markdown(
-                f"""
-                <div class="compare-card {variant}">
-                    <div class="compare-card-head">
-                        <div class="compare-card-stock">{t}</div>
-                        <div class="compare-card-badge {variant}">{badge}</div>
-                    </div>
-                    <div class="compare-card-grid">{metrics_html}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            if col.button(f"查看 {t}", key=f"compare_nav_{title}_{t}_{r.get('_row_id', '')}", use_container_width=True):
-                set_current_page("stock", t)
-                st.rerun()
+                    metric_cols = st.columns(2)
+                    for metric_idx, (col_key, col_label) in enumerate(columns):
+                        value = r.get(col_key, "-")
+                        with metric_cols[metric_idx % 2]:
+                            st.markdown(
+                                f"""
+                                **{col_label}**
+
+                                {value}
+                                """
+                            )
+                if st.button(f"查看 {t}", key=f"compare_nav_{title}_{t}_{r.get('_row_id', '')}", use_container_width=True):
+                    set_current_page("stock", t)
+                    st.rerun()
 
 def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, Any]):
     st.title("📊 港股收藏夾對比面板")
