@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -283,6 +284,12 @@ st.markdown("""
         color: #6c757d;
         text-align: center;
         margin: 4px 0 8px 0;
+    }
+    .section-anchor {
+        display: block;
+        position: relative;
+        top: -10px;
+        visibility: hidden;
     }
     div[data-baseweb="select"] > div {
         min-height: 44px;
@@ -1211,13 +1218,13 @@ def render_backtest_page(
     if "bt_end" not in st.session_state:
         st.session_state.bt_end = max_d
 
-    backtest_section = st.session_state.get("backtest_section", "settings")
-    show_settings = backtest_section == "settings"
-    show_single = backtest_section == "single"
-    show_compare = backtest_section == "compare"
-    show_recommend = backtest_section == "recommend"
+    show_settings = True
+    show_single = True
+    show_compare = True
+    show_recommend = True
 
     if show_settings:
+        render_scroll_anchor("backtest-settings")
         st.markdown("### ⚙️ 回測設定")
 
         c1, c2, c3, c4, c5 = st.columns([1.5, 1.5, 0.8, 0.8, 0.8])
@@ -1296,6 +1303,7 @@ def render_backtest_page(
     df_bt = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))].copy()
 
     if show_single:
+        render_scroll_anchor("backtest-single")
         st.markdown("### 📊 單策略回測")
         if len(df_bt) < 50:
             st.warning("回測數據不足（至少需要 50 個交易日）。")
@@ -1434,6 +1442,7 @@ def render_backtest_page(
                     st.download_button("📥 導出 CSV", data=df_tr.to_csv(index=False).encode("utf-8-sig"), file_name=f"交易明細_{current_code}_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True)
 
     if show_compare:
+        render_scroll_anchor("backtest-compare")
         st.markdown("### 🆚 策略對標")
         if "cmp_start" not in st.session_state:
             st.session_state.cmp_start = st.session_state.bt_start
@@ -1763,6 +1772,7 @@ def render_backtest_page(
                     )
 
     if show_recommend:
+        render_scroll_anchor("backtest-recommend")
         st.markdown("### 🎯 策略推薦")
         comp_out = st.session_state.get("comparison_results")
         if not comp_out:
@@ -2098,12 +2108,11 @@ def _render_table_with_ticker_buttons(title: str, rows: list[dict], columns: lis
 
 def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, Any]):
     st.title("📊 港股收藏夾對比面板")
-    comparison_section = st.session_state.get("comparison_section", "trend")
-    show_trend = comparison_section == "trend"
-    show_mr = comparison_section == "mr"
-    show_cdm = comparison_section == "cdm"
-    show_amp = comparison_section == "amp"
-    show_score = comparison_section == "score"
+    show_trend = True
+    show_mr = True
+    show_cdm = True
+    show_amp = True
+    show_score = True
 
     col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
     with col1:
@@ -2197,6 +2206,7 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
     for idx, row in df_trend.iterrows():
         trend_rows.append({**row.to_dict(), "_row_id": str(idx)})
     if show_trend:
+        render_scroll_anchor("comparison-trend")
         _render_table_with_ticker_buttons(
             "📈 【SMA 上升趨勢排序】",
             trend_rows,
@@ -2215,6 +2225,7 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
         r["排名"] = rank
         mr_rows.append({**r, "_row_id": str(idx)})
     if show_mr:
+        render_scroll_anchor("comparison-mr")
         _render_table_with_ticker_buttons(
             "💰 【MR 偏差排序 - 機會大小】",
             mr_rows,
@@ -2230,6 +2241,7 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
     for idx, row in df_cdm.iterrows():
         cdm_rows.append({**row.to_dict(), "_row_id": str(idx)})
     if show_cdm:
+        render_scroll_anchor("comparison-cdm")
         _render_table_with_ticker_buttons(
             "🔴 【CDM 觸發狀態 - 即時機會】",
             cdm_rows,
@@ -2246,6 +2258,7 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
     for idx, row in df_amp.iterrows():
         amp_rows.append({**row.to_dict(), "_row_id": str(idx)})
     if show_amp:
+        render_scroll_anchor("comparison-amp")
         _render_table_with_ticker_buttons(
             "📊 【振幅對比 - 交易機會大小】",
             amp_rows,
@@ -2342,6 +2355,7 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
             }
         )
     if show_score:
+        render_scroll_anchor("comparison-score")
         _render_table_with_ticker_buttons(
             "⭐ 【綜合評分排序 - 當日最佳機會】",
             score_table_rows,
@@ -2537,6 +2551,54 @@ def set_current_page(page: str, code: Optional[str] = None):
     if page == "stock" and code is not None:
         st.session_state.stock_section = "header"
 
+def queue_scroll_to_anchor(anchor_id: str):
+    st.session_state.pending_scroll_target = anchor_id
+
+def render_scroll_anchor(anchor_id: str):
+    st.markdown(f'<span id="{anchor_id}" class="section-anchor"></span>', unsafe_allow_html=True)
+
+def render_section_anchor_nav(title: str, caption: str, sections: List[tuple], key_prefix: str):
+    with st.expander(title, expanded=False):
+        st.caption(caption)
+        cols = st.columns(2)
+        for idx, (anchor_id, label) in enumerate(sections):
+            with cols[idx % 2]:
+                if st.button(label, key=f"{key_prefix}_{anchor_id}", use_container_width=True):
+                    queue_scroll_to_anchor(anchor_id)
+                    st.rerun()
+
+def consume_pending_scroll_anchor():
+    anchor_id = st.session_state.pop("pending_scroll_target", None)
+    if not anchor_id:
+        return
+    components.html(
+        f"""
+        <script>
+        const anchorId = {json.dumps(anchor_id)};
+        let attempts = 0;
+        const scrollToAnchor = () => {{
+            const doc = window.parent.document;
+            const target = doc.getElementById(anchorId);
+            if (target) {{
+                target.scrollIntoView({{ behavior: "smooth", block: "start" }});
+                return true;
+            }}
+            return false;
+        }};
+        if (!scrollToAnchor()) {{
+            const timer = setInterval(() => {{
+                attempts += 1;
+                if (scrollToAnchor() || attempts >= 20) {{
+                    clearInterval(timer);
+                }}
+            }}, 150);
+        }}
+        </script>
+        """,
+        height=0,
+    )
+
+
 def render_top_navigation():
     current_page = st.session_state.get("current_page", "home")
 
@@ -2641,72 +2703,40 @@ def render_navigation_expander():
                 set_current_page(item["page"])
                 st.rerun()
 def render_stock_section_navigation() -> str:
-    opts = [
-        ("all", "全部顯示"),
-        ("header", "股票名字位置"), ("sma_line", "SMA線"), ("quick", "快速信號"),
-        ("data", "數據列表"), ("interactive", "互動模式"), ("sma_matrix", "SMA Matrix"),
-        ("price_interface", "Price界面"), ("turnover", "Turnover Rate"), ("cdm", "CDM")
+    sections = [
+        ("stock-header", "股票名字位置"),
+        ("stock-sma-line", "SMA線"),
+        ("stock-quick", "快速信號"),
+        ("stock-data", "數據列表"),
+        ("stock-interactive", "互動模式"),
+        ("stock-sma-matrix", "SMA Matrix"),
+        ("stock-price-interface", "Price界面"),
+        ("stock-turnover", "Turnover Rate"),
+        ("stock-cdm", "CDM"),
     ]
-    current = st.session_state.get("stock_section", "all")
-    label_map = {k: v for k, v in opts}
-    value_map = {v: k for k, v in opts}
-    labels = [v for _, v in opts]
-    with st.expander("單股導航", expanded=False):
-        st.caption("切換單股頁內區段，手機查看更集中。")
-        choice = st.radio(
-            "單股區段", labels,
-            index=labels.index(label_map.get(current, "全部顯示")),
-            key="stock_section_radio", label_visibility="collapsed"
-        )
-    st.session_state.stock_section = value_map[choice]
-    return st.session_state.stock_section
+    render_section_anchor_nav("單股導航", "點擊後自動滾動到對應區段，保留整頁內容連續瀏覽。", sections, "stock_anchor")
+    return "all"
 
 def render_comparison_section_navigation() -> str:
-    opts = [
-        ("trend", "SMA趨勢"),
-        ("mr", "MR偏差"),
-        ("cdm", "CDM狀態"),
-        ("amp", "振幅對比"),
-        ("score", "綜合評分"),
+    sections = [
+        ("comparison-trend", "SMA趨勢"),
+        ("comparison-mr", "MR偏差"),
+        ("comparison-cdm", "CDM狀態"),
+        ("comparison-amp", "振幅對比"),
+        ("comparison-score", "綜合評分"),
     ]
-    current = st.session_state.get("comparison_section", "trend")
-    label_map = {k: v for k, v in opts}
-    value_map = {v: k for k, v in opts}
-    labels = [v for _, v in opts]
-    with st.expander("比較頁導航", expanded=False):
-        st.caption("切換比較頁內區段，手機查看更集中。")
-        choice = st.radio(
-            "比較頁區段",
-            labels,
-            index=labels.index(label_map.get(current, "SMA趨勢")),
-            key="comparison_section_radio",
-            label_visibility="collapsed",
-        )
-    st.session_state.comparison_section = value_map[choice]
-    return st.session_state.comparison_section
+    render_section_anchor_nav("比較頁導航", "點擊後自動滾動到對應區段，適合快速查看不同排序表。", sections, "comparison_anchor")
+    return "trend"
 
 def render_backtest_section_navigation() -> str:
-    opts = [
-        ("settings", "回測設定"),
-        ("single", "單策略回測"),
-        ("compare", "策略對標"),
-        ("recommend", "策略推薦"),
+    sections = [
+        ("backtest-settings", "回測設定"),
+        ("backtest-single", "單策略回測"),
+        ("backtest-compare", "策略對標"),
+        ("backtest-recommend", "策略推薦"),
     ]
-    current = st.session_state.get("backtest_section", "settings")
-    label_map = {k: v for k, v in opts}
-    value_map = {v: k for k, v in opts}
-    labels = [v for _, v in opts]
-    with st.expander("回測導航", expanded=False):
-        st.caption("切換回測頁內區段，手機查看更集中。")
-        choice = st.radio(
-            "回測區段",
-            labels,
-            index=labels.index(label_map.get(current, "回測設定")),
-            key="backtest_section_radio",
-            label_visibility="collapsed",
-        )
-    st.session_state.backtest_section = value_map[choice]
-    return st.session_state.backtest_section
+    render_section_anchor_nav("回測導航", "點擊後自動滾動到對應區段，方便在設定、對標與推薦間切換。", sections, "backtest_anchor")
+    return "settings"
 
 def render_sidebar_context_navigation():
     current_page = st.session_state.get("current_page", "home")
@@ -3044,18 +3074,17 @@ elif not current_code:
 else:
     yahoo_ticker = get_yahoo_ticker(current_code)
     display_ticker = current_code.zfill(5)
-    stock_section = st.session_state.get("stock_section", "all")
-    show_all = stock_section in ("all", "interactive")
-    show_header = show_all or (stock_section == "header")
-    show_quick = show_all or (stock_section == "quick")
-    show_data = show_all or (stock_section == "data")
-    show_interactive = show_all or (stock_section == "interactive")
-    show_sma_line = show_all or (stock_section == "sma_line")
+    show_header = True
+    show_quick = True
+    show_data = True
+    show_interactive = True
+    show_sma_line = True
     show_sma_matrix = True
     show_price_interface = True
     show_turnover = True
     show_cdm = True
 
+    render_scroll_anchor("stock-header")
     col_t, col_b = st.columns([0.85, 0.15])
     with col_t: st.title(f"📊 {display_ticker}")
     with col_b:
@@ -3177,6 +3206,7 @@ else:
         if show_header:
             st.plotly_chart(fig_main, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
 
+        render_scroll_anchor("stock-quick")
         if show_quick:
             st.markdown("**快速信號**")
         df_sig = df.tail(260).copy()
@@ -3247,6 +3277,7 @@ else:
                     st.dataframe(pd.DataFrame(mr_rows), hide_index=True, use_container_width=True)
 
         if show_data:
+            render_scroll_anchor("stock-data")
             st.write("---")
             tab_data, tab_backtest = st.tabs(["📋 數據列表", "🧪 歷史回測"])
             with tab_data:
@@ -3258,350 +3289,352 @@ else:
             with tab_backtest:
                 render_backtest_page(df, current_code, watchlist_data)
 
-        with st.expander("互動模式控制區", expanded=True):
-            min_date = df.index.min().date() if len(df) else st.session_state.ref_date
-            max_date = df.index.max().date() if len(df) else st.session_state.ref_date
-            default_end = max_date
-            default_start = default_end - timedelta(days=90)
-            if default_start < min_date:
-                default_start = min_date
+        if show_interactive:
+            render_scroll_anchor("stock-interactive")
+            with st.expander("互動模式控制區", expanded=True):
+                min_date = df.index.min().date() if len(df) else st.session_state.ref_date
+                max_date = df.index.max().date() if len(df) else st.session_state.ref_date
+                default_end = max_date
+                default_start = default_end - timedelta(days=90)
+                if default_start < min_date:
+                    default_start = min_date
 
-            c_range_1, c_range_2 = st.columns(2)
-            with c_range_1:
-                range_start = st.date_input(
-                    "開始日期",
-                    value=default_start,
-                    min_value=min_date,
-                    max_value=max_date,
-                    key=f"interactive_range_start_{current_code}",
-                )
-            with c_range_2:
-                range_end = st.date_input(
-                    "結束日期",
-                    value=default_end,
-                    min_value=min_date,
-                    max_value=max_date,
-                    key=f"interactive_range_end_{current_code}",
-                )
-
-            if range_start > range_end:
-                range_start, range_end = range_end, range_start
-
-            df_range = df[(df.index >= pd.to_datetime(range_start)) & (df.index <= pd.to_datetime(range_end))].copy()
-
-            st.markdown("**A-B-C 調整浪 / 二次探底 預測器**")
-
-            def align_to_prev_trading_day(d):
-                ts = pd.to_datetime(d)
-                idx = df.index[df.index <= ts]
-                return idx.max() if len(idx) else None
-
-            default_date_p1_start = range_start
-            default_date_p1_end = min(range_start + timedelta(days=30), range_end)
-            default_date_p2_end = range_end
-
-            c_abc_d1, c_abc_d2 = st.columns(2)
-            with c_abc_d1:
-                date_p1_start = st.date_input(
-                    "P1 起跌點日期",
-                    value=default_date_p1_start,
-                    min_value=min_date,
-                    max_value=max_date,
-                    key=f"abc_date_p1_start_{current_code}",
-                )
-            with c_abc_d2:
-                date_p1_end = st.date_input(
-                    "P1 止跌點日期",
-                    value=default_date_p1_end,
-                    min_value=min_date,
-                    max_value=max_date,
-                    key=f"abc_date_p1_end_{current_code}",
-                )
-
-            date_p2_end = st.date_input(
-                "P2 反彈結束日期",
-                value=default_date_p2_end,
-                min_value=min_date,
-                max_value=max_date,
-                key=f"abc_date_p2_end_{current_code}",
-            )
-
-            p1_start_ts = align_to_prev_trading_day(date_p1_start)
-            p1_end_ts = align_to_prev_trading_day(date_p1_end)
-            p2_end_ts = align_to_prev_trading_day(date_p2_end)
-
-            if (p1_start_ts is None) or (p1_end_ts is None) or (p2_end_ts is None):
-                st.warning("所選日期找不到對應交易日，請調整日期")
-            else:
-                st.write(
-                    f"實際採用交易日：P1_start={p1_start_ts.date()}，P1_end={p1_end_ts.date()}，P2_end={p2_end_ts.date()}"
-                )
-
-                price_p1_high_auto = float(df.loc[p1_start_ts, "High"]) if p1_start_ts in df.index else np.nan
-                price_p1_low_auto = float(df.loc[p1_end_ts, "Low"]) if p1_end_ts in df.index else np.nan
-
-                price_p2_high_auto = np.nan
-                if p1_end_ts <= p2_end_ts:
-                    p2_slice = df.loc[p1_end_ts:p2_end_ts]
-                    if not p2_slice.empty and "High" in p2_slice.columns:
-                        price_p2_high_auto = float(p2_slice["High"].max())
-
-                c_abc_p1, c_abc_p2, c_abc_p3 = st.columns(3)
-                with c_abc_p1:
-                    price_p1_high = st.number_input(
-                        "P1 起跌點價格 (High)",
-                        value=float(price_p1_high_auto) if pd.notna(price_p1_high_auto) else 0.0,
-                        min_value=0.0,
-                        format="%.3f",
-                        key=f"abc_price_p1_high_{current_code}",
+                c_range_1, c_range_2 = st.columns(2)
+                with c_range_1:
+                    range_start = st.date_input(
+                        "開始日期",
+                        value=default_start,
+                        min_value=min_date,
+                        max_value=max_date,
+                        key=f"interactive_range_start_{current_code}",
                     )
-                with c_abc_p2:
-                    price_p1_low = st.number_input(
-                        "P1 止跌點價格 (Low)",
-                        value=float(price_p1_low_auto) if pd.notna(price_p1_low_auto) else 0.0,
-                        min_value=0.0,
-                        format="%.3f",
-                        key=f"abc_price_p1_low_{current_code}",
-                    )
-                with c_abc_p3:
-                    price_p2_high = st.number_input(
-                        "P2 反彈最高價格 (P1_end~P2_end 高點)",
-                        value=float(price_p2_high_auto) if pd.notna(price_p2_high_auto) else 0.0,
-                        min_value=0.0,
-                        format="%.3f",
-                        key=f"abc_price_p2_high_{current_code}",
+                with c_range_2:
+                    range_end = st.date_input(
+                        "結束日期",
+                        value=default_end,
+                        min_value=min_date,
+                        max_value=max_date,
+                        key=f"interactive_range_end_{current_code}",
                     )
 
-                delta_t = (p1_end_ts.date() - p1_start_ts.date()).days
-                delta_p = float(price_p1_high) - float(price_p1_low)
-                price_p1_avg = (float(price_p1_high) + float(price_p1_low)) / 2.0
+                if range_start > range_end:
+                    range_start, range_end = range_end, range_start
 
-                c_abc_m1, c_abc_m2, c_abc_m3 = st.columns(3)
-                c_abc_m1.metric("P1 天數 delta_t", "-" if delta_t <= 0 else f"{delta_t}")
-                c_abc_m2.metric("P1 跌幅 delta_p", "-" if delta_p <= 0 else f"{delta_p:.3f}")
-                c_abc_m3.metric("P1 均價 avg", "-" if delta_t <= 0 else f"{price_p1_avg:.3f}")
+                df_range = df[(df.index >= pd.to_datetime(range_start)) & (df.index <= pd.to_datetime(range_end))].copy()
 
-                if delta_t <= 0:
-                    st.error("日期順序錯誤：P1 止跌點日期必須晚於 P1 起跌點日期")
-                elif delta_p <= 0:
-                    st.error("價格順序錯誤：P1 起跌點價格必須大於 P1 止跌點價格")
-                else:
-                    ratios = [("A", 0.618), ("B", 1.0), ("C", 1.618)]
-                    rows = []
-                    for scenario, r in ratios:
-                        n_days = int(round(delta_t * r))
-                        target_date_cal = p2_end_ts.date() + timedelta(days=n_days)
-                        target_date_trade_ts = align_to_prev_trading_day(target_date_cal)
-                        target_date_trade = target_date_trade_ts.date().isoformat() if target_date_trade_ts is not None else "-"
-                        target_price = float(price_p2_high) - (delta_p * r)
-                        rows.append(
-                            {
-                                "情境": scenario,
-                                "比例": r,
-                                "預測天數": n_days,
-                                "見底日期(曆)": target_date_cal.isoformat(),
-                                "見底日期(交易)": target_date_trade,
-                                "見底價格": target_price,
-                            }
-                        )
-
-                    out_df = pd.DataFrame(rows)
-                    out_df["見底價格"] = out_df["見底價格"].map(lambda x: f"{float(x):.3f}")
-                    st.dataframe(out_df, hide_index=True, use_container_width=True)
-
-        # 2. CDM 設定
-        if is_in_watchlist:
-            with st.expander("⚙️ 設定 CDM 自動檢測參數", expanded=False):
-                curr_params = watchlist_data.get(current_code, {})
-
-                def _pdate(key):
-                    v = curr_params.get(key)
-                    try:
-                        return pd.to_datetime(v).date() if v else None
-                    except Exception:
-                        return None
-
-                def _pfloat(key):
-                    try:
-                        v = curr_params.get(key)
-                        if v is None:
-                            return 0.0
-                        if isinstance(v, str) and (not v.strip()):
-                            return 0.0
-                        return float(v)
-                    except Exception:
-                        return 0.0
+                st.markdown("**A-B-C 調整浪 / 二次探底 預測器**")
 
                 def align_to_prev_trading_day(d):
                     ts = pd.to_datetime(d)
                     idx = df.index[df.index <= ts]
                     return idx.max() if len(idx) else None
 
-                min_d = df.index.min().date()
-                max_d = df.index.max().date()
+                default_date_p1_start = range_start
+                default_date_p1_end = min(range_start + timedelta(days=30), range_end)
+                default_date_p2_end = range_end
 
-                def clamp_date(d):
-                    if d is None:
-                        return None
-                    if d < min_d:
-                        return min_d
-                    if d > max_d:
-                        return max_d
-                    return d
-
-                default_range_start = clamp_date(max_d - timedelta(days=90))
-                default_range_end = max_d
-                default_p1_start = clamp_date(max_d - timedelta(days=120))
-                default_p1_end = clamp_date(max_d - timedelta(days=60))
-
-                st.markdown("**互動區間**")
-                c_rng_1, c_rng_2 = st.columns(2)
-                with c_rng_1:
-                    saved_range_start = clamp_date(_pdate("interactive_range_start"))
-                    new_range_start = st.date_input(
-                        "開始日期",
-                        value=saved_range_start or default_range_start,
-                        min_value=min_d,
-                        max_value=max_d,
-                        key=f"cdm_range_start_{current_code}",
-                    )
-                with c_rng_2:
-                    saved_range_end = clamp_date(_pdate("interactive_range_end"))
-                    new_range_end = st.date_input(
-                        "結束日期",
-                        value=saved_range_end or default_range_end,
-                        min_value=min_d,
-                        max_value=max_d,
-                        key=f"cdm_range_end_{current_code}",
-                    )
-
-                if new_range_start > new_range_end:
-                    new_range_start, new_range_end = new_range_end, new_range_start
-
-                st.markdown("**P1 / P2 波段輸入（用於 CDM 與 ABC）**")
-                c_d1, c_d2 = st.columns(2)
-                with c_d1:
-                    saved_p1_start = clamp_date(_pdate("abc_date_p1_start"))
-                    new_date_p1_start = st.date_input(
+                c_abc_d1, c_abc_d2 = st.columns(2)
+                with c_abc_d1:
+                    date_p1_start = st.date_input(
                         "P1 起跌點日期",
-                        value=saved_p1_start or default_p1_start,
-                        min_value=min_d,
-                        max_value=max_d,
-                        key=f"cdm_abc_p1_start_{current_code}",
+                        value=default_date_p1_start,
+                        min_value=min_date,
+                        max_value=max_date,
+                        key=f"abc_date_p1_start_{current_code}",
                     )
-                with c_d2:
-                    saved_p1_end = clamp_date(_pdate("abc_date_p1_end"))
-                    new_date_p1_end = st.date_input(
+                with c_abc_d2:
+                    date_p1_end = st.date_input(
                         "P1 止跌點日期",
-                        value=saved_p1_end or default_p1_end,
-                        min_value=min_d,
-                        max_value=max_d,
-                        key=f"cdm_abc_p1_end_{current_code}",
+                        value=default_date_p1_end,
+                        min_value=min_date,
+                        max_value=max_date,
+                        key=f"abc_date_p1_end_{current_code}",
                     )
 
-                new_date_p2_end = st.date_input(
+                date_p2_end = st.date_input(
                     "P2 反彈結束日期",
-                    value=_pdate("abc_date_p2_end") or df.index.max().date(),
-                    min_value=df.index.min().date(),
-                    max_value=df.index.max().date(),
-                    key=f"cdm_abc_p2_end_{current_code}",
+                    value=default_date_p2_end,
+                    min_value=min_date,
+                    max_value=max_date,
+                    key=f"abc_date_p2_end_{current_code}",
                 )
 
-                p1_start_ts = align_to_prev_trading_day(new_date_p1_start)
-                p1_end_ts = align_to_prev_trading_day(new_date_p1_end)
-                p2_end_ts = align_to_prev_trading_day(new_date_p2_end)
+                p1_start_ts = align_to_prev_trading_day(date_p1_start)
+                p1_end_ts = align_to_prev_trading_day(date_p1_end)
+                p2_end_ts = align_to_prev_trading_day(date_p2_end)
 
                 if (p1_start_ts is None) or (p1_end_ts is None) or (p2_end_ts is None):
                     st.warning("所選日期找不到對應交易日，請調整日期")
-
-                price_p1_high_auto = float(df.loc[p1_start_ts, "High"]) if (p1_start_ts is not None and p1_start_ts in df.index) else 0.0
-                price_p1_low_auto = float(df.loc[p1_end_ts, "Low"]) if (p1_end_ts is not None and p1_end_ts in df.index) else 0.0
-
-                price_p2_high_auto = 0.0
-                if (p1_end_ts is not None) and (p2_end_ts is not None) and (p1_end_ts <= p2_end_ts):
-                    p2_slice = df.loc[p1_end_ts:p2_end_ts]
-                    if (not p2_slice.empty) and ("High" in p2_slice.columns):
-                        price_p2_high_auto = float(p2_slice["High"].max())
-
-                c_p1, c_p2, c_p3 = st.columns(3)
-                with c_p1:
-                    new_price_p1_high = st.number_input(
-                        "P1 起跌點價格 (High)",
-                        value=_pfloat("abc_price_p1_high") or price_p1_high_auto,
-                        min_value=0.0,
-                        format="%.3f",
-                        key=f"cdm_abc_price_p1_high_{current_code}",
-                    )
-                with c_p2:
-                    new_price_p1_low = st.number_input(
-                        "P1 止跌點價格 (Low)",
-                        value=_pfloat("abc_price_p1_low") or price_p1_low_auto,
-                        min_value=0.0,
-                        format="%.3f",
-                        key=f"cdm_abc_price_p1_low_{current_code}",
-                    )
-                with c_p3:
-                    new_price_p2_high = st.number_input(
-                        "P2 反彈最高價格 (P1_end~P2_end 高點)",
-                        value=_pfloat("abc_price_p2_high") or price_p2_high_auto,
-                        min_value=0.0,
-                        format="%.3f",
-                        key=f"cdm_abc_price_p2_high_{current_code}",
+                else:
+                    st.write(
+                        f"實際採用交易日：P1_start={p1_start_ts.date()}，P1_end={p1_end_ts.date()}，P2_end={p2_end_ts.date()}"
                     )
 
-                p1_avg_calc = 0.0
-                p2_avg_calc = 0.0
-                if (p1_start_ts is not None) and (p1_end_ts is not None) and (p1_start_ts <= p1_end_ts):
-                    p1_avg_calc = float(df.loc[p1_start_ts:p1_end_ts]["Close"].mean())
-                if (p1_end_ts is not None) and (p2_end_ts is not None) and (p1_end_ts <= p2_end_ts):
-                    p2_avg_calc = float(df.loc[p1_end_ts:p2_end_ts]["Close"].mean())
+                    price_p1_high_auto = float(df.loc[p1_start_ts, "High"]) if p1_start_ts in df.index else np.nan
+                    price_p1_low_auto = float(df.loc[p1_end_ts, "Low"]) if p1_end_ts in df.index else np.nan
 
-                c_avg_1, c_avg_2 = st.columns(2)
-                with c_avg_1:
-                    st.metric("P1 均價(計算)", "-" if not p1_avg_calc else f"{p1_avg_calc:.3f}")
-                    new_cdm_p1_avg_override = st.number_input(
-                        "P1 均價(手動覆蓋, 0=不用)",
-                        value=_pfloat("cdm_p1_avg_override"),
-                        min_value=0.0,
-                        format="%.3f",
-                        key=f"cdm_p1_avg_override_{current_code}",
-                    )
-                with c_avg_2:
-                    st.metric("P2 均價(計算)", "-" if not p2_avg_calc else f"{p2_avg_calc:.3f}")
-                    new_cdm_p2_avg_override = st.number_input(
-                        "P2 均價(手動覆蓋, 0=不用)",
-                        value=_pfloat("cdm_p2_avg_override"),
-                        min_value=0.0,
-                        format="%.3f",
-                        key=f"cdm_p2_avg_override_{current_code}",
+                    price_p2_high_auto = np.nan
+                    if p1_end_ts <= p2_end_ts:
+                        p2_slice = df.loc[p1_end_ts:p2_end_ts]
+                        if not p2_slice.empty and "High" in p2_slice.columns:
+                            price_p2_high_auto = float(p2_slice["High"].max())
+
+                    c_abc_p1, c_abc_p2, c_abc_p3 = st.columns(3)
+                    with c_abc_p1:
+                        price_p1_high = st.number_input(
+                            "P1 起跌點價格 (High)",
+                            value=float(price_p1_high_auto) if pd.notna(price_p1_high_auto) else 0.0,
+                            min_value=0.0,
+                            format="%.3f",
+                            key=f"abc_price_p1_high_{current_code}",
+                        )
+                    with c_abc_p2:
+                        price_p1_low = st.number_input(
+                            "P1 止跌點價格 (Low)",
+                            value=float(price_p1_low_auto) if pd.notna(price_p1_low_auto) else 0.0,
+                            min_value=0.0,
+                            format="%.3f",
+                            key=f"abc_price_p1_low_{current_code}",
+                        )
+                    with c_abc_p3:
+                        price_p2_high = st.number_input(
+                            "P2 反彈最高價格 (P1_end~P2_end 高點)",
+                            value=float(price_p2_high_auto) if pd.notna(price_p2_high_auto) else 0.0,
+                            min_value=0.0,
+                            format="%.3f",
+                            key=f"abc_price_p2_high_{current_code}",
+                        )
+
+                    delta_t = (p1_end_ts.date() - p1_start_ts.date()).days
+                    delta_p = float(price_p1_high) - float(price_p1_low)
+                    price_p1_avg = (float(price_p1_high) + float(price_p1_low)) / 2.0
+
+                    c_abc_m1, c_abc_m2, c_abc_m3 = st.columns(3)
+                    c_abc_m1.metric("P1 天數 delta_t", "-" if delta_t <= 0 else f"{delta_t}")
+                    c_abc_m2.metric("P1 跌幅 delta_p", "-" if delta_p <= 0 else f"{delta_p:.3f}")
+                    c_abc_m3.metric("P1 均價 avg", "-" if delta_t <= 0 else f"{price_p1_avg:.3f}")
+
+                    if delta_t <= 0:
+                        st.error("日期順序錯誤：P1 止跌點日期必須晚於 P1 起跌點日期")
+                    elif delta_p <= 0:
+                        st.error("價格順序錯誤：P1 起跌點價格必須大於 P1 止跌點價格")
+                    else:
+                        ratios = [("A", 0.618), ("B", 1.0), ("C", 1.618)]
+                        rows = []
+                        for scenario, r in ratios:
+                            n_days = int(round(delta_t * r))
+                            target_date_cal = p2_end_ts.date() + timedelta(days=n_days)
+                            target_date_trade_ts = align_to_prev_trading_day(target_date_cal)
+                            target_date_trade = target_date_trade_ts.date().isoformat() if target_date_trade_ts is not None else "-"
+                            target_price = float(price_p2_high) - (delta_p * r)
+                            rows.append(
+                                {
+                                    "情境": scenario,
+                                    "比例": r,
+                                    "預測天數": n_days,
+                                    "見底日期(曆)": target_date_cal.isoformat(),
+                                    "見底日期(交易)": target_date_trade,
+                                    "見底價格": target_price,
+                                }
+                            )
+
+                        out_df = pd.DataFrame(rows)
+                        out_df["見底價格"] = out_df["見底價格"].map(lambda x: f"{float(x):.3f}")
+                        st.dataframe(out_df, hide_index=True, use_container_width=True)
+
+            # 2. CDM 設定
+            if is_in_watchlist:
+                with st.expander("⚙️ 設定 CDM 自動檢測參數", expanded=False):
+                    curr_params = watchlist_data.get(current_code, {})
+
+                    def _pdate(key):
+                        v = curr_params.get(key)
+                        try:
+                            return pd.to_datetime(v).date() if v else None
+                        except Exception:
+                            return None
+
+                    def _pfloat(key):
+                        try:
+                            v = curr_params.get(key)
+                            if v is None:
+                                return 0.0
+                            if isinstance(v, str) and (not v.strip()):
+                                return 0.0
+                            return float(v)
+                        except Exception:
+                            return 0.0
+
+                    def align_to_prev_trading_day(d):
+                        ts = pd.to_datetime(d)
+                        idx = df.index[df.index <= ts]
+                        return idx.max() if len(idx) else None
+
+                    min_d = df.index.min().date()
+                    max_d = df.index.max().date()
+
+                    def clamp_date(d):
+                        if d is None:
+                            return None
+                        if d < min_d:
+                            return min_d
+                        if d > max_d:
+                            return max_d
+                        return d
+
+                    default_range_start = clamp_date(max_d - timedelta(days=90))
+                    default_range_end = max_d
+                    default_p1_start = clamp_date(max_d - timedelta(days=120))
+                    default_p1_end = clamp_date(max_d - timedelta(days=60))
+
+                    st.markdown("**互動區間**")
+                    c_rng_1, c_rng_2 = st.columns(2)
+                    with c_rng_1:
+                        saved_range_start = clamp_date(_pdate("interactive_range_start"))
+                        new_range_start = st.date_input(
+                            "開始日期",
+                            value=saved_range_start or default_range_start,
+                            min_value=min_d,
+                            max_value=max_d,
+                            key=f"cdm_range_start_{current_code}",
+                        )
+                    with c_rng_2:
+                        saved_range_end = clamp_date(_pdate("interactive_range_end"))
+                        new_range_end = st.date_input(
+                            "結束日期",
+                            value=saved_range_end or default_range_end,
+                            min_value=min_d,
+                            max_value=max_d,
+                            key=f"cdm_range_end_{current_code}",
+                        )
+
+                    if new_range_start > new_range_end:
+                        new_range_start, new_range_end = new_range_end, new_range_start
+
+                    st.markdown("**P1 / P2 波段輸入（用於 CDM 與 ABC）**")
+                    c_d1, c_d2 = st.columns(2)
+                    with c_d1:
+                        saved_p1_start = clamp_date(_pdate("abc_date_p1_start"))
+                        new_date_p1_start = st.date_input(
+                            "P1 起跌點日期",
+                            value=saved_p1_start or default_p1_start,
+                            min_value=min_d,
+                            max_value=max_d,
+                            key=f"cdm_abc_p1_start_{current_code}",
+                        )
+                    with c_d2:
+                        saved_p1_end = clamp_date(_pdate("abc_date_p1_end"))
+                        new_date_p1_end = st.date_input(
+                            "P1 止跌點日期",
+                            value=saved_p1_end or default_p1_end,
+                            min_value=min_d,
+                            max_value=max_d,
+                            key=f"cdm_abc_p1_end_{current_code}",
+                        )
+
+                    new_date_p2_end = st.date_input(
+                        "P2 反彈結束日期",
+                        value=_pdate("abc_date_p2_end") or df.index.max().date(),
+                        min_value=df.index.min().date(),
+                        max_value=df.index.max().date(),
+                        key=f"cdm_abc_p2_end_{current_code}",
                     )
 
-                if st.button("💾 儲存參數", key=f"save_cdm_{current_code}"):
-                    box1_start = str(new_date_p1_start)
-                    box1_end = str(new_date_p1_end)
-                    box2_start = str(new_date_p1_end)
-                    box2_end = str(new_date_p2_end)
+                    p1_start_ts = align_to_prev_trading_day(new_date_p1_start)
+                    p1_end_ts = align_to_prev_trading_day(new_date_p1_end)
+                    p2_end_ts = align_to_prev_trading_day(new_date_p2_end)
 
-                    update_stock_in_db(
-                        current_code,
-                        {
-                            "interactive_range_start": str(new_range_start),
-                            "interactive_range_end": str(new_range_end),
-                            "abc_date_p1_start": str(new_date_p1_start),
-                            "abc_date_p1_end": str(new_date_p1_end),
-                            "abc_date_p2_end": str(new_date_p2_end),
-                            "abc_price_p1_high": float(new_price_p1_high),
-                            "abc_price_p1_low": float(new_price_p1_low),
-                            "abc_price_p2_high": float(new_price_p2_high),
-                            "cdm_p1_avg_override": float(new_cdm_p1_avg_override),
-                            "cdm_p2_avg_override": float(new_cdm_p2_avg_override),
-                            "box1_start": box1_start,
-                            "box1_end": box1_end,
-                            "box2_start": box2_start,
-                            "box2_end": box2_end,
-                        },
-                    )
-                    st.rerun()
+                    if (p1_start_ts is None) or (p1_end_ts is None) or (p2_end_ts is None):
+                        st.warning("所選日期找不到對應交易日，請調整日期")
+
+                    price_p1_high_auto = float(df.loc[p1_start_ts, "High"]) if (p1_start_ts is not None and p1_start_ts in df.index) else 0.0
+                    price_p1_low_auto = float(df.loc[p1_end_ts, "Low"]) if (p1_end_ts is not None and p1_end_ts in df.index) else 0.0
+
+                    price_p2_high_auto = 0.0
+                    if (p1_end_ts is not None) and (p2_end_ts is not None) and (p1_end_ts <= p2_end_ts):
+                        p2_slice = df.loc[p1_end_ts:p2_end_ts]
+                        if (not p2_slice.empty) and ("High" in p2_slice.columns):
+                            price_p2_high_auto = float(p2_slice["High"].max())
+
+                    c_p1, c_p2, c_p3 = st.columns(3)
+                    with c_p1:
+                        new_price_p1_high = st.number_input(
+                            "P1 起跌點價格 (High)",
+                            value=_pfloat("abc_price_p1_high") or price_p1_high_auto,
+                            min_value=0.0,
+                            format="%.3f",
+                            key=f"cdm_abc_price_p1_high_{current_code}",
+                        )
+                    with c_p2:
+                        new_price_p1_low = st.number_input(
+                            "P1 止跌點價格 (Low)",
+                            value=_pfloat("abc_price_p1_low") or price_p1_low_auto,
+                            min_value=0.0,
+                            format="%.3f",
+                            key=f"cdm_abc_price_p1_low_{current_code}",
+                        )
+                    with c_p3:
+                        new_price_p2_high = st.number_input(
+                            "P2 反彈最高價格 (P1_end~P2_end 高點)",
+                            value=_pfloat("abc_price_p2_high") or price_p2_high_auto,
+                            min_value=0.0,
+                            format="%.3f",
+                            key=f"cdm_abc_price_p2_high_{current_code}",
+                        )
+
+                    p1_avg_calc = 0.0
+                    p2_avg_calc = 0.0
+                    if (p1_start_ts is not None) and (p1_end_ts is not None) and (p1_start_ts <= p1_end_ts):
+                        p1_avg_calc = float(df.loc[p1_start_ts:p1_end_ts]["Close"].mean())
+                    if (p1_end_ts is not None) and (p2_end_ts is not None) and (p1_end_ts <= p2_end_ts):
+                        p2_avg_calc = float(df.loc[p1_end_ts:p2_end_ts]["Close"].mean())
+
+                    c_avg_1, c_avg_2 = st.columns(2)
+                    with c_avg_1:
+                        st.metric("P1 均價(計算)", "-" if not p1_avg_calc else f"{p1_avg_calc:.3f}")
+                        new_cdm_p1_avg_override = st.number_input(
+                            "P1 均價(手動覆蓋, 0=不用)",
+                            value=_pfloat("cdm_p1_avg_override"),
+                            min_value=0.0,
+                            format="%.3f",
+                            key=f"cdm_p1_avg_override_{current_code}",
+                        )
+                    with c_avg_2:
+                        st.metric("P2 均價(計算)", "-" if not p2_avg_calc else f"{p2_avg_calc:.3f}")
+                        new_cdm_p2_avg_override = st.number_input(
+                            "P2 均價(手動覆蓋, 0=不用)",
+                            value=_pfloat("cdm_p2_avg_override"),
+                            min_value=0.0,
+                            format="%.3f",
+                            key=f"cdm_p2_avg_override_{current_code}",
+                        )
+
+                    if st.button("💾 儲存參數", key=f"save_cdm_{current_code}"):
+                        box1_start = str(new_date_p1_start)
+                        box1_end = str(new_date_p1_end)
+                        box2_start = str(new_date_p1_end)
+                        box2_end = str(new_date_p2_end)
+
+                        update_stock_in_db(
+                            current_code,
+                            {
+                                "interactive_range_start": str(new_range_start),
+                                "interactive_range_end": str(new_range_end),
+                                "abc_date_p1_start": str(new_date_p1_start),
+                                "abc_date_p1_end": str(new_date_p1_end),
+                                "abc_date_p2_end": str(new_date_p2_end),
+                                "abc_price_p1_high": float(new_price_p1_high),
+                                "abc_price_p1_low": float(new_price_p1_low),
+                                "abc_price_p2_high": float(new_price_p2_high),
+                                "cdm_p1_avg_override": float(new_cdm_p1_avg_override),
+                                "cdm_p2_avg_override": float(new_cdm_p2_avg_override),
+                                "box1_start": box1_start,
+                                "box1_end": box1_end,
+                                "box2_start": box2_start,
+                                "box2_end": box2_end,
+                            },
+                        )
+                        st.rerun()
 
 
         # --- D. 數據呈現 ---
@@ -3621,10 +3654,12 @@ else:
                     fig_sma_trend.add_trace(go.Scatter(x=curve_data.index, y=curve_data[col_name], mode='lines', name=f"SMA({p})", line=dict(color=colors_map.get(p, 'grey'), width=2)))
             fig_sma_trend.update_layout(height=350, margin=dict(l=10, r=10, t=30, b=10), title="SMA 曲線 (近7個交易日)", template="plotly_white", legend=dict(orientation="h", y=1.1), dragmode="pan", uirevision=f"sma_trend_{current_code}")
             if show_sma_line:
+                render_scroll_anchor("stock-sma-line")
                 st.plotly_chart(fig_sma_trend, use_container_width=True, config={"scrollZoom": True, "displayModeBar": True, "displaylogo": False, "responsive": True})
 
            # 2. SMA Matrix (New Format v10.0)
             if show_sma_matrix:
+                render_scroll_anchor("stock-sma-matrix")
                 st.subheader("📋 SMA Matrix")
             
             # 定義列與對應的 Interval
@@ -3806,6 +3841,7 @@ else:
             
             pi_html += '</table>'
             if show_price_interface:
+                render_scroll_anchor("stock-price-interface")
                 st.markdown(pi_html, unsafe_allow_html=True)
 
             # 3. Turnover Matrix (此行不用複製，已存在於你的代碼下方)
@@ -3813,6 +3849,7 @@ else:
 
             # 3. Turnover Matrix
             if show_turnover:
+                render_scroll_anchor("stock-turnover")
                 st.subheader("📋 Turnover Rate Matrix")
                 if not has_turnover:
                     st.error("無流通股數數據。")
@@ -3844,6 +3881,7 @@ else:
                     st.markdown(tor_html, unsafe_allow_html=True)
 
     if show_cdm:
+        render_scroll_anchor("stock-cdm")
         st.markdown("---")
         st.markdown("### 📈 CDM 目標價偏差(%)")
 
@@ -3941,3 +3979,4 @@ else:
                 st.error(str(e))
 
 render_bottom_navigation()
+consume_pending_scroll_anchor()
