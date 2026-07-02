@@ -2081,12 +2081,12 @@ def _render_table_with_ticker_buttons(title: str, rows: list[dict], columns: lis
             )
             metrics_html = "".join(
                 [
-                    f"""
-                    <div class="compare-card-item">
-                        <div class="compare-card-label">{col_label}</div>
-                        <div class="compare-card-value">{r.get(col_key, "-")}</div>
-                    </div>
-                    """
+                    (
+                        f'<div class="compare-card-item">'
+                        f'<div class="compare-card-label">{col_label}</div>'
+                        f'<div class="compare-card-value">{r.get(col_key, "-")}</div>'
+                        f'</div>'
+                    )
                     for col_key, col_label in columns
                 ]
             )
@@ -2567,6 +2567,10 @@ def render_section_anchor_nav(title: str, caption: str, sections: List[tuple], k
                     queue_scroll_to_anchor(anchor_id)
                     st.rerun()
 
+def get_home_stock_anchor_id(ticker: str) -> str:
+    safe_ticker = "".join(ch if ch.isalnum() else "-" for ch in str(ticker))
+    return f"home-stock-{safe_ticker}"
+
 def consume_pending_scroll_anchor():
     anchor_id = st.session_state.pop("pending_scroll_target", None)
     if not anchor_id:
@@ -2738,7 +2742,15 @@ def render_backtest_section_navigation() -> str:
     render_section_anchor_nav("回測導航", "點擊後自動滾動到對應區段，方便在設定、對標與推薦間切換。", sections, "backtest_anchor")
     return "settings"
 
-def render_sidebar_context_navigation():
+def render_home_section_navigation(watchlist_list: List[str]) -> str:
+    if not watchlist_list:
+        render_navigation_expander()
+        return "home"
+    sections = [(get_home_stock_anchor_id(ticker), ticker) for ticker in watchlist_list]
+    render_section_anchor_nav("總覽導航", "按收藏股票快速定位到首頁對應區塊，保留整頁連續瀏覽。", sections, "home_anchor")
+    return "home"
+
+def render_sidebar_context_navigation(watchlist_list: List[str]):
     current_page = st.session_state.get("current_page", "home")
     if current_page == "stock":
         render_stock_section_navigation()
@@ -2746,6 +2758,8 @@ def render_sidebar_context_navigation():
         render_comparison_section_navigation()
     elif current_page == "backtest":
         render_backtest_section_navigation()
+    elif current_page == "home":
+        render_home_section_navigation(watchlist_list)
     else:
         render_navigation_expander()
 
@@ -2843,6 +2857,16 @@ if "show_filter" not in st.session_state:
     st.session_state.show_filter = False
 if "comparison_filters" not in st.session_state:
     st.session_state.comparison_filters = {}
+
+def handle_sidebar_search():
+    search_input = st.session_state.get("search_bar", "")
+    if not search_input:
+        return
+    cleaned = clean_ticker_input(search_input)
+    if cleaned:
+        set_current_page("stock", cleaned)
+        st.rerun()
+
 secrets = get_secrets_dict()
 telegram_cfg = secrets.get("telegram", {}) if isinstance(secrets.get("telegram", {}), dict) else {}
 if "tg_token" not in st.session_state:
@@ -2902,20 +2926,17 @@ with st.sidebar:
         st.session_state.ref_date = new_date
         st.rerun()
 
-    search_input = st.text_input("輸入股票代號", placeholder="例如: 700", key="search_bar")
-    if search_input:
-        cleaned = clean_ticker_input(search_input)
-        if cleaned:
-            set_current_page("stock", cleaned)
+    st.text_input("輸入股票代號", placeholder="例如: 700", key="search_bar", on_change=handle_sidebar_search)
+
+    watchlist_data = get_watchlist_from_db()
+    watchlist_list = list(watchlist_data.keys()) if watchlist_data else []
 
     with nav_slot.container():
-        render_sidebar_context_navigation()
+        render_sidebar_context_navigation(watchlist_list)
 
     st.divider()
     
     # 收藏夾導航
-    watchlist_data = get_watchlist_from_db()
-    watchlist_list = list(watchlist_data.keys()) if watchlist_data else []
     
     st.subheader(f"我的收藏 ({len(watchlist_list)})")
     if watchlist_list:
@@ -2976,6 +2997,7 @@ elif current_page == "home":
         st.write("---")
         # 遍歷收藏清單，顯示卡片
         for ticker in watchlist_list:
+            render_scroll_anchor(get_home_stock_anchor_id(ticker))
             yt = get_yahoo_ticker(ticker)
             with st.spinner(f"正在分析 {ticker}..."):
                 try:
