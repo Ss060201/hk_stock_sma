@@ -2567,6 +2567,67 @@ def render_section_anchor_nav(title: str, caption: str, sections: List[tuple], k
                     queue_scroll_to_anchor(anchor_id)
                     st.rerun()
 
+def render_section_anchor_nav_frontend(title: str, caption: str, sections: List[tuple], key_prefix: str):
+    with st.expander(title, expanded=False):
+        st.caption(caption)
+        rows = (len(sections) + 1) // 2
+        height = max(84, rows * 56 + 16)
+        buttons_html = "".join(
+            [
+                f'<button type="button" class="anchor-btn" data-anchor="{anchor_id}">{label}</button>'
+                for anchor_id, label in sections
+            ]
+        )
+        components.html(
+            f"""
+            <style>
+              .anchor-grid {{
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 10px;
+              }}
+              .anchor-btn {{
+                width: 100%;
+                min-height: 42px;
+                padding: 10px 12px;
+                border: 1px solid rgba(49, 51, 63, 0.2);
+                border-radius: 8px;
+                background: #ffffff;
+                color: #31333F;
+                font-size: 13px;
+                cursor: pointer;
+              }}
+              .anchor-btn:active {{
+                transform: translateY(1px);
+              }}
+            </style>
+            <div class="anchor-grid" id="{key_prefix}_grid">{buttons_html}</div>
+            <script>
+              const grid = document.getElementById({json.dumps(f"{key_prefix}_grid")});
+              const scrollToAnchor = (anchorId) => {{
+                const doc = window.parent.document;
+                const el = doc.getElementById(anchorId);
+                if (!el) return false;
+                el.scrollIntoView({{ behavior: "smooth", block: "start" }});
+                return true;
+              }};
+              grid?.addEventListener("click", (e) => {{
+                const btn = e.target.closest("button[data-anchor]");
+                if (!btn) return;
+                const anchorId = btn.getAttribute("data-anchor");
+                if (!anchorId) return;
+                if (scrollToAnchor(anchorId)) return;
+                let attempts = 0;
+                const timer = setInterval(() => {{
+                  attempts += 1;
+                  if (scrollToAnchor(anchorId) || attempts >= 20) clearInterval(timer);
+                }}, 150);
+              }});
+            </script>
+            """,
+            height=height,
+        )
+
 def get_home_stock_anchor_id(ticker: str) -> str:
     safe_ticker = "".join(ch if ch.isalnum() else "-" for ch in str(ticker))
     return f"home-stock-{safe_ticker}"
@@ -2718,7 +2779,7 @@ def render_stock_section_navigation() -> str:
         ("stock-turnover", "Turnover Rate"),
         ("stock-cdm", "CDM"),
     ]
-    render_section_anchor_nav("單股導航", "點擊後自動滾動到對應區段，保留整頁內容連續瀏覽。", sections, "stock_anchor")
+    render_section_anchor_nav_frontend("單股導航", "點擊後自動滾動到對應區段，保留整頁內容連續瀏覽。", sections, "stock_anchor")
     return "all"
 
 def render_comparison_section_navigation() -> str:
@@ -2729,7 +2790,7 @@ def render_comparison_section_navigation() -> str:
         ("comparison-amp", "振幅對比"),
         ("comparison-score", "綜合評分"),
     ]
-    render_section_anchor_nav("比較頁導航", "點擊後自動滾動到對應區段，適合快速查看不同排序表。", sections, "comparison_anchor")
+    render_section_anchor_nav_frontend("比較頁導航", "點擊後自動滾動到對應區段，適合快速查看不同排序表。", sections, "comparison_anchor")
     return "trend"
 
 def render_backtest_section_navigation() -> str:
@@ -2739,7 +2800,7 @@ def render_backtest_section_navigation() -> str:
         ("backtest-compare", "策略對標"),
         ("backtest-recommend", "策略推薦"),
     ]
-    render_section_anchor_nav("回測導航", "點擊後自動滾動到對應區段，方便在設定、對標與推薦間切換。", sections, "backtest_anchor")
+    render_section_anchor_nav_frontend("回測導航", "點擊後自動滾動到對應區段，方便在設定、對標與推薦間切換。", sections, "backtest_anchor")
     return "settings"
 
 def render_home_section_navigation(watchlist_list: List[str]) -> str:
@@ -2747,7 +2808,7 @@ def render_home_section_navigation(watchlist_list: List[str]) -> str:
         render_navigation_expander()
         return "home"
     sections = [(get_home_stock_anchor_id(ticker), ticker) for ticker in watchlist_list]
-    render_section_anchor_nav("總覽導航", "按收藏股票快速定位到首頁對應區塊，保留整頁連續瀏覽。", sections, "home_anchor")
+    render_section_anchor_nav_frontend("總覽導航", "按收藏股票快速定位到首頁對應區塊，保留整頁連續瀏覽。", sections, "home_anchor")
     return "home"
 
 def render_sidebar_context_navigation(watchlist_list: List[str]):
