@@ -1213,10 +1213,31 @@ def render_backtest_page(
     min_d = df.index.min().date()
     max_d = df.index.max().date()
 
+    def _clamp_backtest_date(value, fallback):
+        try:
+            parsed = pd.to_datetime(value).date() if value is not None else fallback
+        except Exception:
+            parsed = fallback
+        if parsed < min_d:
+            return min_d
+        if parsed > max_d:
+            return max_d
+        return parsed
+
     if "bt_start" not in st.session_state:
         st.session_state.bt_start = max(min_d, (pd.to_datetime(max_d) - timedelta(days=365)).date())
     if "bt_end" not in st.session_state:
         st.session_state.bt_end = max_d
+    st.session_state.bt_start = _clamp_backtest_date(
+        st.session_state.get("bt_start"),
+        max(min_d, (pd.to_datetime(max_d) - timedelta(days=365)).date()),
+    )
+    st.session_state.bt_end = _clamp_backtest_date(
+        st.session_state.get("bt_end"),
+        max_d,
+    )
+    if st.session_state.bt_start > st.session_state.bt_end:
+        st.session_state.bt_start, st.session_state.bt_end = st.session_state.bt_end, st.session_state.bt_start
 
     show_settings = True
     show_single = True
@@ -1448,6 +1469,16 @@ def render_backtest_page(
             st.session_state.cmp_start = st.session_state.bt_start
         if "cmp_end" not in st.session_state:
             st.session_state.cmp_end = st.session_state.bt_end
+        st.session_state.cmp_start = _clamp_backtest_date(
+            st.session_state.get("cmp_start"),
+            st.session_state.bt_start,
+        )
+        st.session_state.cmp_end = _clamp_backtest_date(
+            st.session_state.get("cmp_end"),
+            st.session_state.bt_end,
+        )
+        if st.session_state.cmp_start > st.session_state.cmp_end:
+            st.session_state.cmp_start, st.session_state.cmp_end = st.session_state.cmp_end, st.session_state.cmp_start
 
         c1, c2, c3, c4, c5 = st.columns([1.5, 1.5, 0.7, 0.7, 0.7])
         with c1:
