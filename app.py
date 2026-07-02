@@ -2081,12 +2081,12 @@ def _render_table_with_ticker_buttons(title: str, rows: list[dict], columns: lis
             )
             metrics_html = "".join(
                 [
-                    f"""
-                    <div class="compare-card-item">
-                        <div class="compare-card-label">{col_label}</div>
-                        <div class="compare-card-value">{r.get(col_key, "-")}</div>
-                    </div>
-                    """
+                    (
+                        f'<div class="compare-card-item">'
+                        f'<div class="compare-card-label">{col_label}</div>'
+                        f'<div class="compare-card-value">{r.get(col_key, "-")}</div>'
+                        f'</div>'
+                    )
                     for col_key, col_label in columns
                 ]
             )
