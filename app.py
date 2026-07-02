@@ -2843,6 +2843,16 @@ if "show_filter" not in st.session_state:
     st.session_state.show_filter = False
 if "comparison_filters" not in st.session_state:
     st.session_state.comparison_filters = {}
+
+def handle_sidebar_search():
+    search_input = st.session_state.get("search_bar", "")
+    if not search_input:
+        return
+    cleaned = clean_ticker_input(search_input)
+    if cleaned:
+        set_current_page("stock", cleaned)
+        st.rerun()
+
 secrets = get_secrets_dict()
 telegram_cfg = secrets.get("telegram", {}) if isinstance(secrets.get("telegram", {}), dict) else {}
 if "tg_token" not in st.session_state:
@@ -2902,11 +2912,7 @@ with st.sidebar:
         st.session_state.ref_date = new_date
         st.rerun()
 
-    search_input = st.text_input("輸入股票代號", placeholder="例如: 700", key="search_bar")
-    if search_input:
-        cleaned = clean_ticker_input(search_input)
-        if cleaned:
-            set_current_page("stock", cleaned)
+    st.text_input("輸入股票代號", placeholder="例如: 700", key="search_bar", on_change=handle_sidebar_search)
 
     with nav_slot.container():
         render_sidebar_context_navigation()
