@@ -2677,6 +2677,38 @@ def consume_pending_scroll_anchor():
         height=0,
     )
 
+def render_pending_scroll_here(anchor_id: str):
+    pending_anchor = st.session_state.get("pending_scroll_target")
+    if pending_anchor != anchor_id:
+        return
+    st.session_state.pop("pending_scroll_target", None)
+    components.html(
+        f"""
+        <script>
+        const anchorId = {json.dumps(anchor_id)};
+        let attempts = 0;
+        const scrollToAnchor = () => {{
+            const doc = window.parent.document;
+            const target = doc.getElementById(anchorId);
+            if (target) {{
+                target.scrollIntoView({{ behavior: "smooth", block: "start" }});
+                return true;
+            }}
+            return false;
+        }};
+        if (!scrollToAnchor()) {{
+            const timer = setInterval(() => {{
+                attempts += 1;
+                if (scrollToAnchor() || attempts >= 30) {{
+                    clearInterval(timer);
+                }}
+            }}, 150);
+        }}
+        </script>
+        """,
+        height=0,
+    )
+
 
 def render_top_navigation():
     current_page = st.session_state.get("current_page", "home")
@@ -3151,6 +3183,7 @@ elif current_page == "home":
             detail = detail_map.get(selected_ticker)
             if detail:
                 render_scroll_anchor("home-detail-panel")
+                render_pending_scroll_here("home-detail-panel")
                 st.subheader(f"📌 {selected_ticker} 統計數據")
                 meta_col_1, meta_col_2, meta_col_3 = st.columns([1.2, 1.2, 1])
                 meta_col_1.metric("日期", detail["date"])
