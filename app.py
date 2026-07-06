@@ -291,6 +291,32 @@ st.markdown("""
         top: -10px;
         visibility: hidden;
     }
+    .home-code-link {
+        width: 100%;
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 12px 16px;
+        border: 1px solid #d0d7de;
+        border-radius: 6px;
+        background: #ffffff;
+        color: #31333F;
+        font-size: 14px;
+        font-weight: 600;
+        text-decoration: none;
+        cursor: pointer;
+        box-shadow: var(--shadow-sm);
+    }
+    .home-code-link:hover {
+        border-color: #86b7fe;
+        color: #0d6efd;
+    }
+    .home-code-link.active {
+        background: #0d6efd;
+        border-color: #0d6efd;
+        color: #ffffff;
+    }
     div[data-baseweb="select"] > div {
         min-height: 44px;
         border-radius: 8px;
@@ -321,6 +347,7 @@ st.markdown("""
         .compare-card-value { font-size: 12px; }
         .bottom-nav-note { font-size: 11px; margin: 2px 0 6px 0; }
         .stButton>button { font-size: 13px; min-height: 42px; padding: 10px 12px !important; }
+        .home-code-link { min-height: 42px; padding: 10px 12px; font-size: 13px; }
     }
 
     @media (min-width: 1024px) {
@@ -2657,6 +2684,39 @@ def set_current_page(page: str, code: Optional[str] = None):
     if page == "stock" and code is not None:
         st.session_state.stock_section = "header"
 
+def get_query_param_value(name: str) -> str:
+    try:
+        value = st.query_params.get(name)
+    except Exception:
+        return ""
+    if isinstance(value, list):
+        return str(value[0]) if value else ""
+    return str(value) if value is not None else ""
+
+def sync_home_selected_ticker_from_query(available_codes: List[str]):
+    requested_ticker = clean_ticker_input(get_query_param_value("home_ticker"))
+    if requested_ticker and requested_ticker in available_codes:
+        st.session_state.home_selected_ticker = requested_ticker
+
+def render_home_code_jump_button(ticker: str, selected: bool):
+    class_name = "home-code-link active" if selected else "home-code-link"
+    st.markdown(
+        f"""
+        <a
+            class="{class_name}"
+            href="javascript:void(0)"
+            onclick='(function() {{
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set("home_ticker", {json.dumps(ticker)});
+                url.searchParams.set("home_nav_token", String(Date.now()));
+                url.hash = "home-detail-panel";
+                window.parent.location.assign(url.toString());
+            }})()'
+        >{ticker}</a>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def queue_scroll_to_anchor(anchor_id: str):
     st.session_state.pending_scroll_target = anchor_id
     st.session_state.pending_scroll_token = int(st.session_state.get("pending_scroll_token", 0)) + 1
@@ -3273,6 +3333,7 @@ elif current_page == "home":
                 reverse=bool(st.session_state.home_sort_desc),
             )
             available_codes = [row["Code"] for row in sorted_rows]
+            sync_home_selected_ticker_from_query(available_codes)
             if st.session_state.get("home_selected_ticker") not in available_codes:
                 st.session_state.home_selected_ticker = available_codes[0]
 
@@ -3293,15 +3354,7 @@ elif current_page == "home":
                 render_scroll_anchor(get_home_stock_anchor_id(ticker))
                 row_cols = st.columns([1.15, 1, 1, 1, 1, 1, 1, 1, 1])
                 with row_cols[0]:
-                    if st.button(
-                        ticker,
-                        key=f"home_code_{ticker}",
-                        use_container_width=True,
-                        type="primary" if ticker == st.session_state.home_selected_ticker else "secondary",
-                    ):
-                        st.session_state.home_selected_ticker = ticker
-                        queue_scroll_to_anchor("home-detail-panel")
-                        st.rerun()
+                    render_home_code_jump_button(ticker, ticker == st.session_state.home_selected_ticker)
                 row_cols[1].markdown(_fmt_num(row.get("CPRD")))
                 row_cols[2].markdown(_fmt_pct(row.get("Dev 0")))
                 row_cols[3].markdown(_fmt_pct(row.get("Dev 3")))
@@ -3316,7 +3369,6 @@ elif current_page == "home":
             detail = detail_map.get(selected_ticker)
             if detail:
                 render_scroll_anchor("home-detail-panel")
-                render_pending_scroll_here("home-detail-panel")
                 st.subheader(f"📌 {selected_ticker} 統計數據")
                 meta_col_1, meta_col_2, meta_col_3 = st.columns([1.2, 1.2, 1])
                 meta_col_1.metric("日期", detail["date"])
