@@ -3227,6 +3227,7 @@ elif current_page == "home":
                         type="primary" if ticker == st.session_state.home_selected_ticker else "secondary",
                     ):
                         st.session_state.home_selected_ticker = ticker
+                        queue_scroll_to_anchor("home-detail-panel")
                         st.rerun()
                 row_cols[1].markdown(_fmt_num(row.get("CPRD")))
                 row_cols[2].markdown(_fmt_pct(row.get("Dev 0")))
@@ -3241,6 +3242,7 @@ elif current_page == "home":
             selected_ticker = st.session_state.home_selected_ticker
             detail = detail_map.get(selected_ticker)
             if detail:
+                render_scroll_anchor("home-detail-panel")
                 st.subheader(f"📌 {selected_ticker} 統計數據")
                 meta_col_1, meta_col_2, meta_col_3 = st.columns([1.2, 1.2, 1])
                 meta_col_1.metric("日期", detail["date"])
