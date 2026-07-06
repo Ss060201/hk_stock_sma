@@ -2628,6 +2628,7 @@ def set_current_page(page: str, code: Optional[str] = None):
 
 def queue_scroll_to_anchor(anchor_id: str):
     st.session_state.pending_scroll_target = anchor_id
+    st.session_state.pending_scroll_token = int(st.session_state.get("pending_scroll_token", 0)) + 1
 
 def render_scroll_anchor(anchor_id: str):
     st.markdown(f'<span id="{anchor_id}" class="section-anchor"></span>', unsafe_allow_html=True)
@@ -2650,28 +2651,37 @@ def consume_pending_scroll_anchor():
     anchor_id = st.session_state.pop("pending_scroll_target", None)
     if not anchor_id:
         return
+    scroll_token = int(st.session_state.pop("pending_scroll_token", 0))
     components.html(
         f"""
         <script>
         const anchorId = {json.dumps(anchor_id)};
+        const scrollToken = {json.dumps(scroll_token)};
+        const doc = window.parent.document;
+        const win = window.parent;
         let attempts = 0;
+        const maxAttempts = 18;
         const scrollToAnchor = () => {{
-            const doc = window.parent.document;
             const target = doc.getElementById(anchorId);
-            if (target) {{
-                target.scrollIntoView({{ behavior: "smooth", block: "start" }});
-                return true;
+            if (!target) {{
+                return false;
             }}
-            return false;
+            target.scrollIntoView({{ behavior: "smooth", block: "start" }});
+            return true;
         }};
-        if (!scrollToAnchor()) {{
-            const timer = setInterval(() => {{
-                attempts += 1;
-                if (scrollToAnchor() || attempts >= 20) {{
-                    clearInterval(timer);
-                }}
-            }}, 150);
+
+        scrollToAnchor();
+        if (win.requestAnimationFrame) {{
+            win.requestAnimationFrame(() => scrollToAnchor());
+            win.requestAnimationFrame(() => win.requestAnimationFrame(() => scrollToAnchor()));
         }}
+        const timer = win.setInterval(() => {{
+            attempts += 1;
+            scrollToAnchor();
+            if (attempts >= maxAttempts) {{
+                win.clearInterval(timer);
+            }}
+        }}, 120);
         </script>
         """,
         height=0,
@@ -2682,28 +2692,37 @@ def render_pending_scroll_here(anchor_id: str):
     if pending_anchor != anchor_id:
         return
     st.session_state.pop("pending_scroll_target", None)
+    scroll_token = int(st.session_state.pop("pending_scroll_token", 0))
     components.html(
         f"""
         <script>
         const anchorId = {json.dumps(anchor_id)};
+        const scrollToken = {json.dumps(scroll_token)};
+        const doc = window.parent.document;
+        const win = window.parent;
         let attempts = 0;
+        const maxAttempts = 24;
         const scrollToAnchor = () => {{
-            const doc = window.parent.document;
             const target = doc.getElementById(anchorId);
-            if (target) {{
-                target.scrollIntoView({{ behavior: "smooth", block: "start" }});
-                return true;
+            if (!target) {{
+                return false;
             }}
-            return false;
+            target.scrollIntoView({{ behavior: "smooth", block: "start" }});
+            return true;
         }};
-        if (!scrollToAnchor()) {{
-            const timer = setInterval(() => {{
-                attempts += 1;
-                if (scrollToAnchor() || attempts >= 30) {{
-                    clearInterval(timer);
-                }}
-            }}, 150);
+
+        scrollToAnchor();
+        if (win.requestAnimationFrame) {{
+            win.requestAnimationFrame(() => scrollToAnchor());
+            win.requestAnimationFrame(() => win.requestAnimationFrame(() => scrollToAnchor()));
         }}
+        const timer = win.setInterval(() => {{
+            attempts += 1;
+            scrollToAnchor();
+            if (attempts >= maxAttempts) {{
+                win.clearInterval(timer);
+            }}
+        }}, 120);
         </script>
         """,
         height=0,
