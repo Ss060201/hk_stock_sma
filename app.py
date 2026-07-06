@@ -2659,6 +2659,7 @@ def set_current_page(page: str, code: Optional[str] = None):
 
 def queue_scroll_to_anchor(anchor_id: str):
     st.session_state.pending_scroll_target = anchor_id
+    st.session_state.pending_scroll_token = int(st.session_state.get("pending_scroll_token", 0)) + 1
 
 def render_scroll_anchor(anchor_id: str):
     st.markdown(f'<span id="{anchor_id}" class="section-anchor"></span>', unsafe_allow_html=True)
@@ -2742,28 +2743,100 @@ def consume_pending_scroll_anchor():
     anchor_id = st.session_state.pop("pending_scroll_target", None)
     if not anchor_id:
         return
+    scroll_token = int(st.session_state.pop("pending_scroll_token", 0))
     components.html(
         f"""
         <script>
         const anchorId = {json.dumps(anchor_id)};
-        let attempts = 0;
+        const scrollToken = {json.dumps(scroll_token)};
+        const doc = window.parent.document;
+        const win = window.parent;
         const scrollToAnchor = () => {{
-            const doc = window.parent.document;
             const target = doc.getElementById(anchorId);
-            if (target) {{
-                target.scrollIntoView({{ behavior: "smooth", block: "start" }});
-                return true;
+            if (!target) {{
+                return false;
             }}
-            return false;
+            target.scrollIntoView({{ behavior: "smooth", block: "start" }});
+            return true;
         }};
-        if (!scrollToAnchor()) {{
-            const timer = setInterval(() => {{
-                attempts += 1;
-                if (scrollToAnchor() || attempts >= 20) {{
-                    clearInterval(timer);
-                }}
-            }}, 150);
-        }}
+        const retriggerHashScroll = () => {{
+            try {{
+                const clearUrl = new URL(win.location.href);
+                clearUrl.hash = "";
+                win.history.replaceState(null, "", clearUrl.toString());
+                win.setTimeout(() => {{
+                    const targetUrl = new URL(win.location.href);
+                    targetUrl.hash = anchorId;
+                    win.history.replaceState(null, "", targetUrl.toString());
+                    scrollToAnchor();
+                }}, 40);
+            }} catch (e) {{
+                scrollToAnchor();
+            }}
+        }};
+        const kickScroll = () => {{
+            retriggerHashScroll();
+            if (win.requestAnimationFrame) {{
+                win.requestAnimationFrame(() => scrollToAnchor());
+                win.requestAnimationFrame(() => win.requestAnimationFrame(() => scrollToAnchor()));
+            }}
+        }};
+
+        [0, 160, 420, 900, 1600].forEach((delay) => {{
+            win.setTimeout(kickScroll, delay);
+        }});
+        </script>
+        """,
+        height=0,
+    )
+
+def render_pending_scroll_here(anchor_id: str):
+    pending_anchor = st.session_state.get("pending_scroll_target")
+    if pending_anchor != anchor_id:
+        return
+    st.session_state.pop("pending_scroll_target", None)
+    scroll_token = int(st.session_state.pop("pending_scroll_token", 0))
+    components.html(
+        f"""
+        <script>
+        const anchorId = {json.dumps(anchor_id)};
+        const scrollToken = {json.dumps(scroll_token)};
+        const doc = window.parent.document;
+        const win = window.parent;
+        const scrollToAnchor = () => {{
+            const target = doc.getElementById(anchorId);
+            if (!target) {{
+                return false;
+            }}
+            target.scrollIntoView({{ behavior: "smooth", block: "start" }});
+            return true;
+        }};
+        const retriggerHashScroll = () => {{
+            try {{
+                const clearUrl = new URL(win.location.href);
+                clearUrl.hash = "";
+                win.history.replaceState(null, "", clearUrl.toString());
+                win.setTimeout(() => {{
+                    const targetUrl = new URL(win.location.href);
+                    targetUrl.hash = anchorId;
+                    win.history.replaceState(null, "", targetUrl.toString());
+                    scrollToAnchor();
+                }}, 40);
+            }} catch (e) {{
+                scrollToAnchor();
+            }}
+        }};
+        const kickScroll = () => {{
+            retriggerHashScroll();
+            if (win.requestAnimationFrame) {{
+                win.requestAnimationFrame(() => scrollToAnchor());
+                win.requestAnimationFrame(() => win.requestAnimationFrame(() => scrollToAnchor()));
+            }}
+        }};
+
+        [0, 160, 420, 900, 1600, 2400].forEach((delay) => {{
+            win.setTimeout(kickScroll, delay);
+        }});
         </script>
         """,
         height=0,
@@ -3243,6 +3316,7 @@ elif current_page == "home":
             detail = detail_map.get(selected_ticker)
             if detail:
                 render_scroll_anchor("home-detail-panel")
+                render_pending_scroll_here("home-detail-panel")
                 st.subheader(f"📌 {selected_ticker} 統計數據")
                 meta_col_1, meta_col_2, meta_col_3 = st.columns([1.2, 1.2, 1])
                 meta_col_1.metric("日期", detail["date"])
