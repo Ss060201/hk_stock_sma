@@ -2659,8 +2659,6 @@ def consume_pending_scroll_anchor():
         const scrollToken = {json.dumps(scroll_token)};
         const doc = window.parent.document;
         const win = window.parent;
-        let attempts = 0;
-        const maxAttempts = 18;
         const scrollToAnchor = () => {{
             const target = doc.getElementById(anchorId);
             if (!target) {{
@@ -2669,19 +2667,32 @@ def consume_pending_scroll_anchor():
             target.scrollIntoView({{ behavior: "smooth", block: "start" }});
             return true;
         }};
-
-        scrollToAnchor();
-        if (win.requestAnimationFrame) {{
-            win.requestAnimationFrame(() => scrollToAnchor());
-            win.requestAnimationFrame(() => win.requestAnimationFrame(() => scrollToAnchor()));
-        }}
-        const timer = win.setInterval(() => {{
-            attempts += 1;
-            scrollToAnchor();
-            if (attempts >= maxAttempts) {{
-                win.clearInterval(timer);
+        const retriggerHashScroll = () => {{
+            try {{
+                const clearUrl = new URL(win.location.href);
+                clearUrl.hash = "";
+                win.history.replaceState(null, "", clearUrl.toString());
+                win.setTimeout(() => {{
+                    const targetUrl = new URL(win.location.href);
+                    targetUrl.hash = anchorId;
+                    win.history.replaceState(null, "", targetUrl.toString());
+                    scrollToAnchor();
+                }}, 40);
+            }} catch (e) {{
+                scrollToAnchor();
             }}
-        }}, 120);
+        }};
+        const kickScroll = () => {{
+            retriggerHashScroll();
+            if (win.requestAnimationFrame) {{
+                win.requestAnimationFrame(() => scrollToAnchor());
+                win.requestAnimationFrame(() => win.requestAnimationFrame(() => scrollToAnchor()));
+            }}
+        }};
+
+        [0, 160, 420, 900, 1600].forEach((delay) => {{
+            win.setTimeout(kickScroll, delay);
+        }});
         </script>
         """,
         height=0,
@@ -2700,8 +2711,6 @@ def render_pending_scroll_here(anchor_id: str):
         const scrollToken = {json.dumps(scroll_token)};
         const doc = window.parent.document;
         const win = window.parent;
-        let attempts = 0;
-        const maxAttempts = 24;
         const scrollToAnchor = () => {{
             const target = doc.getElementById(anchorId);
             if (!target) {{
@@ -2710,19 +2719,32 @@ def render_pending_scroll_here(anchor_id: str):
             target.scrollIntoView({{ behavior: "smooth", block: "start" }});
             return true;
         }};
-
-        scrollToAnchor();
-        if (win.requestAnimationFrame) {{
-            win.requestAnimationFrame(() => scrollToAnchor());
-            win.requestAnimationFrame(() => win.requestAnimationFrame(() => scrollToAnchor()));
-        }}
-        const timer = win.setInterval(() => {{
-            attempts += 1;
-            scrollToAnchor();
-            if (attempts >= maxAttempts) {{
-                win.clearInterval(timer);
+        const retriggerHashScroll = () => {{
+            try {{
+                const clearUrl = new URL(win.location.href);
+                clearUrl.hash = "";
+                win.history.replaceState(null, "", clearUrl.toString());
+                win.setTimeout(() => {{
+                    const targetUrl = new URL(win.location.href);
+                    targetUrl.hash = anchorId;
+                    win.history.replaceState(null, "", targetUrl.toString());
+                    scrollToAnchor();
+                }}, 40);
+            }} catch (e) {{
+                scrollToAnchor();
             }}
-        }}, 120);
+        }};
+        const kickScroll = () => {{
+            retriggerHashScroll();
+            if (win.requestAnimationFrame) {{
+                win.requestAnimationFrame(() => scrollToAnchor());
+                win.requestAnimationFrame(() => win.requestAnimationFrame(() => scrollToAnchor()));
+            }}
+        }};
+
+        [0, 160, 420, 900, 1600, 2400].forEach((delay) => {{
+            win.setTimeout(kickScroll, delay);
+        }});
         </script>
         """,
         height=0,
