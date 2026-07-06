@@ -2574,6 +2574,81 @@ def get_data_v7(symbol, end_date):
     except Exception:
         return None, None
 
+def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, shares_outstanding) -> Optional[Dict[str, Any]]:
+    if df is None or df.empty or len(df) < 2:
+        return None
+
+    work_df = df.copy()
+    close = work_df["Close"].astype(float)
+    current_close = float(close.iloc[-1])
+    prev_close = close.shift(1).iloc[-1]
+    prev_close = float(prev_close) if pd.notna(prev_close) and float(prev_close) != 0 else np.nan
+
+    def pct_change(current_value, base_value):
+        if pd.isna(base_value) or float(base_value) == 0:
+            return np.nan
+        return (float(current_value) / float(base_value) - 1) * 100
+
+    dev_periods = [3, 7, 14, 28, 57, 106]
+    dev_values = {"Dev 0": pct_change(current_close, prev_close)}
+    for p in dev_periods:
+        base_value = close.shift(p).iloc[-1] if len(close) > p else np.nan
+        dev_values[f"Dev {p}"] = pct_change(current_close, base_value)
+
+    periods_sma = [7, 14, 28, 57, 106]
+    sma_values = {}
+    for p in periods_sma:
+        sma = close.rolling(p).mean().iloc[-1] if len(close) >= p else np.nan
+        sma_values[f"SMA {p}"] = float(sma) if pd.notna(sma) else np.nan
+
+    prev_close_series = close.shift(1).replace(0, np.nan)
+    work_df["AMP"] = (work_df["High"] - work_df["Low"]) / prev_close_series * 100
+    amp_values = {"Amp 0": float(work_df["AMP"].iloc[-1]) if pd.notna(work_df["AMP"].iloc[-1]) else np.nan}
+    for p in periods_sma:
+        amp = work_df["AMP"].tail(p).mean() if len(work_df) >= p else np.nan
+        amp_values[f"Amp {p}"] = float(amp) if pd.notna(amp) else np.nan
+
+    tor_values = {f"TOR {p}": np.nan for p in [0, 7, 14, 28, 57, 106]}
+    if shares_outstanding and float(shares_outstanding) != 0:
+        work_df["Turnover_Rate"] = work_df["Volume"] / float(shares_outstanding) * 100
+        tor_values["TOR 0"] = float(work_df["Turnover_Rate"].iloc[-1]) if pd.notna(work_df["Turnover_Rate"].iloc[-1]) else np.nan
+        for p in periods_sma:
+            tor = work_df["Turnover_Rate"].tail(p).mean() if len(work_df) >= p else np.nan
+            tor_values[f"TOR {p}"] = float(tor) if pd.notna(tor) else np.nan
+
+    return {
+        "summary": {
+            "Code": ticker,
+            "CPRD": prev_close,
+            **dev_values,
+        },
+        "detail": {
+            "ticker": ticker,
+            "date": work_df.index[-1].strftime("%Y-%m-%d"),
+            "current_price": current_close,
+            "cp": prev_close,
+            "dev": dev_values,
+            "tor": tor_values,
+            "amp": amp_values,
+            "sma": sma_values,
+        },
+    }
+
+@st.cache_data(ttl=900)
+def get_home_watchlist_snapshot(watchlist_codes: List[str], ref_date: str) -> Dict[str, Any]:
+    summaries: List[Dict[str, Any]] = []
+    details: Dict[str, Dict[str, Any]] = {}
+
+    for ticker in watchlist_codes:
+        df, shares_outstanding = get_data_v7(get_yahoo_ticker(ticker), ref_date)
+        snapshot = _compute_home_snapshot_for_stock(ticker, df, shares_outstanding)
+        if not snapshot:
+            continue
+        summaries.append(snapshot["summary"])
+        details[ticker] = snapshot["detail"]
+
+    return {"summaries": summaries, "details": details}
+
 def set_current_page(page: str, code: Optional[str] = None):
     st.session_state.current_page = page
     if code is not None:
@@ -3078,6 +3153,10 @@ elif current_page == "home":
     if not watchlist_list:
         st.info("👈 您的收藏清單為空，請從左側加入股票。")
     else:
+        snapshot = get_home_watchlist_snapshot(watchlist_list, str(st.session_state.ref_date))
+        summary_rows = snapshot.get("summaries", [])
+        detail_map = snapshot.get("details", {})
+
         c_btn_1, c_btn_2 = st.columns(2)
         with c_btn_1:
             if st.button("🔄 刷新所有數據", use_container_width=True):
@@ -3087,99 +3166,144 @@ elif current_page == "home":
                 set_current_page("comparison")
                 st.rerun()
         st.write("---")
-        # 遍歷收藏清單，顯示卡片
-        for ticker in watchlist_list:
-            render_scroll_anchor(get_home_stock_anchor_id(ticker))
-            yt = get_yahoo_ticker(ticker)
-            with st.spinner(f"正在分析 {ticker}..."):
-                try:
-                    df_w = yf.download(yt, period="1y", progress=False, auto_adjust=False)
-                    if isinstance(df_w.columns, pd.MultiIndex): df_w.columns = df_w.columns.get_level_values(0)
-                    # 切割日期
-                    end_dt = pd.to_datetime(st.session_state.ref_date)
-                    df_w = df_w[df_w.index <= end_dt]
 
-                    # 獲取 TSI
-                    t_obj = yf.Ticker(yt)
-                    try: tsi = t_obj.fast_info.get('shares', None)
-                    except: tsi = None
-                    if tsi is None: 
-                        try: tsi = t_obj.info.get('sharesOutstanding', 100000000)
-                        except: tsi = 100000000
+        if not summary_rows:
+            st.warning("目前沒有足夠數據可生成收藏股列表。")
+        else:
+            sort_options = ["Dev 0", "Dev 3", "Dev 7", "Dev 14", "Dev 28", "Dev 57", "Dev 106"]
+            if "home_sort_metric" not in st.session_state:
+                st.session_state.home_sort_metric = "Dev 3"
+            if "home_sort_desc" not in st.session_state:
+                st.session_state.home_sort_desc = True
 
-                    if len(df_w) > 20:
-                        curr_p = df_w['Close'].iloc[-1]
-                        prev_close_w = df_w['Close'].shift(1).replace(0, np.nan)
-                        prev_close_last = prev_close_w.iloc[-1]
-                        prev_close_last = float(prev_close_last) if pd.notna(prev_close_last) else 0.0
-                        chg = (curr_p - prev_close_last) if prev_close_last else 0.0
-                        pct = (chg / prev_close_last * 100) if prev_close_last else 0.0
-                        intervals = [7, 14, 28, 57, 106, 212]
+            ctrl_1, ctrl_2 = st.columns([1.4, 1])
+            with ctrl_1:
+                st.session_state.home_sort_metric = st.selectbox(
+                    "排序欄位",
+                    sort_options,
+                    index=sort_options.index(st.session_state.home_sort_metric if st.session_state.home_sort_metric in sort_options else "Dev 3"),
+                    key="home_sort_metric_select",
+                )
+            with ctrl_2:
+                st.session_state.home_sort_desc = st.selectbox(
+                    "排序方式",
+                    [True, False],
+                    index=0 if st.session_state.home_sort_desc else 1,
+                    format_func=lambda v: "由高到低" if v else "由低到高",
+                    key="home_sort_order_select",
+                )
 
-                        # 1. Price Logic
-                        avgp_vals = [curr_p]
-                        for p in intervals:
-                            avgp_vals.append(df_w['Close'].rolling(p).mean().iloc[-1] if len(df_w)>=p else 0)
-                        valid_avgp = [v for v in avgp_vals if v > 0]
-                        avg_avgp = sum(valid_avgp) / len(valid_avgp) if valid_avgp else 0
-                        avgp_mr_vals = [((v / avg_avgp) - 1)*100 if avg_avgp else 0 for v in avgp_vals]
+            selected_sort = st.session_state.home_sort_metric
+            sorted_rows = sorted(
+                summary_rows,
+                key=lambda row: float(row.get(selected_sort)) if pd.notna(row.get(selected_sort)) else float("-inf"),
+                reverse=bool(st.session_state.home_sort_desc),
+            )
+            available_codes = [row["Code"] for row in sorted_rows]
+            if st.session_state.get("home_selected_ticker") not in available_codes:
+                st.session_state.home_selected_ticker = available_codes[0]
 
-                        # 2. AMP Logic
-                        df_w['AMP'] = (df_w['High'] - df_w['Low']) / prev_close_w * 100
-                        val_amp0 = df_w['AMP'].iloc[-1]
-                        amp_rolling_vals = []
-                        for p in intervals:
-                            amp_rolling_vals.append(df_w['AMP'].rolling(p).mean().iloc[-1] if len(df_w)>=p else 0)
-                        
-                        valid_rolling = [v for v in amp_rolling_vals if v > 0]
-                        avg_amp = sum(valid_rolling) / len(valid_rolling) if valid_rolling else 0
-                        amp_mr_vals = [((val_amp0 / avg_amp) - 1)*100 if avg_amp else 0] # MR0
-                        for v in amp_rolling_vals:
-                            amp_mr_vals.append(((v / avg_amp) - 1)*100 if avg_amp else 0)
+            def _fmt_num(value):
+                return "-" if pd.isna(value) else f"{float(value):.2f}"
 
-                        # 3. Buy/Sell Analysis (v9.6 New Feature)
-                        df_w = simulate_bs_data(df_w, tsi)
-                        last_7 = df_w.iloc[-7:][::-1]
-                        
-                        # Data Prep
-                        days_mmb = [f"{x:.4f}%" for x in last_7['MMB'].tolist()]
-                        days_mms = [f"{x:.4f}%" for x in last_7['MMS'].tolist()]
-                        days_rtb = [f"{x:.4f}%" for x in last_7['RTB'].tolist()]
-                        days_rts = [f"{x:.4f}%" for x in last_7['RTS'].tolist()]
-                        
-                        while len(days_mmb) < 7: days_mmb.append("-")
-                        while len(days_mms) < 7: days_mms.append("-")
-                        while len(days_rtb) < 7: days_rtb.append("-")
-                        while len(days_rts) < 7: days_rts.append("-")
+            def _fmt_pct(value):
+                return "-" if pd.isna(value) else f"{float(value):+.2f}%"
 
-                        sum_mmb, sum_mms, sum_rtb, sum_rts = [], [], [], []
-                        for p in intervals:
-                            if len(df_w) >= p:
-                                sum_mmb.append(f"{df_w['MMB'].tail(p).sum():.4f}%")
-                                sum_mms.append(f"{df_w['MMS'].tail(p).sum():.4f}%")
-                                sum_rtb.append(f"{df_w['RTB'].tail(p).sum():.4f}%")
-                                sum_rts.append(f"{df_w['RTS'].tail(p).sum():.4f}%")
-                            else:
-                                for l in [sum_mmb, sum_mms, sum_rtb, sum_rts]: l.append("-")
+            st.caption("打開 App 即進入收藏股列表；點擊 Code 會在下方顯示 TOR、Amp、SMA 統計。")
+            header_cols = st.columns([1.15, 1, 1, 1, 1, 1, 1, 1, 1])
+            headers = ["Code", "CPRD", "Dev 0", "Dev 3", "Dev 7", "Dev 14", "Dev 28", "Dev 57", "Dev 106"]
+            for col, header in zip(header_cols, headers):
+                col.markdown(f"**{header}**")
 
-                        html = f'<div style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 8px; background-color: #f9f9f9;">'
-                        chg_color = "#2ca02c" if chg > 0 else "#d62728" if chg < 0 else "#666"
-                        html += f'<h4 style="margin-top:0;">{ticker} <span style="font-size:0.8em; color:#666;">Price: {curr_p:.2f}</span> <span style="font-size:0.8em; color:{chg_color};">({chg:+.2f}, {pct:+.2f}%)</span></h4>'
-                        html += '<table class="big-font-table">'
-                        html += '<tr class="header-row"><td>Metric</td><td>Base</td><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td></tr>'
-                        html += '<tr class="data-row"><td><b>AvgP</b></td><td>{:.2f}</td>'.format(avg_avgp) + "".join([f"<td>{v:.2f}</td>" for v in avgp_vals]) + '</tr>'
-                        html += '<tr class="data-row"><td><b>AvgP MR</b></td><td>-</td>' + "".join([f"<td class='{'pos-val' if v>0 else 'neg-val'}'>{v:.2f}%</td>" for v in avgp_mr_vals]) + '</tr>'
-                        html += '<tr class="data-row"><td><b>AMP MR</b></td><td>{:.2f}</td>'.format(avg_amp) + "".join([f"<td class='{'pos-val' if v>0 else 'neg-val'}'>{v:.2f}%</td>" for v in amp_mr_vals]) + '</tr>'
-                        html += '</table>'
-                        html += '<table class="big-font-table" style="margin-top: 10px;">'
-                        html += '<tr class="header-row"><td>Day</td><td>0</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td></tr>'
-                        for name, data in [("MMB", days_mmb), ("MMS", days_mms), ("RTB", days_rtb), ("RTS", days_rts)]:
-                            html += f'<tr class="data-row"><td style="background-color:#fff !important; font-weight:bold;">{name}</td>' + "".join([f"<td>{d}</td>" for d in data]) + '</tr>'
-                        html += '</table>'
-                        html += '</div>'
-                        st.markdown(html, unsafe_allow_html=True)
+            for row in sorted_rows:
+                ticker = row["Code"]
+                render_scroll_anchor(get_home_stock_anchor_id(ticker))
+                row_cols = st.columns([1.15, 1, 1, 1, 1, 1, 1, 1, 1])
+                with row_cols[0]:
+                    if st.button(
+                        ticker,
+                        key=f"home_code_{ticker}",
+                        use_container_width=True,
+                        type="primary" if ticker == st.session_state.home_selected_ticker else "secondary",
+                    ):
+                        st.session_state.home_selected_ticker = ticker
+                        st.rerun()
+                row_cols[1].markdown(_fmt_num(row.get("CPRD")))
+                row_cols[2].markdown(_fmt_pct(row.get("Dev 0")))
+                row_cols[3].markdown(_fmt_pct(row.get("Dev 3")))
+                row_cols[4].markdown(_fmt_pct(row.get("Dev 7")))
+                row_cols[5].markdown(_fmt_pct(row.get("Dev 14")))
+                row_cols[6].markdown(_fmt_pct(row.get("Dev 28")))
+                row_cols[7].markdown(_fmt_pct(row.get("Dev 57")))
+                row_cols[8].markdown(_fmt_pct(row.get("Dev 106")))
+                st.divider()
 
-                except Exception as e: st.error(f"Error {ticker}: {e}")
+            selected_ticker = st.session_state.home_selected_ticker
+            detail = detail_map.get(selected_ticker)
+            if detail:
+                st.subheader(f"📌 {selected_ticker} 統計數據")
+                meta_col_1, meta_col_2, meta_col_3 = st.columns([1.2, 1.2, 1])
+                meta_col_1.metric("日期", detail["date"])
+                meta_col_2.metric("Current price", _fmt_num(detail["current_price"]))
+                with meta_col_3:
+                    if st.button("查看單股詳情", key=f"view_stock_{selected_ticker}", use_container_width=True):
+                        set_current_page("stock", selected_ticker)
+                        st.rerun()
+
+                st.caption("TOR / Amp 的 7、14、28、57、106 為區間平均值；CP 依本次實作解讀為前一交易日收盤價。")
+
+                dev_df = pd.DataFrame([{"CPRD": detail["cp"], **detail["dev"]}])
+                tor_df = pd.DataFrame([detail["tor"]])
+                amp_df = pd.DataFrame([detail["amp"]])
+                sma_df = pd.DataFrame(
+                    [
+                        {
+                            "Current price": detail["current_price"],
+                            "CP": detail["cp"],
+                            **detail["sma"],
+                        }
+                    ]
+                )
+
+                st.markdown("**Dev 列表**")
+                st.dataframe(
+                    dev_df.style.format(
+                        {
+                            "CPRD": "{:.2f}",
+                            "Dev 0": "{:+.2f}%",
+                            "Dev 3": "{:+.2f}%",
+                            "Dev 7": "{:+.2f}%",
+                            "Dev 14": "{:+.2f}%",
+                            "Dev 28": "{:+.2f}%",
+                            "Dev 57": "{:+.2f}%",
+                            "Dev 106": "{:+.2f}%",
+                        },
+                        na_rep="-",
+                    ),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+                st.markdown("**TOR (Turn Over Ratio)**")
+                st.dataframe(
+                    tor_df.style.format({col: "{:.2f}%" for col in tor_df.columns}, na_rep="-"),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+                st.markdown("**Amplitude**")
+                st.dataframe(
+                    amp_df.style.format({col: "{:.2f}%" for col in amp_df.columns}, na_rep="-"),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+                st.markdown("**SMA**")
+                st.dataframe(
+                    sma_df.style.format({col: "{:.2f}" for col in sma_df.columns}, na_rep="-"),
+                    hide_index=True,
+                    use_container_width=True,
+                )
 
 elif not current_code:
     st.title("📈 單股分析")
