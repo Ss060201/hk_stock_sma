@@ -2684,9 +2684,11 @@ def set_current_page(page: str, code: Optional[str] = None):
     if page == "stock" and code is not None:
         st.session_state.stock_section = "header"
 
-def queue_scroll_to_anchor(anchor_id: str):
-    st.session_state.pending_scroll_target = anchor_id
-    st.session_state.pending_scroll_token = int(st.session_state.get("pending_scroll_token", 0)) + 1
+def queue_scroll_to_anchor(anchor_id: str, unique: bool = False):
+    scroll_token = int(st.session_state.get("pending_scroll_token", 0)) + 1
+    st.session_state.pending_scroll_token = scroll_token
+    st.session_state.pending_scroll_target = f"{anchor_id}--{scroll_token}" if unique else anchor_id
+    return st.session_state.pending_scroll_target
 
 def render_scroll_anchor(anchor_id: str):
     st.markdown(f'<span id="{anchor_id}" class="section-anchor"></span>', unsafe_allow_html=True)
@@ -3124,6 +3126,8 @@ if "show_filter" not in st.session_state:
     st.session_state.show_filter = False
 if "comparison_filters" not in st.session_state:
     st.session_state.comparison_filters = {}
+if "home_detail_anchor_id" not in st.session_state:
+    st.session_state.home_detail_anchor_id = "home-detail-panel"
 
 def handle_sidebar_search():
     search_input = st.session_state.get("search_bar", "")
@@ -3327,7 +3331,8 @@ elif current_page == "home":
                         type="primary" if ticker == st.session_state.home_selected_ticker else "secondary",
                     ):
                         st.session_state.home_selected_ticker = ticker
-                        queue_scroll_to_anchor("home-detail-panel")
+                        detail_anchor_id = queue_scroll_to_anchor("home-detail-panel", unique=True)
+                        st.session_state.home_detail_anchor_id = detail_anchor_id
                         st.rerun()
                 row_cols[1].markdown(_fmt_num(row.get("CPRD")))
                 row_cols[2].markdown(_fmt_pct(row.get("Dev 0")))
@@ -3342,8 +3347,9 @@ elif current_page == "home":
             selected_ticker = st.session_state.home_selected_ticker
             detail = detail_map.get(selected_ticker)
             if detail:
-                render_scroll_anchor("home-detail-panel")
-                render_pending_scroll_here("home-detail-panel")
+                detail_anchor_id = st.session_state.get("home_detail_anchor_id", "home-detail-panel")
+                render_scroll_anchor(detail_anchor_id)
+                render_pending_scroll_here(detail_anchor_id)
                 st.subheader(f"📌 {selected_ticker} 統計數據")
                 meta_col_1, meta_col_2, meta_col_3 = st.columns([1.2, 1.2, 1])
                 meta_col_1.metric("日期", detail["date"])
