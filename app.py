@@ -2700,20 +2700,19 @@ def sync_home_selected_ticker_from_query(available_codes: List[str]):
 
 def render_home_code_jump_button(ticker: str, selected: bool):
     class_name = "home-code-link active" if selected else "home-code-link"
+    link_html = (
+        f'<a class="{class_name}" '
+        f'href="javascript:void(0)" '
+        f'onclick=\'(function() {{'
+        f'const url = new URL(window.parent.location.href);'
+        f'url.searchParams.set("home_ticker", {json.dumps(ticker)});'
+        f'url.searchParams.set("home_nav_token", String(Date.now()));'
+        f'url.hash = "home-detail-panel";'
+        f'window.parent.location.assign(url.toString());'
+        f'}})()\'>{ticker}</a>'
+    )
     st.markdown(
-        f"""
-        <a
-            class="{class_name}"
-            href="javascript:void(0)"
-            onclick='(function() {{
-                const url = new URL(window.parent.location.href);
-                url.searchParams.set("home_ticker", {json.dumps(ticker)});
-                url.searchParams.set("home_nav_token", String(Date.now()));
-                url.hash = "home-detail-panel";
-                window.parent.location.assign(url.toString());
-            }})()'
-        >{ticker}</a>
-        """,
+        link_html,
         unsafe_allow_html=True,
     )
 
