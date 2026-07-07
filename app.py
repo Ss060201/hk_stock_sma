@@ -291,31 +291,91 @@ st.markdown("""
         top: -10px;
         visibility: hidden;
     }
-    .home-code-link {
-        width: 100%;
-        min-height: 44px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 12px 16px;
-        border: 1px solid #d0d7de;
-        border-radius: 6px;
-        background: #ffffff;
+    .home-summary-strip {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin: 8px 0 12px 0;
+    }
+    .home-summary-item {
+        background: #f8f9fa;
+        border: 1px solid #e9ecef;
+        border-radius: 10px;
+        padding: 10px 12px;
+    }
+    .home-summary-item .label {
+        font-size: 11px;
+        color: #6c757d;
+        margin-bottom: 4px;
+    }
+    .home-summary-item .value {
+        font-size: 16px;
+        font-weight: 700;
         color: #31333F;
-        font-size: 14px;
-        font-weight: 600;
-        text-decoration: none;
-        cursor: pointer;
+        line-height: 1.2;
+    }
+    .home-stock-card {
+        background: #ffffff;
+        border: 1px solid #e9ecef;
+        border-radius: 14px;
+        padding: 12px;
+        margin-bottom: 10px;
         box-shadow: var(--shadow-sm);
     }
-    .home-code-link:hover {
+    .home-stock-card.active {
         border-color: #86b7fe;
-        color: #0d6efd;
+        background: #f8fbff;
+        box-shadow: 0 0 0 1px rgba(13, 110, 253, 0.08);
     }
-    .home-code-link.active {
-        background: #0d6efd;
-        border-color: #0d6efd;
-        color: #ffffff;
+    .home-stock-card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+    }
+    .home-stock-card-code {
+        font-size: 18px;
+        font-weight: 800;
+        color: #31333F;
+        line-height: 1.1;
+    }
+    .home-stock-card-badge {
+        font-size: 11px;
+        font-weight: 700;
+        color: #0d6efd;
+        background: #e7f1ff;
+        border-radius: 999px;
+        padding: 3px 8px;
+        white-space: nowrap;
+    }
+    .home-stock-metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+    }
+    .home-stock-metric {
+        background: #f8f9fa;
+        border-radius: 10px;
+        padding: 9px 10px;
+    }
+    .home-stock-metric .label {
+        font-size: 11px;
+        color: #6c757d;
+        margin-bottom: 4px;
+    }
+    .home-stock-metric .value {
+        font-size: 14px;
+        font-weight: 700;
+        color: #31333F;
+        line-height: 1.2;
+    }
+    .home-stock-detail {
+        margin: 8px 0 16px 0;
+        padding: 12px;
+        border: 1px solid #dbeafe;
+        border-radius: 14px;
+        background: #ffffff;
     }
     div[data-baseweb="select"] > div {
         min-height: 44px;
@@ -347,7 +407,17 @@ st.markdown("""
         .compare-card-value { font-size: 12px; }
         .bottom-nav-note { font-size: 11px; margin: 2px 0 6px 0; }
         .stButton>button { font-size: 13px; min-height: 42px; padding: 10px 12px !important; }
-        .home-code-link { min-height: 42px; padding: 10px 12px; font-size: 13px; }
+        .home-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+        .home-summary-item { padding: 9px 10px; border-radius: 8px; }
+        .home-summary-item .value { font-size: 14px; }
+        .home-stock-card { padding: 10px; border-radius: 12px; margin-bottom: 8px; }
+        .home-stock-card-code { font-size: 16px; }
+        .home-stock-card-badge { font-size: 10px; padding: 2px 7px; }
+        .home-stock-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+        .home-stock-metric { padding: 8px 9px; border-radius: 8px; }
+        .home-stock-metric .label { font-size: 10px; }
+        .home-stock-metric .value { font-size: 13px; }
+        .home-stock-detail { padding: 10px; border-radius: 12px; }
     }
 
     @media (min-width: 1024px) {
@@ -3126,9 +3196,6 @@ if "show_filter" not in st.session_state:
     st.session_state.show_filter = False
 if "comparison_filters" not in st.session_state:
     st.session_state.comparison_filters = {}
-if "home_detail_anchor_id" not in st.session_state:
-    st.session_state.home_detail_anchor_id = "home-detail-panel"
-
 def handle_sidebar_search():
     search_input = st.session_state.get("search_bar", "")
     if not search_input:
@@ -3313,106 +3380,127 @@ elif current_page == "home":
             def _fmt_pct(value):
                 return "-" if pd.isna(value) else f"{float(value):+.2f}%"
 
-            st.caption("打開 App 即進入收藏股列表；點擊 Code 會在下方顯示 TOR、Amp、SMA 統計。")
-            header_cols = st.columns([1.15, 1, 1, 1, 1, 1, 1, 1, 1])
-            headers = ["Code", "CPRD", "Dev 0", "Dev 3", "Dev 7", "Dev 14", "Dev 28", "Dev 57", "Dev 106"]
-            for col, header in zip(header_cols, headers):
-                col.markdown(f"**{header}**")
+            selected_ticker = st.session_state.home_selected_ticker
+            selected_detail = detail_map.get(selected_ticker)
+
+            if selected_detail:
+                summary_html = "".join(
+                    [
+                        (
+                            '<div class="home-summary-item">'
+                            f'<div class="label">{label}</div>'
+                            f'<div class="value">{value}</div>'
+                            '</div>'
+                        )
+                        for label, value in [
+                            ("目前選中", selected_ticker),
+                            ("日期", selected_detail["date"]),
+                            ("Current price", _fmt_num(selected_detail["current_price"])),
+                            ("CPRD", _fmt_num(selected_detail["cp"])),
+                        ]
+                    ]
+                )
+                st.markdown(f'<div class="home-summary-strip">{summary_html}</div>', unsafe_allow_html=True)
+
+            st.caption("手機模式已優先優化：點擊卡片即可在卡片下方展開詳細統計，不再依賴跳轉到頁面底部。")
 
             for row in sorted_rows:
                 ticker = row["Code"]
-                render_scroll_anchor(get_home_stock_anchor_id(ticker))
-                row_cols = st.columns([1.15, 1, 1, 1, 1, 1, 1, 1, 1])
-                with row_cols[0]:
-                    if st.button(
-                        ticker,
-                        key=f"home_code_{ticker}",
-                        use_container_width=True,
-                        type="primary" if ticker == st.session_state.home_selected_ticker else "secondary",
-                    ):
-                        st.session_state.home_selected_ticker = ticker
-                        detail_anchor_id = queue_scroll_to_anchor("home-detail-panel", unique=True)
-                        st.session_state.home_detail_anchor_id = detail_anchor_id
-                        st.rerun()
-                row_cols[1].markdown(_fmt_num(row.get("CPRD")))
-                row_cols[2].markdown(_fmt_pct(row.get("Dev 0")))
-                row_cols[3].markdown(_fmt_pct(row.get("Dev 3")))
-                row_cols[4].markdown(_fmt_pct(row.get("Dev 7")))
-                row_cols[5].markdown(_fmt_pct(row.get("Dev 14")))
-                row_cols[6].markdown(_fmt_pct(row.get("Dev 28")))
-                row_cols[7].markdown(_fmt_pct(row.get("Dev 57")))
-                row_cols[8].markdown(_fmt_pct(row.get("Dev 106")))
-                st.divider()
-
-            selected_ticker = st.session_state.home_selected_ticker
-            detail = detail_map.get(selected_ticker)
-            if detail:
-                detail_anchor_id = st.session_state.get("home_detail_anchor_id", "home-detail-panel")
-                render_scroll_anchor(detail_anchor_id)
-                render_pending_scroll_here(detail_anchor_id)
-                st.subheader(f"📌 {selected_ticker} 統計數據")
-                meta_col_1, meta_col_2, meta_col_3 = st.columns([1.2, 1.2, 1])
-                meta_col_1.metric("日期", detail["date"])
-                meta_col_2.metric("Current price", _fmt_num(detail["current_price"]))
-                with meta_col_3:
-                    if st.button("查看單股詳情", key=f"view_stock_{selected_ticker}", use_container_width=True):
-                        set_current_page("stock", selected_ticker)
-                        st.rerun()
-
-                st.caption("TOR / Amp 的 7、14、28、57、106 為區間平均值；CP 依本次實作解讀為前一交易日收盤價。")
-
-                dev_df = pd.DataFrame([{"CPRD": detail["cp"], **detail["dev"]}])
-                tor_df = pd.DataFrame([detail["tor"]])
-                amp_df = pd.DataFrame([detail["amp"]])
-                sma_df = pd.DataFrame(
-                    [
-                        {
-                            "Current price": detail["current_price"],
-                            "CP": detail["cp"],
-                            **detail["sma"],
-                        }
-                    ]
+                is_selected = ticker == st.session_state.home_selected_ticker
+                badge_text = "目前查看" if is_selected else f"按 {selected_sort} 排序"
+                card_html = (
+                    f'<div class="home-stock-card {"active" if is_selected else ""}">'
+                    '<div class="home-stock-card-head">'
+                    f'<div class="home-stock-card-code">{ticker}</div>'
+                    f'<div class="home-stock-card-badge">{badge_text}</div>'
+                    '</div>'
+                    '<div class="home-stock-metrics">'
+                    f'<div class="home-stock-metric"><div class="label">CPRD</div><div class="value">{_fmt_num(row.get("CPRD"))}</div></div>'
+                    f'<div class="home-stock-metric"><div class="label">Dev 3</div><div class="value">{_fmt_pct(row.get("Dev 3"))}</div></div>'
+                    f'<div class="home-stock-metric"><div class="label">Dev 7</div><div class="value">{_fmt_pct(row.get("Dev 7"))}</div></div>'
+                    f'<div class="home-stock-metric"><div class="label">Dev 14</div><div class="value">{_fmt_pct(row.get("Dev 14"))}</div></div>'
+                    f'<div class="home-stock-metric"><div class="label">Dev 28</div><div class="value">{_fmt_pct(row.get("Dev 28"))}</div></div>'
+                    f'<div class="home-stock-metric"><div class="label">Dev 57</div><div class="value">{_fmt_pct(row.get("Dev 57"))}</div></div>'
+                    f'<div class="home-stock-metric"><div class="label">Dev 106</div><div class="value">{_fmt_pct(row.get("Dev 106"))}</div></div>'
+                    f'<div class="home-stock-metric"><div class="label">排序依據</div><div class="value">{_fmt_pct(row.get(selected_sort)) if "Dev" in selected_sort else _fmt_num(row.get(selected_sort))}</div></div>'
+                    '</div>'
+                    '</div>'
                 )
-
-                st.markdown("**Dev 列表**")
-                st.dataframe(
-                    dev_df.style.format(
-                        {
-                            "CPRD": "{:.2f}",
-                            "Dev 0": "{:+.2f}%",
-                            "Dev 3": "{:+.2f}%",
-                            "Dev 7": "{:+.2f}%",
-                            "Dev 14": "{:+.2f}%",
-                            "Dev 28": "{:+.2f}%",
-                            "Dev 57": "{:+.2f}%",
-                            "Dev 106": "{:+.2f}%",
-                        },
-                        na_rep="-",
-                    ),
-                    hide_index=True,
+                st.markdown(card_html, unsafe_allow_html=True)
+                if st.button(
+                    "收起詳情" if is_selected else "查看詳情",
+                    key=f"home_card_{ticker}",
                     use_container_width=True,
-                )
+                    type="primary" if is_selected else "secondary",
+                ):
+                    st.session_state.home_selected_ticker = ticker
+                    st.rerun()
 
-                st.markdown("**TOR (Turn Over Ratio)**")
-                st.dataframe(
-                    tor_df.style.format({col: "{:.2f}%" for col in tor_df.columns}, na_rep="-"),
-                    hide_index=True,
-                    use_container_width=True,
-                )
+                if is_selected:
+                    detail = detail_map.get(ticker)
+                    if detail:
+                        dev_df = pd.DataFrame([{"CPRD": detail["cp"], **detail["dev"]}])
+                        tor_df = pd.DataFrame([detail["tor"]])
+                        amp_df = pd.DataFrame([detail["amp"]])
+                        sma_df = pd.DataFrame(
+                            [
+                                {
+                                    "Current price": detail["current_price"],
+                                    "CP": detail["cp"],
+                                    **detail["sma"],
+                                }
+                            ]
+                        )
 
-                st.markdown("**Amplitude**")
-                st.dataframe(
-                    amp_df.style.format({col: "{:.2f}%" for col in amp_df.columns}, na_rep="-"),
-                    hide_index=True,
-                    use_container_width=True,
-                )
+                        st.markdown('<div class="home-stock-detail">', unsafe_allow_html=True)
+                        st.subheader(f"📌 {ticker} 統計數據")
+                        meta_col_1, meta_col_2, meta_col_3 = st.columns([1.1, 1.1, 1])
+                        meta_col_1.metric("日期", detail["date"])
+                        meta_col_2.metric("Current price", _fmt_num(detail["current_price"]))
+                        with meta_col_3:
+                            if st.button("查看單股詳情", key=f"view_stock_{ticker}", use_container_width=True):
+                                set_current_page("stock", ticker)
+                                st.rerun()
 
-                st.markdown("**SMA**")
-                st.dataframe(
-                    sma_df.style.format({col: "{:.2f}" for col in sma_df.columns}, na_rep="-"),
-                    hide_index=True,
-                    use_container_width=True,
-                )
+                        st.caption("TOR / Amp 的 7、14、28、57、106 為區間平均值；CP 依本次實作解讀為前一交易日收盤價。")
+
+                        with st.expander("Dev 列表", expanded=True):
+                            st.dataframe(
+                                dev_df.style.format(
+                                    {
+                                        "CPRD": "{:.2f}",
+                                        "Dev 0": "{:+.2f}%",
+                                        "Dev 3": "{:+.2f}%",
+                                        "Dev 7": "{:+.2f}%",
+                                        "Dev 14": "{:+.2f}%",
+                                        "Dev 28": "{:+.2f}%",
+                                        "Dev 57": "{:+.2f}%",
+                                        "Dev 106": "{:+.2f}%",
+                                    },
+                                    na_rep="-",
+                                ),
+                                hide_index=True,
+                                use_container_width=True,
+                            )
+                        with st.expander("TOR", expanded=False):
+                            st.dataframe(
+                                tor_df.style.format({col: "{:.2f}%" for col in tor_df.columns}, na_rep="-"),
+                                hide_index=True,
+                                use_container_width=True,
+                            )
+                        with st.expander("Amplitude", expanded=False):
+                            st.dataframe(
+                                amp_df.style.format({col: "{:.2f}%" for col in amp_df.columns}, na_rep="-"),
+                                hide_index=True,
+                                use_container_width=True,
+                            )
+                        with st.expander("SMA", expanded=False):
+                            st.dataframe(
+                                sma_df.style.format({col: "{:.2f}" for col in sma_df.columns}, na_rep="-"),
+                                hide_index=True,
+                                use_container_width=True,
+                            )
+                        st.markdown("</div>", unsafe_allow_html=True)
 
 elif not current_code:
     st.title("📈 單股分析")
