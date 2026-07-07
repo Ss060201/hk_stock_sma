@@ -2700,20 +2700,37 @@ def sync_home_selected_ticker_from_query(available_codes: List[str]):
 
 def render_home_code_jump_button(ticker: str, selected: bool):
     class_name = "home-code-link active" if selected else "home-code-link"
-    link_html = (
-        f'<a class="{class_name}" '
-        f'href="javascript:void(0)" '
-        f'onclick=\'(function() {{'
-        f'const url = new URL(window.parent.location.href);'
-        f'url.searchParams.set("home_ticker", {json.dumps(ticker)});'
-        f'url.searchParams.set("home_nav_token", String(Date.now()));'
-        f'url.hash = "home-detail-panel";'
-        f'window.parent.location.assign(url.toString());'
-        f'}})()\'>{ticker}</a>'
+    button_html = (
+        f'<button type="button" class="{class_name}" '
+        f'data-home-ticker="{ticker}">{ticker}</button>'
     )
     st.markdown(
-        link_html,
+        button_html,
         unsafe_allow_html=True,
+    )
+
+def render_home_code_click_bridge():
+    components.html(
+        """
+        <script>
+        const doc = window.parent.document;
+        if (!doc.__homeCodeNavBound) {
+            doc.addEventListener("click", (event) => {
+                const btn = event.target.closest("button[data-home-ticker]");
+                if (!btn) return;
+                const ticker = btn.getAttribute("data-home-ticker");
+                if (!ticker) return;
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set("home_ticker", ticker);
+                url.searchParams.set("home_nav_token", String(Date.now()));
+                url.hash = "home-detail-panel";
+                window.parent.location.assign(url.toString());
+            });
+            doc.__homeCodeNavBound = true;
+        }
+        </script>
+        """,
+        height=0,
     )
 
 def queue_scroll_to_anchor(anchor_id: str):
@@ -3343,6 +3360,7 @@ elif current_page == "home":
                 return "-" if pd.isna(value) else f"{float(value):+.2f}%"
 
             st.caption("打開 App 即進入收藏股列表；點擊 Code 會在下方顯示 TOR、Amp、SMA 統計。")
+            render_home_code_click_bridge()
             header_cols = st.columns([1.15, 1, 1, 1, 1, 1, 1, 1, 1])
             headers = ["Code", "CPRD", "Dev 0", "Dev 3", "Dev 7", "Dev 14", "Dev 28", "Dev 57", "Dev 106"]
             for col, header in zip(header_cols, headers):
