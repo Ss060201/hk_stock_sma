@@ -323,9 +323,9 @@ st.markdown("""
     .home-stock-shell {
         background: #ffffff;
         border: 1px solid #e9ecef;
-        border-radius: 14px;
-        padding: 12px;
-        margin-bottom: 12px;
+        border-radius: 12px;
+        padding: 8px 10px;
+        margin-bottom: 8px;
         box-shadow: var(--shadow-sm);
     }
     .home-stock-shell.active {
@@ -356,24 +356,24 @@ st.markdown("""
     }
     .home-stock-metrics {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 8px;
-        margin-top: 8px;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 6px;
+        margin-top: 6px;
     }
     .home-stock-metric {
         background: #a3d977;
         border: 1px solid #7cb342;
-        border-radius: 10px;
-        padding: 8px 10px;
+        border-radius: 8px;
+        padding: 6px 7px;
     }
     .home-stock-metric .label {
-        font-size: 11px;
+        font-size: 10px;
         color: #244313;
-        margin-bottom: 4px;
+        margin-bottom: 2px;
         line-height: 1.15;
     }
     .home-stock-metric .value {
-        font-size: 14px;
+        font-size: 12px;
         font-weight: 700;
         color: #0f172a;
         line-height: 1.2;
@@ -424,18 +424,18 @@ st.markdown("""
         .compare-card-label { font-size: 10px; }
         .compare-card-value { font-size: 12px; }
         .bottom-nav-note { font-size: 11px; margin: 2px 0 6px 0; }
-        .stButton>button { font-size: 13px; min-height: 42px; padding: 10px 12px !important; }
+        .stButton>button { font-size: 12px; min-height: 34px; padding: 7px 10px !important; }
         .home-sort-hint { font-size: 11px; margin-bottom: 6px; }
         .home-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
         .home-summary-item { padding: 9px 10px; border-radius: 8px; }
         .home-summary-item .value { font-size: 14px; }
-        .home-stock-shell { padding: 10px; border-radius: 12px; margin-bottom: 10px; }
-        .home-stock-title { font-size: 16px; }
+        .home-stock-shell { padding: 7px 8px; border-radius: 10px; margin-bottom: 6px; }
+        .home-stock-title { font-size: 15px; }
         .home-stock-badge { font-size: 10px; padding: 2px 7px; }
-        .home-stock-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-        .home-stock-metric { padding: 8px 9px; border-radius: 8px; }
-        .home-stock-metric .label { font-size: 10px; }
-        .home-stock-metric .value { font-size: 13px; }
+        .home-stock-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+        .home-stock-metric { padding: 5px 6px; border-radius: 7px; }
+        .home-stock-metric .label { font-size: 9px; }
+        .home-stock-metric .value { font-size: 11px; }
         .home-detail-panel { padding: 10px; border-radius: 12px; }
         .home-avg-note { font-size: 10px; }
     }
@@ -3342,6 +3342,158 @@ elif current_page == "home":
                     ]
                 )
                 st.markdown(f'<div class="home-summary-strip">{summary_html}</div>', unsafe_allow_html=True)
+                detail_header_html = (
+                    '<div class="home-detail-panel">'
+                    f'<div class="home-stock-head"><div class="home-stock-title">📌 {selected_ticker} 統計數據</div>'
+                    f'<div class="home-stock-badge">{selected_detail["date"]}</div></div>'
+                    f'<div class="home-summary-strip">'
+                    f'<div class="home-summary-item"><div class="label">Current price</div><div class="value">{_fmt_num(selected_detail["current_price"])}</div></div>'
+                    f'<div class="home-summary-item"><div class="label">CP</div><div class="value">{_fmt_num(selected_detail["cp"])}</div></div>'
+                    f'<div class="home-summary-item"><div class="label">Dev 57</div><div class="value">{_fmt_pct(selected_detail["dev"].get("Dev 57"))}</div></div>'
+                    f'<div class="home-summary-item"><div class="label">Dev 106</div><div class="value">{_fmt_pct(selected_detail["dev"].get("Dev 106"))}</div></div>'
+                    f'</div>'
+                    '<span class="home-avg-note">TOR / Amp 的 7、14、28、57、106 為區間平均值</span>'
+                    '</div>'
+                )
+                st.markdown(detail_header_html, unsafe_allow_html=True)
+
+                dev_core_df = pd.DataFrame(
+                    [
+                        {
+                            "Code": selected_ticker,
+                            "CPRD": selected_detail["cp"],
+                            "Dev 0": selected_detail["dev"].get("Dev 0"),
+                            "Dev 3": selected_detail["dev"].get("Dev 3"),
+                            "Dev 7": selected_detail["dev"].get("Dev 7"),
+                            "Dev 14": selected_detail["dev"].get("Dev 14"),
+                            "Dev 28": selected_detail["dev"].get("Dev 28"),
+                        }
+                    ]
+                )
+                dev_more_df = pd.DataFrame(
+                    [
+                        {
+                            "Dev 57": selected_detail["dev"].get("Dev 57"),
+                            "Dev 106": selected_detail["dev"].get("Dev 106"),
+                        }
+                    ]
+                )
+                tor_df = pd.DataFrame(
+                    [
+                        {
+                            "Date": selected_detail["date"],
+                            "TOR 0": selected_detail["tor"].get("TOR 0"),
+                            "TOR 7": selected_detail["tor"].get("TOR 7"),
+                            "TOR 14": selected_detail["tor"].get("TOR 14"),
+                            "TOR 28": selected_detail["tor"].get("TOR 28"),
+                            "TOR 57": selected_detail["tor"].get("TOR 57"),
+                            "TOR 106": selected_detail["tor"].get("TOR 106"),
+                        }
+                    ]
+                )
+                amp_df = pd.DataFrame(
+                    [
+                        {
+                            "Date": selected_detail["date"],
+                            "Amp 0": selected_detail["amp"].get("Amp 0"),
+                            "Amp 7": selected_detail["amp"].get("Amp 7"),
+                            "Amp 14": selected_detail["amp"].get("Amp 14"),
+                            "Amp 28": selected_detail["amp"].get("Amp 28"),
+                            "Amp 57": selected_detail["amp"].get("Amp 57"),
+                            "Amp 106": selected_detail["amp"].get("Amp 106"),
+                        }
+                    ]
+                )
+                sma_df = pd.DataFrame(
+                    [
+                        {
+                            "Date": selected_detail["date"],
+                            "CP": selected_detail["cp"],
+                            "SMA 7": selected_detail["sma"].get("SMA 7"),
+                            "SMA 14": selected_detail["sma"].get("SMA 14"),
+                            "SMA 28": selected_detail["sma"].get("SMA 28"),
+                            "SMA 57": selected_detail["sma"].get("SMA 57"),
+                        }
+                    ]
+                )
+
+                with st.expander("Dev 列表", expanded=False):
+                    st.dataframe(
+                        _green_style(
+                            dev_core_df,
+                            {
+                                "CPRD": "{:.2f}",
+                                "Dev 0": "{:+.2f}%",
+                                "Dev 3": "{:+.2f}%",
+                                "Dev 7": "{:+.2f}%",
+                                "Dev 14": "{:+.2f}%",
+                                "Dev 28": "{:+.2f}%",
+                            },
+                        ),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+                    st.dataframe(
+                        _green_style(
+                            dev_more_df,
+                            {
+                                "Dev 57": "{:+.2f}%",
+                                "Dev 106": "{:+.2f}%",
+                            },
+                        ),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+
+                with st.expander("TOR", expanded=False):
+                    st.dataframe(
+                        _green_style(
+                            tor_df,
+                            {
+                                "TOR 0": "{:.2f}%",
+                                "TOR 7": "{:.2f}%",
+                                "TOR 14": "{:.2f}%",
+                                "TOR 28": "{:.2f}%",
+                                "TOR 57": "{:.2f}%",
+                                "TOR 106": "{:.2f}%",
+                            },
+                        ),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+
+                with st.expander("Amplitude", expanded=False):
+                    st.dataframe(
+                        _green_style(
+                            amp_df,
+                            {
+                                "Amp 0": "{:.2f}%",
+                                "Amp 7": "{:.2f}%",
+                                "Amp 14": "{:.2f}%",
+                                "Amp 28": "{:.2f}%",
+                                "Amp 57": "{:.2f}%",
+                                "Amp 106": "{:.2f}%",
+                            },
+                        ),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+
+                with st.expander("SMA", expanded=False):
+                    st.dataframe(
+                        _green_style(
+                            sma_df,
+                            {
+                                "CP": "{:.2f}",
+                                "SMA 7": "{:.2f}",
+                                "SMA 14": "{:.2f}",
+                                "SMA 28": "{:.2f}",
+                                "SMA 57": "{:.2f}",
+                            },
+                        ),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
 
             st.markdown(
                 f'<div class="home-sort-hint">首頁預設只顯示核心欄位 `Code / CPRD / Dev0 / Dev3 / Dev7 / Dev14 / Dev28`，'
@@ -3372,10 +3524,10 @@ elif current_page == "home":
                 )
                 st.markdown(card_html, unsafe_allow_html=True)
 
-                action_cols = st.columns([1.2, 1])
+                action_cols = st.columns([1.4, 1])
                 with action_cols[0]:
                     if st.button(
-                        ticker,
+                        "正在查看" if is_selected else ticker,
                         key=f"home_pick_{ticker}",
                         use_container_width=True,
                         type="primary" if is_selected else "secondary",
@@ -3383,166 +3535,10 @@ elif current_page == "home":
                         st.session_state.home_selected_ticker = ticker
                         st.rerun()
                 with action_cols[1]:
-                    if is_selected:
-                        if st.button("查看單股詳情", key=f"view_stock_{ticker}", use_container_width=True):
+                    if st.button("單股", key=f"view_stock_{ticker}", use_container_width=True, type="secondary"):
+                        if is_selected:
                             set_current_page("stock", ticker)
                             st.rerun()
-
-                if is_selected:
-                    detail = detail_map.get(ticker)
-                    if detail:
-                        detail_header_html = (
-                            '<div class="home-detail-panel">'
-                            f'<div class="home-stock-head"><div class="home-stock-title">📌 {ticker} 統計數據</div>'
-                            f'<div class="home-stock-badge">{detail["date"]}</div></div>'
-                            f'<div class="home-summary-strip">'
-                            f'<div class="home-summary-item"><div class="label">Current price</div><div class="value">{_fmt_num(detail["current_price"])}</div></div>'
-                            f'<div class="home-summary-item"><div class="label">CP</div><div class="value">{_fmt_num(detail["cp"])}</div></div>'
-                            f'<div class="home-summary-item"><div class="label">Dev 57</div><div class="value">{_fmt_pct(detail["dev"].get("Dev 57"))}</div></div>'
-                            f'<div class="home-summary-item"><div class="label">Dev 106</div><div class="value">{_fmt_pct(detail["dev"].get("Dev 106"))}</div></div>'
-                            f'</div>'
-                            '<span class="home-avg-note">TOR / Amp 的 7、14、28、57、106 為區間平均值</span>'
-                            '</div>'
-                        )
-                        st.markdown(detail_header_html, unsafe_allow_html=True)
-
-                        dev_core_df = pd.DataFrame(
-                            [
-                                {
-                                    "Code": ticker,
-                                    "CPRD": detail["cp"],
-                                    "Dev 0": detail["dev"].get("Dev 0"),
-                                    "Dev 3": detail["dev"].get("Dev 3"),
-                                    "Dev 7": detail["dev"].get("Dev 7"),
-                                    "Dev 14": detail["dev"].get("Dev 14"),
-                                    "Dev 28": detail["dev"].get("Dev 28"),
-                                }
-                            ]
-                        )
-                        dev_more_df = pd.DataFrame(
-                            [
-                                {
-                                    "Dev 57": detail["dev"].get("Dev 57"),
-                                    "Dev 106": detail["dev"].get("Dev 106"),
-                                }
-                            ]
-                        )
-                        tor_df = pd.DataFrame(
-                            [
-                                {
-                                    "Date": detail["date"],
-                                    "TOR 0": detail["tor"].get("TOR 0"),
-                                    "TOR 7": detail["tor"].get("TOR 7"),
-                                    "TOR 14": detail["tor"].get("TOR 14"),
-                                    "TOR 28": detail["tor"].get("TOR 28"),
-                                    "TOR 57": detail["tor"].get("TOR 57"),
-                                    "TOR 106": detail["tor"].get("TOR 106"),
-                                }
-                            ]
-                        )
-                        amp_df = pd.DataFrame(
-                            [
-                                {
-                                    "Date": detail["date"],
-                                    "Amp 0": detail["amp"].get("Amp 0"),
-                                    "Amp 7": detail["amp"].get("Amp 7"),
-                                    "Amp 14": detail["amp"].get("Amp 14"),
-                                    "Amp 28": detail["amp"].get("Amp 28"),
-                                    "Amp 57": detail["amp"].get("Amp 57"),
-                                    "Amp 106": detail["amp"].get("Amp 106"),
-                                }
-                            ]
-                        )
-                        sma_df = pd.DataFrame(
-                            [
-                                {
-                                    "Date": detail["date"],
-                                    "CP": detail["cp"],
-                                    "SMA 7": detail["sma"].get("SMA 7"),
-                                    "SMA 14": detail["sma"].get("SMA 14"),
-                                    "SMA 28": detail["sma"].get("SMA 28"),
-                                    "SMA 57": detail["sma"].get("SMA 57"),
-                                }
-                            ]
-                        )
-
-                        with st.expander("Dev 列表", expanded=True):
-                            st.dataframe(
-                                _green_style(
-                                    dev_core_df,
-                                    {
-                                        "CPRD": "{:.2f}",
-                                        "Dev 0": "{:+.2f}%",
-                                        "Dev 3": "{:+.2f}%",
-                                        "Dev 7": "{:+.2f}%",
-                                        "Dev 14": "{:+.2f}%",
-                                        "Dev 28": "{:+.2f}%",
-                                    },
-                                ),
-                                hide_index=True,
-                                use_container_width=True,
-                            )
-                            st.dataframe(
-                                _green_style(
-                                    dev_more_df,
-                                    {
-                                        "Dev 57": "{:+.2f}%",
-                                        "Dev 106": "{:+.2f}%",
-                                    },
-                                ),
-                                hide_index=True,
-                                use_container_width=True,
-                            )
-
-                        with st.expander("TOR", expanded=True):
-                            st.dataframe(
-                                _green_style(
-                                    tor_df,
-                                    {
-                                        "TOR 0": "{:.2f}%",
-                                        "TOR 7": "{:.2f}%",
-                                        "TOR 14": "{:.2f}%",
-                                        "TOR 28": "{:.2f}%",
-                                        "TOR 57": "{:.2f}%",
-                                        "TOR 106": "{:.2f}%",
-                                    },
-                                ),
-                                hide_index=True,
-                                use_container_width=True,
-                            )
-
-                        with st.expander("Amplitude", expanded=False):
-                            st.dataframe(
-                                _green_style(
-                                    amp_df,
-                                    {
-                                        "Amp 0": "{:.2f}%",
-                                        "Amp 7": "{:.2f}%",
-                                        "Amp 14": "{:.2f}%",
-                                        "Amp 28": "{:.2f}%",
-                                        "Amp 57": "{:.2f}%",
-                                        "Amp 106": "{:.2f}%",
-                                    },
-                                ),
-                                hide_index=True,
-                                use_container_width=True,
-                            )
-
-                        with st.expander("SMA", expanded=False):
-                            st.dataframe(
-                                _green_style(
-                                    sma_df,
-                                    {
-                                        "CP": "{:.2f}",
-                                        "SMA 7": "{:.2f}",
-                                        "SMA 14": "{:.2f}",
-                                        "SMA 28": "{:.2f}",
-                                        "SMA 57": "{:.2f}",
-                                    },
-                                ),
-                                hide_index=True,
-                                use_container_width=True,
-                            )
 
                 st.write("")
 
