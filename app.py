@@ -3757,9 +3757,21 @@ else:
             st.write("---")
             tab_data, tab_backtest = st.tabs(["📋 數據列表", "🧪 歷史回測"])
             with tab_data:
-                show_cols = [c for c in ["Open", "High", "Low", "Close", "Volume", "Turnover_Rate"] if c in df.columns]
+                display_df = df.copy().tail(60).reset_index()
+                date_col = display_df.columns[0]
+                display_df["Date"] = pd.to_datetime(display_df[date_col]).dt.strftime("%Y-%m-%d")
+                if date_col != "Date":
+                    display_df = display_df.drop(columns=[date_col])
+
+                rename_map = {
+                    "Close": "Close price",
+                    "Turnover_Rate": "TUR",
+                    "AMP": "Amplitude",
+                }
+                show_cols = [c for c in ["Date", "Close", "Turnover_Rate", "AMP"] if c in display_df.columns]
                 if show_cols:
-                    st.dataframe(df[show_cols].tail(60), use_container_width=True)
+                    display_df = display_df[show_cols].rename(columns=rename_map)
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
                 else:
                     st.info("無可顯示欄位。")
             with tab_backtest:
