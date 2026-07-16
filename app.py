@@ -292,33 +292,33 @@ st.markdown("""
         visibility: hidden;
     }
     .home-sort-hint {
-        font-size: 12px;
+        font-size: 11px;
         color: #6c757d;
-        margin: 2px 0 8px 0;
+        margin: 1px 0 4px 0;
     }
     .home-summary-strip {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 8px;
-        margin: 10px 0 14px 0;
+        gap: 4px;
+        margin: 4px 0 8px 0;
     }
     .home-summary-item {
         background: #f8f9fa;
         border: 1px solid #e9ecef;
-        border-radius: 10px;
-        padding: 10px 12px;
+        border-radius: 8px;
+        padding: 6px 8px;
     }
     .home-summary-item .label {
-        font-size: 11px;
+        font-size: 10px;
         color: #6c757d;
-        margin-bottom: 4px;
+        margin-bottom: 2px;
         line-height: 1.2;
     }
     .home-summary-item .value {
-        font-size: 16px;
+        font-size: 13px;
         font-weight: 700;
         color: #31333F;
-        line-height: 1.25;
+        line-height: 1.15;
     }
     .home-stock-shell {
         background: #ffffff;
@@ -337,10 +337,10 @@ st.markdown("""
         align-items: center;
         justify-content: space-between;
         gap: 8px;
-        margin-bottom: 10px;
+        margin-bottom: 6px;
     }
     .home-stock-title {
-        font-size: 18px;
+        font-size: 16px;
         font-weight: 800;
         color: #31333F;
         line-height: 1.1;
@@ -351,7 +351,7 @@ st.markdown("""
         color: #166534;
         background: #dcfce7;
         border-radius: 999px;
-        padding: 3px 8px;
+        padding: 2px 6px;
         white-space: nowrap;
     }
     .home-stock-metrics {
@@ -379,10 +379,10 @@ st.markdown("""
         line-height: 1.2;
     }
     .home-detail-panel {
-        margin: 10px 0 18px 0;
-        padding: 12px;
+        margin: 6px 0 10px 0;
+        padding: 8px;
         border: 1px solid #dbeafe;
-        border-radius: 14px;
+        border-radius: 10px;
         background: #ffffff;
     }
     .home-avg-note {
@@ -393,7 +393,7 @@ st.markdown("""
         color: #7c5700;
         font-size: 11px;
         font-weight: 700;
-        margin-top: 4px;
+        margin-top: 2px;
     }
     div[data-baseweb="select"] > div {
         min-height: 44px;
@@ -424,20 +424,22 @@ st.markdown("""
         .compare-card-label { font-size: 10px; }
         .compare-card-value { font-size: 12px; }
         .bottom-nav-note { font-size: 11px; margin: 2px 0 6px 0; }
-        .stButton>button { font-size: 12px; min-height: 34px; padding: 7px 10px !important; }
-        .home-sort-hint { font-size: 11px; margin-bottom: 6px; }
-        .home-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-        .home-summary-item { padding: 9px 10px; border-radius: 8px; }
-        .home-summary-item .value { font-size: 14px; }
-        .home-stock-shell { padding: 7px 8px; border-radius: 10px; margin-bottom: 6px; }
-        .home-stock-title { font-size: 15px; }
-        .home-stock-badge { font-size: 10px; padding: 2px 7px; }
+        .stButton>button { font-size: 11px; min-height: 30px; padding: 5px 8px !important; }
+        .home-sort-hint { font-size: 10px; margin-bottom: 4px; }
+        .home-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin: 2px 0 6px 0; }
+        .home-summary-item { padding: 6px 7px; border-radius: 7px; }
+        .home-summary-item .label { font-size: 9px; }
+        .home-summary-item .value { font-size: 12px; }
+        .home-stock-shell { padding: 6px 7px; border-radius: 9px; margin-bottom: 5px; }
+        .home-stock-head { margin-bottom: 4px; }
+        .home-stock-title { font-size: 14px; }
+        .home-stock-badge { font-size: 9px; padding: 1px 6px; }
         .home-stock-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
         .home-stock-metric { padding: 5px 6px; border-radius: 7px; }
         .home-stock-metric .label { font-size: 9px; }
         .home-stock-metric .value { font-size: 11px; }
-        .home-detail-panel { padding: 10px; border-radius: 12px; }
-        .home-avg-note { font-size: 10px; }
+        .home-detail-panel { padding: 7px; border-radius: 9px; margin: 4px 0 8px 0; }
+        .home-avg-note { font-size: 9px; padding: 1px 6px; }
     }
 
     @media (min-width: 1024px) {
@@ -3417,7 +3419,7 @@ elif current_page == "home":
                     ]
                 )
 
-                with st.expander("Dev 列表", expanded=False):
+                with st.expander("Dev", expanded=False):
                     st.dataframe(
                         _green_style(
                             dev_core_df,
@@ -3462,7 +3464,7 @@ elif current_page == "home":
                         use_container_width=True,
                     )
 
-                with st.expander("Amplitude", expanded=False):
+                with st.expander("Amp", expanded=False):
                     st.dataframe(
                         _green_style(
                             amp_df,
@@ -3496,8 +3498,7 @@ elif current_page == "home":
                     )
 
             st.markdown(
-                f'<div class="home-sort-hint">首頁預設只顯示核心欄位 `Code / CPRD / Dev0 / Dev3 / Dev7 / Dev14 / Dev28`，'
-                f'目前按 `{selected_sort}` {"由高到低" if st.session_state.home_sort_desc else "由低到高"} 排序；`Dev57 / Dev106` 已收進詳細區。</div>',
+                f'<div class="home-sort-hint">核心欄位：Code / CPRD / Dev0 / 3 / 7 / 14 / 28，按 `{selected_sort}` 排序。</div>',
                 unsafe_allow_html=True,
             )
 
@@ -3527,7 +3528,7 @@ elif current_page == "home":
                 action_cols = st.columns([1.4, 1])
                 with action_cols[0]:
                     if st.button(
-                        "正在查看" if is_selected else ticker,
+                        "查看中" if is_selected else ticker,
                         key=f"home_pick_{ticker}",
                         use_container_width=True,
                         type="primary" if is_selected else "secondary",
@@ -3535,7 +3536,7 @@ elif current_page == "home":
                         st.session_state.home_selected_ticker = ticker
                         st.rerun()
                 with action_cols[1]:
-                    if st.button("單股", key=f"view_stock_{ticker}", use_container_width=True, type="secondary"):
+                    if st.button("詳情", key=f"view_stock_{ticker}", use_container_width=True, type="secondary"):
                         if is_selected:
                             set_current_page("stock", ticker)
                             st.rerun()
