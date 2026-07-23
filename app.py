@@ -1332,10 +1332,7 @@ def render_backtest_page(
     min_d = df.index.min().date()
     max_d = df.index.max().date()
 
-    if "bt_start" not in st.session_state:
-        st.session_state.bt_start = max(min_d, (pd.to_datetime(max_d) - timedelta(days=365)).date())
-    if "bt_end" not in st.session_state:
-        st.session_state.bt_end = max_d
+    sync_date_window_state("bt_start", "bt_end", min_d, max_d)
 
     show_settings = True
     show_single = True
@@ -1567,6 +1564,7 @@ def render_backtest_page(
             st.session_state.cmp_start = st.session_state.bt_start
         if "cmp_end" not in st.session_state:
             st.session_state.cmp_end = st.session_state.bt_end
+        sync_date_window_state("cmp_start", "cmp_end", min_d, max_d)
 
         c1, c2, c3, c4, c5 = st.columns([1.5, 1.5, 0.7, 0.7, 0.7])
         with c1:
@@ -2681,6 +2679,29 @@ def get_turnover_share_base(ticker_obj):
 
     return None
 
+def clamp_date_to_range(value, min_d: date, max_d: date, fallback: date) -> date:
+    try:
+        parsed = pd.to_datetime(value)
+        if pd.isna(parsed):
+            return fallback
+        value_date = parsed.date()
+    except Exception:
+        return fallback
+    if value_date < min_d:
+        return min_d
+    if value_date > max_d:
+        return max_d
+    return value_date
+
+def sync_date_window_state(start_key: str, end_key: str, min_d: date, max_d: date, lookback_days: int = 365):
+    default_start = max(min_d, (pd.to_datetime(max_d) - timedelta(days=lookback_days)).date())
+    start_value = clamp_date_to_range(st.session_state.get(start_key), min_d, max_d, default_start)
+    end_value = clamp_date_to_range(st.session_state.get(end_key), min_d, max_d, max_d)
+    if start_value > end_value:
+        start_value, end_value = end_value, start_value
+    st.session_state[start_key] = start_value
+    st.session_state[end_key] = end_value
+
 @st.cache_data(ttl=900)
 def get_data_v7(symbol, end_date):
     try:
@@ -3164,7 +3185,6 @@ def handle_sidebar_search():
     cleaned = clean_ticker_input(search_input)
     if cleaned:
         set_current_page("stock", cleaned)
-        st.rerun()
 
 secrets = get_secrets_dict()
 telegram_cfg = secrets.get("telegram", {}) if isinstance(secrets.get("telegram", {}), dict) else {}
