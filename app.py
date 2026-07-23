@@ -2646,6 +2646,41 @@ def run_analysis_logic(df, symbol, params):
 """
     return report
 
+def _normalize_share_base(value):
+    try:
+        if value is None:
+            return None
+        value = float(value)
+        if not np.isfinite(value) or value <= 0:
+            return None
+        return value
+    except Exception:
+        return None
+
+def get_turnover_share_base(ticker_obj):
+    # AAStocks 的換手率更接近以流通股本（float shares）為分母的口徑。
+    # 若拿不到流通股本，再回退到總發行股本。
+    info = {}
+    try:
+        info = ticker_obj.info or {}
+    except Exception:
+        info = {}
+
+    for key in ["floatShares", "sharesOutstanding"]:
+        value = _normalize_share_base(info.get(key))
+        if value:
+            return value
+
+    try:
+        fast_info = ticker_obj.fast_info
+        value = _normalize_share_base(fast_info.get("shares", None))
+        if value:
+            return value
+    except Exception:
+        pass
+
+    return None
+
 @st.cache_data(ttl=900)
 def get_data_v7(symbol, end_date):
     try:
@@ -2654,15 +2689,12 @@ def get_data_v7(symbol, end_date):
             df.columns = df.columns.get_level_values(0)
         df = df[df.index <= pd.to_datetime(end_date)]
         t = yf.Ticker(symbol)
-        try:
-            s = t.fast_info.get('shares', None)
-        except Exception:
-            s = t.info.get('sharesOutstanding', None)
-        return df, s
+        share_base = get_turnover_share_base(t)
+        return df, share_base
     except Exception:
         return None, None
 
-def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, shares_outstanding) -> Optional[Dict[str, Any]]:
+def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) -> Optional[Dict[str, Any]]:
     if df is None or df.empty or len(df) < 2:
         return None
 
@@ -2697,8 +2729,8 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, shares_outst
         amp_values[f"Amp {p}"] = float(amp) if pd.notna(amp) else np.nan
 
     tor_values = {f"TOR {p}": np.nan for p in [0, 7, 14, 28, 57, 106]}
-    if shares_outstanding and float(shares_outstanding) != 0:
-        work_df["Turnover_Rate"] = work_df["Volume"] / float(shares_outstanding) * 100
+    if share_base and float(share_base) != 0:
+        work_df["Turnover_Rate"] = work_df["Volume"] / float(share_base) * 100
         tor_values["TOR 0"] = float(work_df["Turnover_Rate"].iloc[-1]) if pd.notna(work_df["Turnover_Rate"].iloc[-1]) else np.nan
         for p in periods_sma:
             tor = work_df["Turnover_Rate"].tail(p).mean() if len(work_df) >= p else np.nan
@@ -2728,8 +2760,8 @@ def get_home_watchlist_snapshot(watchlist_codes: List[str], ref_date: str) -> Di
     details: Dict[str, Dict[str, Any]] = {}
 
     for ticker in watchlist_codes:
-        df, shares_outstanding = get_data_v7(get_yahoo_ticker(ticker), ref_date)
-        snapshot = _compute_home_snapshot_for_stock(ticker, df, shares_outstanding)
+        df, share_base = get_data_v7(get_yahoo_ticker(ticker), ref_date)
+        snapshot = _compute_home_snapshot_for_stock(ticker, df, share_base)
         if not snapshot:
             continue
         summaries.append(snapshot["summary"])
@@ -3099,7 +3131,7 @@ def render_backtest_hub_page(current_code: str, watchlist_data: Dict[str, Any], 
         return
 
     yahoo_ticker = get_yahoo_ticker(current_code)
-    df, shares_outstanding = get_data_v7(yahoo_ticker, st.session_state.ref_date)
+    df, share_base = get_data_v7(yahoo_ticker, st.session_state.ref_date)
     if df is None or len(df) <= 5:
         st.warning("無法取得足夠數據進行回測。")
         return
@@ -3164,14 +3196,9 @@ with st.sidebar:
                         if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
                         try:
                             t_obj = yf.Ticker(yt)
-                            try:
-                                shares_outstanding = t_obj.fast_info.get('shares', None)
-                            except Exception:
-                                shares_outstanding = None
-                            if not shares_outstanding:
-                                shares_outstanding = t_obj.info.get('sharesOutstanding', None)
-                            if shares_outstanding:
-                                d["Turnover_Rate"] = (d["Volume"] / float(shares_outstanding)) * 100
+                            share_base = get_turnover_share_base(t_obj)
+                            if share_base:
+                                d["Turnover_Rate"] = (d["Volume"] / float(share_base)) * 100
                         except Exception:
                             pass
                         if len(d) > 50:
@@ -3575,7 +3602,7 @@ else:
                 update_stock_in_db(current_code)
                 st.rerun()
 
-    df, shares_outstanding = get_data_v7(yahoo_ticker, st.session_state.ref_date)
+    df, share_base = get_data_v7(yahoo_ticker, st.session_state.ref_date)
 
     if df is not None and len(df) > 5:
         # 0. 基礎計算
@@ -3585,11 +3612,11 @@ else:
         if f'SMA_{sma2}' not in df.columns: df[f'SMA_{sma2}'] = df['Close'].rolling(sma2).mean()
 
         has_turnover = False
-        if shares_outstanding:
+        if share_base:
             has_turnover = True
-            df['Turnover_Rate'] = (df['Volume'] / shares_outstanding) * 100
+            df['Turnover_Rate'] = (df['Volume'] / share_base) * 100
             # 增加 v9.6 的 BS Analysis 計算
-            df = simulate_bs_data(df, shares_outstanding)
+            df = simulate_bs_data(df, share_base)
         else:
             df['Turnover_Rate'] = 0.0
 
