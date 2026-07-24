@@ -2823,6 +2823,8 @@ def render_home_snapshot_detail_page(ticker: str):
     top_cols = st.columns([1, 1.2, 2.2])
     with top_cols[0]:
         if st.button("🏠 返回主頁", use_container_width=True, key=f"home_detail_back_{ticker}"):
+            st.session_state.home_selected_ticker = ticker
+            queue_scroll_to_anchor(st.session_state.get("home_return_anchor", get_home_stock_anchor_id(ticker)))
             set_current_page("home")
             st.rerun()
     with top_cols[1]:
@@ -3775,6 +3777,7 @@ elif current_page == "home":
                         type="primary",
                     ):
                         st.session_state.home_selected_ticker = ticker
+                        st.session_state.home_return_anchor = get_home_stock_anchor_id(ticker)
                         set_current_page("home_detail", ticker)
                         st.rerun()
                 with action_cols[1]:
