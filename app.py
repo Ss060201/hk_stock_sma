@@ -3465,7 +3465,8 @@ ref_date_str = st.session_state.ref_date.strftime('%Y-%m-%d')
 sma1 = int(st.session_state.get("sma1", 20))
 sma2 = int(st.session_state.get("sma2", 50))
 
-render_top_navigation()
+if current_page != "home_detail":
+    render_top_navigation()
 
 # === 主頁面路由 ===
 if current_page == "settings":
@@ -4710,5 +4711,6 @@ else:
             if show_cdm:
                 st.error(str(e))
 
-render_bottom_navigation()
+if current_page != "home_detail":
+    render_bottom_navigation()
 consume_pending_scroll_anchor()
