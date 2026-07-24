@@ -2798,6 +2798,189 @@ def set_current_page(page: str, code: Optional[str] = None):
     if page == "stock" and code is not None:
         st.session_state.stock_section = "header"
 
+def is_home_context_page(page: str) -> bool:
+    return page in {"home", "home_detail"}
+
+def _home_fmt_num(value):
+    return "-" if pd.isna(value) else f"{float(value):.2f}"
+
+def _home_fmt_pct(value):
+    return "-" if pd.isna(value) else f"{float(value):+.2f}%"
+
+def _home_green_style(df: pd.DataFrame, fmt_map: Dict[str, str]):
+    return (
+        df.style
+        .format(fmt_map, na_rep="-")
+        .set_properties(**{
+            "background-color": "#a3d977",
+            "color": "#0f172a",
+            "font-weight": "600",
+        })
+    )
+
+def render_home_snapshot_detail_page(ticker: str):
+    st.title(f"📌 {ticker} 統計數據")
+    top_cols = st.columns([1, 1.2, 2.2])
+    with top_cols[0]:
+        if st.button("🏠 返回主頁", use_container_width=True, key=f"home_detail_back_{ticker}"):
+            set_current_page("home")
+            st.rerun()
+    with top_cols[1]:
+        if st.button("📈 前往單股", use_container_width=True, key=f"home_detail_stock_{ticker}"):
+            set_current_page("stock", ticker)
+            st.rerun()
+    with top_cols[2]:
+        st.caption("此頁一次性展示 Dev / TOR / Amp / SMA 全部統計資料。")
+
+    snapshot = get_home_watchlist_snapshot([ticker], str(st.session_state.ref_date))
+    selected_detail = snapshot.get("details", {}).get(ticker)
+    if not selected_detail:
+        st.warning("目前無法取得這支股票的首頁統計數據。")
+        return
+
+    detail_header_html = (
+        '<div class="home-detail-panel">'
+        f'<div class="home-stock-head"><div class="home-stock-title">📌 {ticker} 統計數據</div>'
+        f'<div class="home-stock-badge">{selected_detail["date"]}</div></div>'
+        f'<div class="home-summary-strip">'
+        f'<div class="home-summary-item"><div class="label">Current price</div><div class="value">{_home_fmt_num(selected_detail["current_price"])}</div></div>'
+        f'<div class="home-summary-item"><div class="label">CP</div><div class="value">{_home_fmt_num(selected_detail["cp"])}</div></div>'
+        f'<div class="home-summary-item"><div class="label">Dev 57</div><div class="value">{_home_fmt_pct(selected_detail["dev"].get("Dev 57"))}</div></div>'
+        f'<div class="home-summary-item"><div class="label">Dev 106</div><div class="value">{_home_fmt_pct(selected_detail["dev"].get("Dev 106"))}</div></div>'
+        f'</div>'
+        '<span class="home-avg-note">TOR / Amp 的 7、14、28、57、106 為區間平均值</span>'
+        '</div>'
+    )
+    st.markdown(detail_header_html, unsafe_allow_html=True)
+
+    dev_core_df = pd.DataFrame(
+        [{
+            "Code": ticker,
+            "CPRD": selected_detail["cp"],
+            "Dev 0": selected_detail["dev"].get("Dev 0"),
+            "Dev 3": selected_detail["dev"].get("Dev 3"),
+            "Dev 7": selected_detail["dev"].get("Dev 7"),
+            "Dev 14": selected_detail["dev"].get("Dev 14"),
+            "Dev 28": selected_detail["dev"].get("Dev 28"),
+        }]
+    )
+    dev_more_df = pd.DataFrame(
+        [{
+            "Dev 57": selected_detail["dev"].get("Dev 57"),
+            "Dev 106": selected_detail["dev"].get("Dev 106"),
+        }]
+    )
+    tor_df = pd.DataFrame(
+        [{
+            "Date": selected_detail["date"],
+            "TOR 0": selected_detail["tor"].get("TOR 0"),
+            "TOR 7": selected_detail["tor"].get("TOR 7"),
+            "TOR 14": selected_detail["tor"].get("TOR 14"),
+            "TOR 28": selected_detail["tor"].get("TOR 28"),
+            "TOR 57": selected_detail["tor"].get("TOR 57"),
+            "TOR 106": selected_detail["tor"].get("TOR 106"),
+        }]
+    )
+    amp_df = pd.DataFrame(
+        [{
+            "Date": selected_detail["date"],
+            "Amp 0": selected_detail["amp"].get("Amp 0"),
+            "Amp 7": selected_detail["amp"].get("Amp 7"),
+            "Amp 14": selected_detail["amp"].get("Amp 14"),
+            "Amp 28": selected_detail["amp"].get("Amp 28"),
+            "Amp 57": selected_detail["amp"].get("Amp 57"),
+            "Amp 106": selected_detail["amp"].get("Amp 106"),
+        }]
+    )
+    sma_df = pd.DataFrame(
+        [{
+            "Date": selected_detail["date"],
+            "CP": selected_detail["cp"],
+            "SMA 7": selected_detail["sma"].get("SMA 7"),
+            "SMA 14": selected_detail["sma"].get("SMA 14"),
+            "SMA 28": selected_detail["sma"].get("SMA 28"),
+            "SMA 57": selected_detail["sma"].get("SMA 57"),
+        }]
+    )
+
+    st.markdown("### Dev")
+    st.dataframe(
+        _home_green_style(
+            dev_core_df,
+            {
+                "CPRD": "{:.2f}",
+                "Dev 0": "{:+.2f}%",
+                "Dev 3": "{:+.2f}%",
+                "Dev 7": "{:+.2f}%",
+                "Dev 14": "{:+.2f}%",
+                "Dev 28": "{:+.2f}%",
+            },
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+    st.dataframe(
+        _home_green_style(
+            dev_more_df,
+            {
+                "Dev 57": "{:+.2f}%",
+                "Dev 106": "{:+.2f}%",
+            },
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.markdown("### TOR")
+    st.dataframe(
+        _home_green_style(
+            tor_df,
+            {
+                "TOR 0": "{:.2f}%",
+                "TOR 7": "{:.2f}%",
+                "TOR 14": "{:.2f}%",
+                "TOR 28": "{:.2f}%",
+                "TOR 57": "{:.2f}%",
+                "TOR 106": "{:.2f}%",
+            },
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.markdown("### Amp")
+    st.dataframe(
+        _home_green_style(
+            amp_df,
+            {
+                "Amp 0": "{:.2f}%",
+                "Amp 7": "{:.2f}%",
+                "Amp 14": "{:.2f}%",
+                "Amp 28": "{:.2f}%",
+                "Amp 57": "{:.2f}%",
+                "Amp 106": "{:.2f}%",
+            },
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.markdown("### SMA")
+    st.dataframe(
+        _home_green_style(
+            sma_df,
+            {
+                "CP": "{:.2f}",
+                "SMA 7": "{:.2f}",
+                "SMA 14": "{:.2f}",
+                "SMA 28": "{:.2f}",
+                "SMA 57": "{:.2f}",
+            },
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+
 def queue_scroll_to_anchor(anchor_id: str):
     st.session_state.pending_scroll_target = anchor_id
     st.session_state.pending_scroll_token = int(st.session_state.get("pending_scroll_token", 0)) + 1
@@ -2925,11 +3108,12 @@ def render_pending_scroll_here(anchor_id: str):
 
 def render_top_navigation():
     current_page = st.session_state.get("current_page", "home")
+    home_active = is_home_context_page(current_page)
 
     st.caption("快捷導航")
     quick_cols = st.columns(3)
     with quick_cols[0]:
-        if st.button("🏠 總覽", key="quick_nav_home", use_container_width=True, type="primary" if current_page == "home" else "secondary"):
+        if st.button("🏠 總覽", key="quick_nav_home", use_container_width=True, type="primary" if home_active else "secondary"):
             set_current_page("home")
             st.rerun()
     with quick_cols[1]:
@@ -2944,6 +3128,7 @@ def render_top_navigation():
 
 def render_bottom_navigation():
     current_page = st.session_state.get("current_page", "home")
+    home_active = is_home_context_page(current_page)
     st.write("---")
     st.markdown('<div class="bottom-nav-note">底部快捷導航：看完內容可直接切換，不用再拉回頁首。</div>', unsafe_allow_html=True)
     labels = {
@@ -2958,7 +3143,7 @@ def render_bottom_navigation():
     }
     bottom_cols = st.columns(3)
     with bottom_cols[0]:
-        if st.button(active_labels["home"] if current_page == "home" else labels["home"], key="bottom_nav_home", use_container_width=True, type="primary" if current_page == "home" else "secondary"):
+        if st.button(active_labels["home"] if home_active else labels["home"], key="bottom_nav_home", use_container_width=True, type="primary" if home_active else "secondary"):
             set_current_page("home")
             st.rerun()
     with bottom_cols[1]:
@@ -3078,7 +3263,7 @@ def render_sidebar_context_navigation(watchlist_list: List[str]):
         render_comparison_section_navigation()
     elif current_page == "backtest":
         render_backtest_section_navigation()
-    elif current_page == "home":
+    elif is_home_context_page(current_page):
         render_home_section_navigation(watchlist_list)
     else:
         render_navigation_expander()
@@ -3293,6 +3478,15 @@ elif current_page == "comparison":
 
 elif current_page == "backtest":
     render_backtest_hub_page(current_code, watchlist_data, watchlist_list)
+
+elif current_page == "home_detail":
+    if not current_code:
+        st.warning("尚未選擇要查看的股票。")
+        if st.button("🏠 返回主頁", key="home_detail_empty_back", use_container_width=True):
+            set_current_page("home")
+            st.rerun()
+    else:
+        render_home_snapshot_detail_page(current_code)
 
 elif current_page == "home":
     st.title("📊 港股 SMA 矩陣 - 收藏總覽")
@@ -3575,18 +3769,18 @@ elif current_page == "home":
                 action_cols = st.columns([1.4, 1])
                 with action_cols[0]:
                     if st.button(
-                        "查看中" if is_selected else ticker,
+                        "查看中" if is_selected else "查看統計",
                         key=f"home_pick_{ticker}",
                         use_container_width=True,
-                        type="primary" if is_selected else "secondary",
+                        type="primary",
                     ):
                         st.session_state.home_selected_ticker = ticker
+                        set_current_page("home_detail", ticker)
                         st.rerun()
                 with action_cols[1]:
                     if st.button("詳情", key=f"view_stock_{ticker}", use_container_width=True, type="secondary"):
-                        if is_selected:
-                            set_current_page("stock", ticker)
-                            st.rerun()
+                        set_current_page("stock", ticker)
+                        st.rerun()
 
                 st.write("")
 
