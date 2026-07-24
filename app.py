@@ -3556,11 +3556,6 @@ elif current_page == "home":
             def _fmt_pct(value):
                 return "-" if pd.isna(value) else f"{float(value):+.2f}%"
 
-            st.markdown(
-                f'<div class="home-sort-hint">核心欄位：Code / CPRD / Dev0 / 3 / 7 / 14 / 28，按 `{selected_sort}` 排序。</div>',
-                unsafe_allow_html=True,
-            )
-
             for row in sorted_rows:
                 ticker = row["Code"]
                 is_selected = ticker == st.session_state.home_selected_ticker
