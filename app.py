@@ -2656,28 +2656,15 @@ def _normalize_share_base(value):
         return None
 
 def get_turnover_share_base(ticker_obj):
-    # AAStocks 的換手率更接近以流通股本（float shares）為分母的口徑。
-    # 若拿不到流通股本，再回退到總發行股本。
+    # 嚴格模式：只使用 floatShares 作為換手率分母。
+    # 若抓不到 floatShares，則視為沒有可用的換手率分母。
     info = {}
     try:
         info = ticker_obj.info or {}
     except Exception:
         info = {}
 
-    for key in ["floatShares", "sharesOutstanding"]:
-        value = _normalize_share_base(info.get(key))
-        if value:
-            return value
-
-    try:
-        fast_info = ticker_obj.fast_info
-        value = _normalize_share_base(fast_info.get("shares", None))
-        if value:
-            return value
-    except Exception:
-        pass
-
-    return None
+    return _normalize_share_base(info.get("floatShares"))
 
 def clamp_date_to_range(value, min_d: date, max_d: date, fallback: date) -> date:
     try:
