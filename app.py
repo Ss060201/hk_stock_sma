@@ -15,7 +15,13 @@ from pathlib import Path
 from io import BytesIO
 from typing import Any, Dict, List, Optional
 from streamlit.errors import StreamlitSecretNotFoundError
-from providers import CSVFloatProvider, FloatLookupResult
+from providers import (
+    CSVFloatProvider,
+    CSVShareBaseProvider,
+    CompositeShareBaseProvider,
+    ShareBaseLookupResult,
+    YahooShareBaseProvider,
+)
 
 # --- 1. 系統初始化 ---
 st.set_page_config(page_title="港股 SMA 矩陣", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
@@ -2649,63 +2655,39 @@ def run_analysis_logic(df, symbol, params):
 """
     return report
 
-def _normalize_share_base(value):
-    try:
-        if value is None:
-            return None
-        value = float(value)
-        if not np.isfinite(value) or value <= 0:
-            return None
-        return value
-    except Exception:
-        return None
-
 @st.cache_resource(show_spinner=False)
 def get_float_provider() -> CSVFloatProvider:
     """Return the cached CSV-backed float metadata provider."""
     csv_path = Path(__file__).resolve().parent / "metadata" / "float.csv"
     return CSVFloatProvider(csv_path)
 
-def _get_yfinance_float_shares(ticker_obj) -> FloatLookupResult:
-    """Compatibility fallback using the previous yfinance floatShares lookup."""
-    ticker = clean_ticker_input(getattr(ticker_obj, "ticker", ""))
-    info = {}
-    try:
-        info = ticker_obj.info or {}
-    except Exception:
-        info = {}
-
-    share_base = _normalize_share_base(info.get("floatShares"))
-    if share_base is not None:
-        return FloatLookupResult(
-            ticker=ticker,
-            share_base=int(share_base),
-            method="float",
-            source="yfinance",
-            confidence="low",
-        )
-
-    return FloatLookupResult(
-        ticker=ticker,
-        share_base=None,
-        method=None,
-        warning=f"No floatShares available from metadata or yfinance for ticker {ticker}.",
-        source="yfinance",
-        confidence="low",
+@st.cache_resource(show_spinner=False)
+def get_share_base_provider() -> CompositeShareBaseProvider:
+    """Return the cached provider chain for turnover share-base lookups."""
+    metadata_dir = Path(__file__).resolve().parent / "metadata"
+    return CompositeShareBaseProvider(
+        [
+            CSVShareBaseProvider(metadata_dir / "share_base.csv"),
+            YahooShareBaseProvider(),
+        ]
     )
 
-def get_turnover_share_lookup(ticker_obj) -> FloatLookupResult:
-    """Resolve turnover denominator with provider-first, compatibility fallback behavior."""
+def get_turnover_share_lookup(ticker_obj) -> ShareBaseLookupResult:
+    """Resolve turnover denominator with override-first share-base behavior."""
     ticker = clean_ticker_input(getattr(ticker_obj, "ticker", ""))
     try:
-        provider = get_float_provider()
-        provider_result = provider.get_float_shares(ticker)
-        if provider_result.share_base is not None:
-            return provider_result
+        provider = get_share_base_provider()
+        return provider.get_share_base(ticker_obj)
     except Exception as exc:
-        LOGGER.warning("Float metadata lookup failed for %s: %s", ticker, exc)
-
-    return _get_yfinance_float_shares(ticker_obj)
+        LOGGER.warning("Share-base lookup failed for %s: %s", ticker, exc)
+        return ShareBaseLookupResult(
+            ticker=ticker,
+            share_base=None,
+            method=None,
+            warning=f"Unable to resolve turnover share base for ticker {ticker}.",
+            source="provider",
+            confidence="low",
+        )
 
 def get_turnover_share_base(ticker_obj):
     """Preserve the existing API by returning only the resolved share-base value."""

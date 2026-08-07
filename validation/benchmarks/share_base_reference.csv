@@ -1,0 +1,21 @@
+ticker,expected_share_base,reference_source,notes
+0005,17183560000,aastocks_research,Research benchmark only; not for production fallback
+0388,1267840000,aastocks_research,Research benchmark only; not for production fallback
+0700,9082720000,aastocks_research,Research benchmark only; not for production fallback
+0883,44539950000,aastocks_research,Research benchmark only; not for production fallback
+0939,240417320000,aastocks_research,Research benchmark only; not for production fallback
+0941,20784450000,aastocks_research,Research benchmark only; not for production fallback
+1299,10346640000,aastocks_research,Research benchmark only; not for production fallback
+1810,25842130000,aastocks_research,Known Yahoo outlier candidate
+2269,4143560000,aastocks_research,Research benchmark only; not for production fallback
+9988,19176520000,aastocks_research,Research benchmark only; not for production fallback
+1672,1051980000,aastocks_research,Research benchmark only; not for production fallback
+2726,118920000,aastocks_research,Research benchmark only; not for production fallback
+6681,1358280000,aastocks_research,Research benchmark only; not for production fallback
+9678,45110000,aastocks_research,Known Yahoo outlier candidate
+1879,76850000,aastocks_research,Research benchmark only; not for production fallback
+3317,274460000,aastocks_research,Research benchmark only; not for production fallback
+2432,393800000,aastocks_research,Research benchmark only; not for production fallback
+2577,899380000,aastocks_research,Known Yahoo outlier candidate
+6082,1353850000,aastocks_research,Research benchmark only; not for production fallback
+2655,394690000,aastocks_research,Research benchmark only; not for production fallback
