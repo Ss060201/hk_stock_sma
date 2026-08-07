@@ -24,6 +24,11 @@ class TimeAlignedBenchmarkRow:
     aastocks_share_base: Optional[float]
     legacy_aastocks_tor: Optional[float]
     source: str
+    source_url: str
+    capture_method: str
+    tor_capture_status: str
+    tor_source: str
+    tor_confidence: str
     source_note: str
     legacy_source_note: str
 
@@ -55,6 +60,11 @@ def load_time_aligned_reference(csv_path: str | Path) -> list[TimeAlignedBenchma
                     aastocks_share_base=_parse_optional_float(raw.get("aastocks_share_base")),
                     legacy_aastocks_tor=_parse_optional_float(raw.get("legacy_aastocks_tor")),
                     source=str(raw.get("source", "")).strip(),
+                    source_url=str(raw.get("source_url", "")).strip(),
+                    capture_method=str(raw.get("capture_method", "")).strip(),
+                    tor_capture_status=str(raw.get("tor_capture_status", "")).strip(),
+                    tor_source=str(raw.get("tor_source", "")).strip(),
+                    tor_confidence=str(raw.get("tor_confidence", "")).strip(),
                     source_note=str(raw.get("source_note", "")).strip(),
                     legacy_source_note=str(raw.get("legacy_source_note", "")).strip(),
                 )
