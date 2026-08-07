@@ -23,6 +23,7 @@ class TimeAlignedBenchmarkRow:
     aastocks_volume: Optional[float]
     aastocks_share_base: Optional[float]
     legacy_aastocks_tor: Optional[float]
+    source: str
     source_note: str
     legacy_source_note: str
 
@@ -53,6 +54,7 @@ def load_time_aligned_reference(csv_path: str | Path) -> list[TimeAlignedBenchma
                     aastocks_volume=_parse_optional_float(raw.get("aastocks_volume")),
                     aastocks_share_base=_parse_optional_float(raw.get("aastocks_share_base")),
                     legacy_aastocks_tor=_parse_optional_float(raw.get("legacy_aastocks_tor")),
+                    source=str(raw.get("source", "")).strip(),
                     source_note=str(raw.get("source_note", "")).strip(),
                     legacy_source_note=str(raw.get("legacy_source_note", "")).strip(),
                 )

@@ -71,6 +71,7 @@ def main() -> None:
                 "aastocks_tor": row.aastocks_tor,
                 "aastocks_volume": row.aastocks_volume,
                 "aastocks_share_base": row.aastocks_share_base,
+                "source": row.source,
                 "yahoo_volume": yahoo_volume,
                 "yahoo_volume_date": yahoo["yahoo_volume_date"],
                 "yahoo_share_base": yahoo_share_base,
