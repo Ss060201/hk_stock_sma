@@ -3623,27 +3623,8 @@ elif current_page == "home":
 
                 with summary_cols[6]:
                     st.write(f'{row.get("Dev28", "-"):.2f}%')
-                    f'<div class="home-stock-metric"><div class="label">CPRD</div><div class="value">{_fmt_num(row.get("CPRD"))}</div></div>'
-                    f'<div class="home-stock-metric"><div class="label">Dev 0</div><div class="value">{_fmt_pct(row.get("Dev 0"))}</div></div>'
-                    f'<div class="home-stock-metric"><div class="label">Dev 3</div><div class="value">{_fmt_pct(row.get("Dev 3"))}</div></div>'
-                    f'<div class="home-stock-metric"><div class="label">Dev 7</div><div class="value">{_fmt_pct(row.get("Dev 7"))}</div></div>'
-                    f'<div class="home-stock-metric"><div class="label">Dev 14</div><div class="value">{_fmt_pct(row.get("Dev 14"))}</div></div>'
-                    f'<div class="home-stock-metric"><div class="label">Dev 28</div><div class="value">{_fmt_pct(row.get("Dev 28"))}</div></div>'
-                    '</div>'
-                    '</div>'
-                )
-                st.markdown(card_html, unsafe_allow_html=True)
 
-                action_cols = st.columns([1.4, 1])
-                
-                        st.session_state.home_selected_ticker = ticker
-                        st.session_state.home_return_anchor = get_home_stock_anchor_id(ticker)
-                        set_current_page("home_detail", ticker)
-                        st.rerun()
-                with action_cols[1]:
-                    if st.button("詳情", key=f"view_stock_{ticker}", use_container_width=True, type="secondary"):
-                        set_current_page("stock", ticker)
-                        st.rerun()
+                st.markdown(card_html, unsafe_allow_html=True)
 
                 st.write("")
 
