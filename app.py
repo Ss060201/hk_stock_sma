@@ -3590,16 +3590,39 @@ elif current_page == "home":
 
             for row in sorted_rows:
                 ticker = row["Code"]
-                is_selected = ticker == st.session_state.home_selected_ticker
+
                 render_scroll_anchor(get_home_stock_anchor_id(ticker))
-                badge_text = "目前查看" if is_selected else f"依 {selected_sort} 排序"
-                card_html = (
-                    f'<div class="home-stock-shell {"active" if is_selected else ""}">'
-                    '<div class="home-stock-head">'
-                    f'<div class="home-stock-title">{ticker}</div>'
-                    f'<div class="home-stock-badge">{badge_text}</div>'
-                    '</div>'
-                    '<div class="home-stock-metrics">'
+
+                summary_cols = st.columns(
+                    [1.2, 1, 1, 1, 1, 1, 1]
+                )
+
+                with summary_cols[0]:
+                    if st.button(
+                        ticker,
+                        key=f"home_code_{ticker}",
+                        use_container_width=True
+                     ):
+                        set_current_page("home_detail", ticker)
+                        st.rerun()
+
+                with summary_cols[1]:
+                    st.write(f'{row.get("CPRD", "-"):.2f}')
+
+                with summary_cols[2]:
+                    st.write(f'{row.get("Dev0", "-"):.2f}%')
+
+                with summary_cols[3]:
+                    st.write(f'{row.get("Dev3", "-"):.2f}%')
+
+                with summary_cols[4]:
+                    st.write(f'{row.get("Dev7", "-"):.2f}%')
+
+                with summary_cols[5]:
+                    st.write(f'{row.get("Dev14", "-"):.2f}%')
+
+                with summary_cols[6]:
+                    st.write(f'{row.get("Dev28", "-"):.2f}%')
                     f'<div class="home-stock-metric"><div class="label">CPRD</div><div class="value">{_fmt_num(row.get("CPRD"))}</div></div>'
                     f'<div class="home-stock-metric"><div class="label">Dev 0</div><div class="value">{_fmt_pct(row.get("Dev 0"))}</div></div>'
                     f'<div class="home-stock-metric"><div class="label">Dev 3</div><div class="value">{_fmt_pct(row.get("Dev 3"))}</div></div>'
@@ -3612,13 +3635,7 @@ elif current_page == "home":
                 st.markdown(card_html, unsafe_allow_html=True)
 
                 action_cols = st.columns([1.4, 1])
-                with action_cols[0]:
-                    if st.button(
-                        "查看中" if is_selected else "查看統計",
-                        key=f"home_pick_{ticker}",
-                        use_container_width=True,
-                        type="primary",
-                    ):
+                
                         st.session_state.home_selected_ticker = ticker
                         st.session_state.home_return_anchor = get_home_stock_anchor_id(ticker)
                         set_current_page("home_detail", ticker)
