@@ -1727,8 +1727,6 @@ def render_backtest_page(
                         </div>
                     </div>
                     """
-                    st.markdown(card_html, unsafe_allow_html=True)
-
                     d1, d2 = st.columns(2)
                     with d1:
                         if st.button("📊 詳情", use_container_width=True, key=f"cmp_detail_{current_code}_{r.strategy_name}"):
