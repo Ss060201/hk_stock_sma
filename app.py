@@ -3627,7 +3627,6 @@ elif current_page == "home":
                     value = row.get("Dev 28", None)
                     st.write(f'{value:.2f}%' if isinstance(value, (int, float)) else "-")
 
-                st.markdown(card_html, unsafe_allow_html=True)
 
                 st.write("")
 
