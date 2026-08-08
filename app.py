@@ -3610,19 +3610,24 @@ elif current_page == "home":
                     st.write(f'{row.get("CPRD", "-"):.2f}')
 
                 with summary_cols[2]:
-                    st.write(f'{row.get("Dev0", "-"):.2f}%')
+                    value = row.get("Dev 0", None)
+                    st.write(f'{value:.2f}%' if isinstance(value, (int, float)) else "-")
 
                 with summary_cols[3]:
-                    st.write(f'{row.get("Dev3", "-"):.2f}%')
+                    value = row.get("Dev 3", None)
+                    st.write(f'{value:.2f}%' if isinstance(value, (int, float)) else "-")
 
                 with summary_cols[4]:
-                    st.write(f'{row.get("Dev7", "-"):.2f}%')
-
+                    value = row.get("Dev 7", None)
+                    st.write(f'{value:.2f}%' if isinstance(value, (int, float)) else "-")
+                
                 with summary_cols[5]:
-                    st.write(f'{row.get("Dev14", "-"):.2f}%')
+                    value = row.get("Dev 14", None)
+                    st.write(f'{value:.2f}%' if isinstance(value, (int, float)) else "-")
 
                 with summary_cols[6]:
-                    st.write(f'{row.get("Dev28", "-"):.2f}%')
+                    value = row.get("Dev 28", None)
+                    st.write(f'{value:.2f}%' if isinstance(value, (int, float)) else "-")
 
                 st.markdown(card_html, unsafe_allow_html=True)
 
