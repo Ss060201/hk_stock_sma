@@ -9,8 +9,11 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import json
 import os
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 from firebase_admin.exceptions import FirebaseError
+from providers import CSVShareBaseProvider, CompositeShareBaseProvider, YahooShareBaseProvider
+from turnover_utils import TURNOVER_STATUS_CALCULATED, apply_turnover_rate
 
 # ===== [改动1] 导入移动端优化工具 =====
 from mobile_optimizer import (
@@ -197,6 +200,21 @@ def get_yahoo_ticker(symbol):
     if symbol.isdigit(): return f"{symbol.zfill(4)}.HK"
     return symbol
 
+
+@st.cache_resource(show_spinner=False)
+def get_share_base_provider() -> CompositeShareBaseProvider:
+    metadata_dir = Path(__file__).resolve().parent / "metadata"
+    return CompositeShareBaseProvider(
+        [
+            CSVShareBaseProvider(metadata_dir / "share_base.csv"),
+            YahooShareBaseProvider(),
+        ]
+    )
+
+
+def get_turnover_share_base(ticker_obj):
+    return get_share_base_provider().get_share_base(ticker_obj).share_base
+
 def send_telegram_msg(token, chat_id, message):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
@@ -258,14 +276,8 @@ if not is_mobile:
                                 d.columns = d.columns.get_level_values(0)
                             try:
                                 t_obj = yf.Ticker(yt)
-                                try:
-                                    shares_outstanding = t_obj.fast_info.get('shares', None)
-                                except Exception:
-                                    shares_outstanding = None
-                                if not shares_outstanding:
-                                    shares_outstanding = t_obj.info.get('sharesOutstanding', None)
-                                if shares_outstanding:
-                                    d["Turnover_Rate"] = (d["Volume"] / float(shares_outstanding)) * 100
+                                share_base = get_turnover_share_base(t_obj)
+                                d, _, _ = apply_turnover_rate(d, share_base)
                             except Exception:
                                 pass
                             if len(d) > 50:
@@ -381,13 +393,6 @@ if not current_code:
                     end_dt = pd.to_datetime(st.session_state.ref_date)
                     df_w = df_w[df_w.index <= end_dt]
                     
-                    t_obj = yf.Ticker(yt)
-                    try: tsi = t_obj.fast_info.get('shares', None)
-                    except: tsi = None
-                    if tsi is None: 
-                        try: tsi = t_obj.info.get('sharesOutstanding', 100000000)
-                        except: tsi = 100000000
-                    
                     if len(df_w) > 20:
                         curr_p = df_w['Close'].iloc[-1]
                         prev_close_w = df_w['Close'].shift(1).replace(0, np.nan)
@@ -502,13 +507,12 @@ else:
                 df.columns = df.columns.get_level_values(0)
             df = df[df.index <= pd.to_datetime(end_date)]
             t = yf.Ticker(symbol)
-            try: s = t.fast_info.get('shares', None)
-            except: s = t.info.get('sharesOutstanding', None)
-            return df, s
-        except: 
+            share_base = get_turnover_share_base(t)
+            return df, share_base
+        except Exception:
             return None, None
     
-    df, shares_outstanding = get_data_v7(yahoo_ticker, st.session_state.ref_date)
+    df, share_base = get_data_v7(yahoo_ticker, st.session_state.ref_date)
     
     if df is not None and len(df) > 5:
         periods_sma = [7, 14, 28, 57, 106, 212]
@@ -519,13 +523,10 @@ else:
         if f'SMA_{sma2}' not in df.columns: 
             df[f'SMA_{sma2}'] = df['Close'].rolling(sma2).mean()
         
-        has_turnover = False
-        if shares_outstanding:
-            has_turnover = True
-            df['Turnover_Rate'] = (df['Volume'] / shares_outstanding) * 100
-            df = simulate_bs_data(df, shares_outstanding)
-        else:
-            df['Turnover_Rate'] = 0.0
+        df, turnover_status, turnover_reason = apply_turnover_rate(df, share_base)
+        has_turnover = turnover_status == TURNOVER_STATUS_CALCULATED
+        if has_turnover:
+            df = simulate_bs_data(df, share_base)
         
         prev_close_series = df['Close'].shift(1).replace(0, np.nan)
         df['AMP'] = (df['High'] - df['Low']) / prev_close_series * 100

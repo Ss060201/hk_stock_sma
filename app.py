@@ -22,6 +22,10 @@ from providers import (
     ShareBaseLookupResult,
     YahooShareBaseProvider,
 )
+from turnover_utils import (
+    TURNOVER_STATUS_CALCULATED,
+    apply_turnover_rate,
+)
 
 # --- 1. 系統初始化 ---
 st.set_page_config(page_title="港股 SMA 矩陣", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
@@ -2726,7 +2730,8 @@ def get_data_v7(symbol, end_date):
         t = yf.Ticker(symbol)
         share_base = get_turnover_share_base(t)
         return df, share_base
-    except Exception:
+    except Exception as exc:
+        LOGGER.warning("Failed to load data for %s: %s", symbol, exc)
         return None, None
 
 def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) -> Optional[Dict[str, Any]]:
@@ -2764,8 +2769,8 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
         amp_values[f"Amp {p}"] = float(amp) if pd.notna(amp) else np.nan
 
     tor_values = {f"TOR {p}": np.nan for p in [0, 7, 14, 28, 57, 106]}
-    if share_base and float(share_base) != 0:
-        work_df["Turnover_Rate"] = work_df["Volume"] / float(share_base) * 100
+    work_df, turnover_status, turnover_reason = apply_turnover_rate(work_df, share_base)
+    if turnover_status == TURNOVER_STATUS_CALCULATED:
         tor_values["TOR 0"] = float(work_df["Turnover_Rate"].iloc[-1]) if pd.notna(work_df["Turnover_Rate"].iloc[-1]) else np.nan
         for p in periods_sma:
             tor = work_df["Turnover_Rate"].tail(p).mean() if len(work_df) >= p else np.nan
@@ -2784,6 +2789,9 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
             "cp": prev_close,
             "dev": dev_values,
             "tor": tor_values,
+            "tor_status": turnover_status,
+            "tor_reason": turnover_reason,
+            "share_base": float(share_base) if share_base is not None else None,
             "amp": amp_values,
             "sma": sma_values,
         },
@@ -2963,6 +2971,10 @@ def render_home_snapshot_detail_page(ticker: str):
         hide_index=True,
         use_container_width=True,
     )
+    if selected_detail.get("tor_status") != TURNOVER_STATUS_CALCULATED:
+        st.caption(
+            f"TOR unavailable for {ticker}: {selected_detail.get('tor_reason') or 'No valid share base or volume.'}"
+        )
 
     st.markdown("### Amp")
     st.dataframe(
@@ -3418,10 +3430,16 @@ with st.sidebar:
                         try:
                             t_obj = yf.Ticker(yt)
                             share_base = get_turnover_share_base(t_obj)
-                            if share_base:
-                                d["Turnover_Rate"] = (d["Volume"] / float(share_base)) * 100
-                        except Exception:
-                            pass
+                            d, turnover_status, turnover_reason = apply_turnover_rate(d, share_base)
+                            if turnover_status != TURNOVER_STATUS_CALCULATED:
+                                LOGGER.info(
+                                    "Telegram report TOR unavailable for %s: %s (%s)",
+                                    yt,
+                                    turnover_status,
+                                    turnover_reason,
+                                )
+                        except Exception as exc:
+                            LOGGER.warning("Unable to attach TOR for Telegram report %s: %s", yt, exc)
                         if len(d) > 50:
                             w = get_watchlist_from_db()
                             msg = run_analysis_logic(d, st.session_state.current_view, w.get(st.session_state.current_view, {}))
@@ -3653,14 +3671,11 @@ else:
         if f'SMA_{sma1}' not in df.columns: df[f'SMA_{sma1}'] = df['Close'].rolling(sma1).mean()
         if f'SMA_{sma2}' not in df.columns: df[f'SMA_{sma2}'] = df['Close'].rolling(sma2).mean()
 
-        has_turnover = False
-        if share_base:
-            has_turnover = True
-            df['Turnover_Rate'] = (df['Volume'] / share_base) * 100
+        df, turnover_status, turnover_reason = apply_turnover_rate(df, share_base)
+        has_turnover = turnover_status == TURNOVER_STATUS_CALCULATED
+        if has_turnover:
             # 增加 v9.6 的 BS Analysis 計算
             df = simulate_bs_data(df, share_base)
-        else:
-            df['Turnover_Rate'] = 0.0
 
         prev_close_series = df['Close'].shift(1).replace(0, np.nan)
         df['AMP'] = (df['High'] - df['Low']) / prev_close_series * 100
@@ -4409,7 +4424,8 @@ else:
                 render_scroll_anchor("stock-turnover")
                 st.subheader("📋 Turnover Rate Matrix")
                 if not has_turnover:
-                    st.error("無流通股數數據。")
+                    reason_text = turnover_reason or "無法取得有效的 share base。"
+                    st.error(f"無法計算 Turnover Rate：{reason_text}")
                 elif len(data_slice) < 13:
                     st.warning("數據不足 13 個交易日，無法顯示 Turnover Matrix。")
                 else:

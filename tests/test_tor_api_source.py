@@ -13,11 +13,17 @@ class TorApiSourceTests(unittest.TestCase):
         self.assertIn("def get_turnover_share_base(ticker_obj):", source)
         self.assertIn("return get_turnover_share_lookup(ticker_obj).share_base", source)
 
-    def test_turnover_formula_still_uses_share_base_denominator(self) -> None:
-        source = Path("/workspace/app.py").read_text(encoding="utf-8")
+    def test_turnover_formula_is_shared_in_helper(self) -> None:
+        source = Path("/workspace/turnover_utils.py").read_text(encoding="utf-8")
 
-        self.assertIn('work_df["Turnover_Rate"] = work_df["Volume"] / float(share_base) * 100', source)
-        self.assertIn("df['Turnover_Rate'] = (df['Volume'] / share_base) * 100", source)
+        self.assertIn(
+            'result_df["Turnover_Rate"] = (',
+            source,
+        )
+        self.assertIn(
+            'result_df[volume_column].astype(float) / float(share_base) * 100',
+            source,
+        )
 
 
 if __name__ == "__main__":
