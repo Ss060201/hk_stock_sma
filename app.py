@@ -3626,52 +3626,70 @@ elif current_page == "home":
 
                 render_scroll_anchor(get_home_stock_anchor_id(ticker))
 
-                row_html = f"""
-                <div class="stock-row">
+                cols = st.columns([1, 1, 1, 1, 1, 1, 1])
 
-                <div class="stock-code">
-                {ticker}
-                </div>
-
-                <div>
-                {row.get("CPRD", "-"):.2f}
-                </div>
-
-                <div>
-                {row.get("Dev 0", "-"):.2f}%
-                </div>
-
-                <div>
-                {row.get("Dev 3", "-"):.2f}%
-                </div>
-
-                <div>
-                {row.get("Dev 7", "-"):.2f}%
-                </div>
-
-                <div>
-                {row.get("Dev 14", "-"):.2f}%
-                </div>
-
-                <div>
-                {row.get("Dev 28", "-"):.2f}%
-                </div>
-
-                </div>
-                """
+                # Code clickable
+                with cols[0]:
+                    if st.button(
+                        ticker,
+                        key=f"home_code_{ticker}",
+                        use_container_width=True
+                    ):
+                        st.session_state.home_selected_ticker = ticker
+                        st.session_state.home_return_anchor = get_home_stock_anchor_id(ticker)
+                        set_current_page("home_detail", ticker)
+                        st.rerun()
 
 
-                st.markdown(row_html, unsafe_allow_html=True)
+                # CPRD
+                 with cols[1]:
+                    value = row.get("CPRD", None)
+                    st.write(
+                        f"{value:.2f}" if isinstance(value, (int, float)) else "-"
+                    )
 
 
-                if st.button(
-                    ticker,
-                    key=f"home_code_{ticker}"
-                ):
-                    set_current_page("home_detail", ticker)
-                    st.rerun()
+                # Dev 0
+                with cols[2]:
+                    value = row.get("Dev 0", None)
+                    st.write(
+                        f"{value:.2f}%" if isinstance(value, (int, float)) else "-"
+                    )
+
+
+                # Dev 3
+                with cols[3]:
+                    value = row.get("Dev 3", None)
+                    st.write(
+                        f"{value:.2f}%" if isinstance(value, (int, float)) else "-"
+                    )
+            
+            
+                # Dev 7
+                with cols[4]:
+                    value = row.get("Dev 7", None)
+                    st.write(
+                        f"{value:.2f}%" if isinstance(value, (int, float)) else "-"
+                    )
+            
+            
+                # Dev 14
+                with cols[5]:
+                    value = row.get("Dev 14", None)
+                    st.write(
+                        f"{value:.2f}%" if isinstance(value, (int, float)) else "-"
+                    )
+            
+            
+                # Dev 28
+                with cols[6]:
+                    value = row.get("Dev 28", None)
+                    st.write(
+                        f"{value:.2f}%" if isinstance(value, (int, float)) else "-"
+                    )
+            
+            
                 st.write("")
-
 elif not current_code:
     st.title("📈 單股分析")
     st.info("請先從左側輸入股票代號或點擊收藏清單，再查看單股功能。")
