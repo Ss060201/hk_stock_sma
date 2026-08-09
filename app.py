@@ -3639,24 +3639,22 @@ elif current_page == "home":
                         st.session_state.home_return_anchor = get_home_stock_anchor_id(ticker)
                         set_current_page("home_detail", ticker)
                         st.rerun()
-
-
                 # CPRD
-                 with cols[1]:
+                with cols[1]:
                     value = row.get("CPRD", None)
                     st.write(
                         f"{value:.2f}" if isinstance(value, (int, float)) else "-"
                     )
-
-
+            
+            
                 # Dev 0
                 with cols[2]:
                     value = row.get("Dev 0", None)
                     st.write(
                         f"{value:.2f}%" if isinstance(value, (int, float)) else "-"
                     )
-
-
+            
+            
                 # Dev 3
                 with cols[3]:
                     value = row.get("Dev 3", None)
@@ -3687,7 +3685,6 @@ elif current_page == "home":
                     st.write(
                         f"{value:.2f}%" if isinstance(value, (int, float)) else "-"
                     )
-            
             
                 st.write("")
 elif not current_code:
