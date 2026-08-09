@@ -3638,23 +3638,23 @@ elif current_page == "home":
                 </div>
 
                 <div>
-                {row.get("Dev0", "-"):.2f}%
+                {row.get("Dev 0", "-"):.2f}%
                 </div>
 
                 <div>
-                {row.get("Dev3", "-"):.2f}%
+                {row.get("Dev 3", "-"):.2f}%
                 </div>
 
                 <div>
-                {row.get("Dev7", "-"):.2f}%
+                {row.get("Dev 7", "-"):.2f}%
                 </div>
 
                 <div>
-                {row.get("Dev14", "-"):.2f}%
+                {row.get("Dev 14", "-"):.2f}%
                 </div>
 
                 <div>
-                {row.get("Dev28", "-"):.2f}%
+                {row.get("Dev 28", "-"):.2f}%
                 </div>
 
                 </div>
