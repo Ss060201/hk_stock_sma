@@ -460,6 +460,41 @@ st.markdown("""
     @media (min-width: 1024px) {
         .main .block-container { padding: var(--desktop-padding) !important; }
     }
+    .stock-row {
+
+display:grid;
+
+grid-template-columns:
+100px
+80px
+80px
+80px
+80px
+80px
+80px;
+
+gap:10px;
+
+align-items:center;
+
+min-width:600px;
+
+padding:10px;
+
+border-bottom:1px solid #ddd;
+
+font-size:14px;
+
+}
+
+
+.stock-code {
+
+font-weight:bold;
+
+cursor:pointer;
+
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -3591,43 +3626,50 @@ elif current_page == "home":
 
                 render_scroll_anchor(get_home_stock_anchor_id(ticker))
 
-                summary_cols = st.columns(
-                    [1.2, 1, 1, 1, 1, 1, 1]
-                )
+                row_html = f"""
+                <div class="stock-row">
 
-                with summary_cols[0]:
-                    if st.button(
-                        ticker,
-                        key=f"home_code_{ticker}",
-                        use_container_width=True
-                     ):
-                        set_current_page("home_detail", ticker)
-                        st.rerun()
+                <div class="stock-code">
+                {ticker}
+                </div>
 
-                with summary_cols[1]:
-                    st.write(f'{row.get("CPRD", "-"):.2f}')
+                <div>
+                {row.get("CPRD", "-"):.2f}
+                </div>
 
-                with summary_cols[2]:
-                    value = row.get("Dev 0", None)
-                    st.write(f'{value:.2f}%' if isinstance(value, (int, float)) else "-")
+                <div>
+                {row.get("Dev0", "-"):.2f}%
+                </div>
 
-                with summary_cols[3]:
-                    value = row.get("Dev 3", None)
-                    st.write(f'{value:.2f}%' if isinstance(value, (int, float)) else "-")
+                <div>
+                {row.get("Dev3", "-"):.2f}%
+                </div>
 
-                with summary_cols[4]:
-                    value = row.get("Dev 7", None)
-                    st.write(f'{value:.2f}%' if isinstance(value, (int, float)) else "-")
-                
-                with summary_cols[5]:
-                    value = row.get("Dev 14", None)
-                    st.write(f'{value:.2f}%' if isinstance(value, (int, float)) else "-")
+                <div>
+                {row.get("Dev7", "-"):.2f}%
+                </div>
 
-                with summary_cols[6]:
-                    value = row.get("Dev 28", None)
-                    st.write(f'{value:.2f}%' if isinstance(value, (int, float)) else "-")
+                <div>
+                {row.get("Dev14", "-"):.2f}%
+                </div>
+
+                <div>
+                {row.get("Dev28", "-"):.2f}%
+                </div>
+
+                </div>
+                """
 
 
+                st.markdown(row_html, unsafe_allow_html=True)
+
+
+                if st.button(
+                    ticker,
+                    key=f"home_code_{ticker}"
+                ):
+                    set_current_page("home_detail", ticker)
+                    st.rerun()
                 st.write("")
 
 elif not current_code:
