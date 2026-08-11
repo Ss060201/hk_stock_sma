@@ -418,7 +418,7 @@ st.markdown("""
     @media (max-width: 768px) {
         .main .block-container { padding: var(--mobile-padding) !important; padding-bottom: 88px !important; max-width: 100% !important; }
         div[data-testid="stHorizontalBlock"] { flex-direction: column !important; }
-        div[data-testid="stHorizontalBlock"] > div { width: 100% !important; margin-bottom: 12px; }
+        div[data-testid="stHorizontalBlock"] > div { width: 100% !important; margin-bottom: 6px; }
         table { font-size: 12px; }
         th, td { padding: 8px; }
         .compact-grid { gap: 6px; margin: 6px 0 10px 0; }
@@ -3642,7 +3642,7 @@ elif current_page == "home":
                 overflow-y: hidden !important;
                 gap: 0 !important;
                 margin: 0 !important;
-                padding: 0 4px !important;
+                padding: 0 2px !important;
                 box-sizing: border-box !important;
                 scrollbar-width: thin !important;
             }
@@ -3654,13 +3654,13 @@ elif current_page == "home":
                 min-width: 95px !important;
                 max-width: 95px !important;
                 margin: 0 !important;
-                padding: 0 4px !important;
+                padding: 0 2px !important;
                 box-sizing: border-box !important;
             }
 
             div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker) .stock-cell {
-                width: 120px !important;
-                min-width: 120px !important;
+                width: 95px !important;
+                min-width: 95px !important;
                 text-align: center !important;
                 font-size: 14px !important;
                 line-height: 26px !important;
@@ -3674,6 +3674,9 @@ elif current_page == "home":
                 max-width: 95px !important;
                 white-space: nowrap !important;
                 margin: 0 !important;
+                min-height: 30px !important;
+                padding: 4px 6px !important;
+                font-size: 14px !important;
                 box-sizing: border-box !important;
             }
 
@@ -3709,12 +3712,12 @@ elif current_page == "home":
 
                 div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker)
                 > div[data-testid="stColumn"] {
-                    flex: 0 0 120px !important;
-                    width: 120px !important;
-                    min-width: 120px !important;
-                    max-width: 120px !important;
+                    flex: 0 0 95px !important;
+                    width: 95px !important;
+                    min-width: 95px !important;
+                    max-width: 95px !important;
                     margin: 0 !important;
-                    padding: 0 4px !important;
+                    padding: 0 2px !important;
                 }
             }
             </style>
