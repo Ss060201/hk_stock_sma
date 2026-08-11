@@ -3649,10 +3649,10 @@ elif current_page == "home":
 
             div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker)
             > div[data-testid="stColumn"] {
-                flex: 0 0 120px !important;
-                width: 120px !important;
-                min-width: 120px !important;
-                max-width: 120px !important;
+                flex: 0 0 95px !important;
+                width: 95px !important;
+                min-width: 95px !important;
+                max-width: 95px !important;
                 margin: 0 !important;
                 padding: 0 4px !important;
                 box-sizing: border-box !important;
@@ -3662,16 +3662,16 @@ elif current_page == "home":
                 width: 120px !important;
                 min-width: 120px !important;
                 text-align: center !important;
-                font-size: 17px !important;
-                line-height: 32px !important;
+                font-size: 14px !important;
+                line-height: 26px !important;
                 white-space: nowrap !important;
                 box-sizing: border-box !important;
             }
 
             div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker) .stButton > button {
-                width: 120px !important;
-                min-width: 120px !important;
-                max-width: 120px !important;
+                width: 95px !important;
+                min-width: 95px !important;
+                max-width: 95px !important;
                 white-space: nowrap !important;
                 margin: 0 !important;
                 box-sizing: border-box !important;
