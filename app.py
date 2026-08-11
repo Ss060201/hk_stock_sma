@@ -2809,6 +2809,25 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
             tor = work_df["Turnover_Rate"].tail(p).mean() if len(work_df) >= p else np.nan
             tor_values[f"TOR {p}"] = float(tor) if pd.notna(tor) else np.nan
 
+    # Keep the latest six trading days so the Home detail page can
+    # display a compact history table matching the requested layout.
+    dev_history = []
+    for row_pos in range(max(0, len(work_df) - 6), len(work_df)):
+        row_close = float(close.iloc[row_pos]) if pd.notna(close.iloc[row_pos]) else np.nan
+        row_prev = close.iloc[row_pos - 1] if row_pos > 0 else np.nan
+        row_prev = float(row_prev) if pd.notna(row_prev) and float(row_prev) != 0 else np.nan
+
+        row_values = {
+            "Code": ticker,
+            "CPRD": row_prev,
+            "Dev 0": pct_change(row_close, row_prev),
+        }
+        for p in dev_periods:
+            base_pos = row_pos - p
+            base_value = close.iloc[base_pos] if base_pos >= 0 else np.nan
+            row_values[f"Dev {p}"] = pct_change(row_close, base_value)
+        dev_history.append(row_values)
+
     return {
         "summary": {
             "Code": ticker,
@@ -2821,6 +2840,7 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
             "current_price": current_close,
             "cp": prev_close,
             "dev": dev_values,
+            "dev_history": dev_history,
             "tor": tor_values,
             "tor_status": turnover_status,
             "tor_reason": turnover_reason,
@@ -2910,23 +2930,33 @@ def render_home_snapshot_detail_page(ticker: str):
     )
     st.markdown(detail_header_html, unsafe_allow_html=True)
 
-    dev_core_df = pd.DataFrame(
-        [{
-            "Code": ticker,
-            "CPRD": selected_detail["cp"],
-            "Dev 0": selected_detail["dev"].get("Dev 0"),
-            "Dev 3": selected_detail["dev"].get("Dev 3"),
-            "Dev 7": selected_detail["dev"].get("Dev 7"),
-            "Dev 14": selected_detail["dev"].get("Dev 14"),
-            "Dev 28": selected_detail["dev"].get("Dev 28"),
-        }]
+    dev_history = selected_detail.get("dev_history", [])
+    dev_history_df = pd.DataFrame(dev_history)
+    dev_base_columns = [
+        "Code",
+        "CPRD",
+        "Dev 0",
+        "Dev 3",
+        "Dev 7",
+        "Dev 14",
+        "Dev 28",
+    ]
+    dev_extended_columns = ["Dev 57", "Dev 106"]
+    show_extended_key = f"home_detail_show_dev_extended_{ticker}"
+    show_extended = bool(st.session_state.get(show_extended_key, False))
+
+    if st.button(
+        "顯示 Dev 57 / Dev 106" if not show_extended else "隱藏 Dev 57 / Dev 106",
+        key=f"home_detail_toggle_dev_{ticker}",
+        use_container_width=False,
+    ):
+        st.session_state[show_extended_key] = not show_extended
+        st.rerun()
+
+    visible_dev_columns = dev_base_columns + (
+        dev_extended_columns if show_extended else []
     )
-    dev_more_df = pd.DataFrame(
-        [{
-            "Dev 57": selected_detail["dev"].get("Dev 57"),
-            "Dev 106": selected_detail["dev"].get("Dev 106"),
-        }]
-    )
+    dev_history_df = dev_history_df.reindex(columns=visible_dev_columns)
     tor_df = pd.DataFrame(
         [{
             "Date": selected_detail["date"],
@@ -2960,32 +2990,41 @@ def render_home_snapshot_detail_page(ticker: str):
         }]
     )
 
-    st.markdown("### Dev")
-    st.dataframe(
-        _home_green_style(
-            dev_core_df,
-            {
-                "CPRD": "{:.2f}",
-                "Dev 0": "{:+.2f}%",
-                "Dev 3": "{:+.2f}%",
-                "Dev 7": "{:+.2f}%",
-                "Dev 14": "{:+.2f}%",
-                "Dev 28": "{:+.2f}%",
-            },
-        ),
-        hide_index=True,
-        use_container_width=True,
+    st.markdown(
+        """
+        <style>
+        .home-dev-history-note {
+            font-size: 11px;
+            color: #6c757d;
+            margin: -4px 0 4px 0;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
+    st.markdown(
+        '<div class="home-dev-history-note">顯示最近 6 個交易日；Dev 57 / Dev 106 可按鈕展開。</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("### Dev")
+    dev_fmt_map = {
+        "CPRD": "{:.2f}",
+        "Dev 0": "{:+.2f}%",
+        "Dev 3": "{:+.2f}%",
+        "Dev 7": "{:+.2f}%",
+        "Dev 14": "{:+.2f}%",
+        "Dev 28": "{:+.2f}%",
+        "Dev 57": "{:+.2f}%",
+        "Dev 106": "{:+.2f}%",
+    }
     st.dataframe(
         _home_green_style(
-            dev_more_df,
-            {
-                "Dev 57": "{:+.2f}%",
-                "Dev 106": "{:+.2f}%",
-            },
+            dev_history_df,
+            {column: dev_fmt_map[column] for column in visible_dev_columns if column in dev_fmt_map},
         ),
         hide_index=True,
         use_container_width=True,
+        height=248,
     )
 
     st.markdown("### TOR")
