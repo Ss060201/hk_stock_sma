@@ -3622,16 +3622,69 @@ elif current_page == "home":
                 return "-" if pd.isna(value) else f"{float(value):+.2f}%"
 
                 # ============================================================
+        # ============================================================
         # Home stock cards: keep all 7 fields on one horizontal row.
-        # Each stock gets a keyed Streamlit container so the mobile
-        # override is scoped to this Home list only.
+        # A hidden marker inside each row lets CSS identify the exact
+        # Streamlit HorizontalBlock without depending on Streamlit's
+        # generated aria-labels or container DOM classes.
         # ============================================================
         st.markdown(
             """
             <style>
-            /* Home stock cards only: override the global mobile stacking rule. */
+            /* Only HorizontalBlocks containing our hidden marker are Home stock rows. */
+            div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker) {
+                flex-direction: row !important;
+                flex-wrap: nowrap !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                min-width: 0 !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
+                gap: 0 !important;
+                margin: 0 !important;
+                padding: 0 4px !important;
+                box-sizing: border-box !important;
+                scrollbar-width: thin !important;
+            }
+
+            div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker)
+            > div[data-testid="stColumn"] {
+                flex: 0 0 120px !important;
+                width: 120px !important;
+                min-width: 120px !important;
+                max-width: 120px !important;
+                margin: 0 !important;
+                padding: 0 4px !important;
+                box-sizing: border-box !important;
+            }
+
+            div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker) .stock-cell {
+                width: 120px !important;
+                min-width: 120px !important;
+                text-align: center !important;
+                font-size: 17px !important;
+                line-height: 32px !important;
+                white-space: nowrap !important;
+                box-sizing: border-box !important;
+            }
+
+            div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker) .stButton > button {
+                width: 120px !important;
+                min-width: 120px !important;
+                max-width: 120px !important;
+                white-space: nowrap !important;
+                margin: 0 !important;
+                box-sizing: border-box !important;
+            }
+
+            /* The marker itself is only a CSS hook and must never be visible. */
+            .home-stock-card-marker {
+                display: none !important;
+            }
+
+            /* Mobile: make each stock row a bounded horizontal scroller. */
             @media (max-width: 768px) {
-                [class*="st-key-home_stock_card_"] {
+                div[class*="st-key-home_stock_card_"] {
                     width: 100% !important;
                     max-width: 100% !important;
                     min-width: 0 !important;
@@ -3644,63 +3697,25 @@ elif current_page == "home":
                     background: white !important;
                 }
 
-                [class*="st-key-home_stock_card_"] div[data-testid="stHorizontalBlock"] {
+                div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker) {
                     flex-direction: row !important;
                     flex-wrap: nowrap !important;
                     overflow-x: auto !important;
                     overflow-y: hidden !important;
-                    width: max-content !important;
-                    min-width: 840px !important;
-                    max-width: none !important;
-                    gap: 0 !important;
-                    margin: 0 !important;
-                    padding: 0 !important;
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    min-width: 0 !important;
                 }
 
-                [class*="st-key-home_stock_card_"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+                div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker)
+                > div[data-testid="stColumn"] {
                     flex: 0 0 120px !important;
                     width: 120px !important;
                     min-width: 120px !important;
                     max-width: 120px !important;
                     margin: 0 !important;
                     padding: 0 4px !important;
-                    box-sizing: border-box !important;
                 }
-            }
-
-            /* Desktop: keep the same seven fixed-width fields. */
-            [class*="st-key-home_stock_card_"] div[data-testid="stHorizontalBlock"] {
-                flex-wrap: nowrap !important;
-                gap: 0 !important;
-            }
-
-            [class*="st-key-home_stock_card_"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
-                flex: 0 0 120px !important;
-                width: 120px !important;
-                min-width: 120px !important;
-                max-width: 120px !important;
-                margin: 0 !important;
-                padding: 0 4px !important;
-                box-sizing: border-box !important;
-            }
-
-            [class*="st-key-home_stock_card_"] .stock-cell {
-                width: 120px !important;
-                min-width: 120px !important;
-                text-align: center !important;
-                font-size: 17px !important;
-                line-height: 32px !important;
-                white-space: nowrap !important;
-                box-sizing: border-box !important;
-            }
-
-            [class*="st-key-home_stock_card_"] .stButton > button {
-                width: 120px !important;
-                min-width: 120px !important;
-                max-width: 120px !important;
-                white-space: nowrap !important;
-                margin: 0 !important;
-                box-sizing: border-box !important;
             }
             </style>
             """,
@@ -3713,15 +3728,15 @@ elif current_page == "home":
 
             render_scroll_anchor(get_home_stock_anchor_id(ticker))
 
-            # The keyed container is the card boundary. The seven Streamlit
-            # columns inside it remain one horizontal row on every viewport.
             with st.container(key=f"home_stock_card_{safe_ticker}"):
                 cols = st.columns([1, 1, 1, 1, 1, 1, 1])
 
-                # ========================================================
-                # Code - clickable
-                # ========================================================
+                # Hidden CSS hook inside this exact HorizontalBlock.
                 with cols[0]:
+                    st.markdown(
+                        '<span class="home-stock-card-marker" aria-hidden="true"></span>',
+                        unsafe_allow_html=True,
+                    )
                     if st.button(
                         ticker,
                         key=f"home_code_{ticker}",
@@ -3734,87 +3749,39 @@ elif current_page == "home":
                         set_current_page("home_detail", ticker)
                         st.rerun()
 
-                # ========================================================
-                # CPRD
-                # ========================================================
                 with cols[1]:
-                    value = row.get("CPRD", None)
                     st.markdown(
-                        f"""
-                        <div class="stock-cell">
-                            {_fmt_num(value)}
-                        </div>
-                        """,
+                        f'<div class="stock-cell">{_fmt_num(row.get("CPRD", None))}</div>',
                         unsafe_allow_html=True,
                     )
 
-                # ========================================================
-                # Dev 0
-                # ========================================================
                 with cols[2]:
-                    value = row.get("Dev 0", None)
                     st.markdown(
-                        f"""
-                        <div class="stock-cell">
-                            {_fmt_pct(value)}
-                        </div>
-                        """,
+                        f'<div class="stock-cell">{_fmt_pct(row.get("Dev 0", None))}</div>',
                         unsafe_allow_html=True,
                     )
 
-                # ========================================================
-                # Dev 3
-                # ========================================================
                 with cols[3]:
-                    value = row.get("Dev 3", None)
                     st.markdown(
-                        f"""
-                        <div class="stock-cell">
-                            {_fmt_pct(value)}
-                        </div>
-                        """,
+                        f'<div class="stock-cell">{_fmt_pct(row.get("Dev 3", None))}</div>',
                         unsafe_allow_html=True,
                     )
 
-                # ========================================================
-                # Dev 7
-                # ========================================================
                 with cols[4]:
-                    value = row.get("Dev 7", None)
                     st.markdown(
-                        f"""
-                        <div class="stock-cell">
-                            {_fmt_pct(value)}
-                        </div>
-                        """,
+                        f'<div class="stock-cell">{_fmt_pct(row.get("Dev 7", None))}</div>',
                         unsafe_allow_html=True,
                     )
 
-                # ========================================================
-                # Dev 14
-                # ========================================================
                 with cols[5]:
-                    value = row.get("Dev 14", None)
                     st.markdown(
-                        f"""
-                        <div class="stock-cell">
-                            {_fmt_pct(value)}
-                        </div>
-                        """,
+                        f'<div class="stock-cell">{_fmt_pct(row.get("Dev 14", None))}</div>',
                         unsafe_allow_html=True,
                     )
 
-                # ========================================================
-                # Dev 28
-                # ========================================================
                 with cols[6]:
-                    value = row.get("Dev 28", None)
                     st.markdown(
-                        f"""
-                        <div class="stock-cell">
-                            {_fmt_pct(value)}
-                        </div>
-                        """,
+                        f'<div class="stock-cell">{_fmt_pct(row.get("Dev 28", None))}</div>',
                         unsafe_allow_html=True,
                     )
 
