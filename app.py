@@ -3621,72 +3621,150 @@ elif current_page == "home":
             def _fmt_pct(value):
                 return "-" if pd.isna(value) else f"{float(value):+.2f}%"
 
-            for row in sorted_rows:
-                ticker = row["Code"]
+        for row in sorted_rows:
+            ticker = row["Code"]
 
-                render_scroll_anchor(get_home_stock_anchor_id(ticker))
+            render_scroll_anchor(get_home_stock_anchor_id(ticker))
 
-                cols = st.columns([1, 1, 1, 1, 1, 1, 1])
+            # =========================
+            # 7-column horizontal card
+            # =========================
+            with st.container(
+                horizontal=True,
+                border=True,
+                gap="small",
+                vertical_alignment="center",
+            ):
 
-                # Code clickable
-                with cols[0]:
+                # -------------------------
+                # Code - clickable
+                # -------------------------
+                with st.container(width=120):
                     if st.button(
                         ticker,
                         key=f"home_code_{ticker}",
-                        use_container_width=True
+                        use_container_width=True,
                     ):
                         st.session_state.home_selected_ticker = ticker
-                        st.session_state.home_return_anchor = get_home_stock_anchor_id(ticker)
+                        st.session_state.home_return_anchor = (
+                            get_home_stock_anchor_id(ticker)
+                        )
                         set_current_page("home_detail", ticker)
                         st.rerun()
+
+                # -------------------------
                 # CPRD
-                with cols[1]:
+                # -------------------------
+                with st.container(width=120):
                     value = row.get("CPRD", None)
-                    st.write(
-                        f"{value:.2f}" if isinstance(value, (int, float)) else "-"
+                    st.markdown(
+                        f"""
+                        <div style="
+                            text-align:center;
+                            font-size:18px;
+                            white-space:nowrap;
+                            padding:10px 0;
+                        ">
+                            {f"{value:.2f}" if isinstance(value, (int, float)) else "-"}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
-            
-            
+
+                # -------------------------
                 # Dev 0
-                with cols[2]:
+                # -------------------------
+                with st.container(width=120):
                     value = row.get("Dev 0", None)
-                    st.write(
-                        f"{value:.2f}%" if isinstance(value, (int, float)) else "-"
+                    st.markdown(
+                        f"""
+                        <div style="
+                            text-align:center;
+                            font-size:18px;
+                            white-space:nowrap;
+                            padding:10px 0;
+                        ">
+                            {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
-            
-            
+
+                # -------------------------
                 # Dev 3
-                with cols[3]:
+                # -------------------------
+                with st.container(width=120):
                     value = row.get("Dev 3", None)
-                    st.write(
-                        f"{value:.2f}%" if isinstance(value, (int, float)) else "-"
+                    st.markdown(
+                        f"""
+                        <div style="
+                            text-align:center;
+                            font-size:18px;
+                            white-space:nowrap;
+                            padding:10px 0;
+                        ">
+                            {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
-            
-            
+
+                # -------------------------
                 # Dev 7
-                with cols[4]:
+                # -------------------------
+                with st.container(width=120):
                     value = row.get("Dev 7", None)
-                    st.write(
-                        f"{value:.2f}%" if isinstance(value, (int, float)) else "-"
+                    st.markdown(
+                        f"""
+                        <div style="
+                            text-align:center;
+                            font-size:18px;
+                            white-space:nowrap;
+                            padding:10px 0;
+                        ">
+                            {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
-            
-            
+
+                # -------------------------
                 # Dev 14
-                with cols[5]:
+                # -------------------------
+                with st.container(width=120):
                     value = row.get("Dev 14", None)
-                    st.write(
-                        f"{value:.2f}%" if isinstance(value, (int, float)) else "-"
+                    st.markdown(
+                        f"""
+                        <div style="
+                            text-align:center;
+                            font-size:18px;
+                            white-space:nowrap;
+                            padding:10px 0;
+                        ">
+                            {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
-            
-            
+
+                # -------------------------
                 # Dev 28
-                with cols[6]:
+                # -------------------------
+                with st.container(width=120):
                     value = row.get("Dev 28", None)
-                    st.write(
-                        f"{value:.2f}%" if isinstance(value, (int, float)) else "-"
+                    st.markdown(
+                        f"""
+                        <div style="
+                            text-align:center;
+                            font-size:18px;
+                            white-space:nowrap;
+                            padding:10px 0;
+                        ">
+                            {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
-            
-                st.write("")
 elif not current_code:
     st.title("📈 單股分析")
     st.info("請先從左側輸入股票代號或點擊收藏清單，再查看單股功能。")
