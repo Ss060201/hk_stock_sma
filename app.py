@@ -3706,7 +3706,7 @@ elif current_page == "home":
                 width: 100% !important;
                 max-width: 100% !important;
                 min-width: 0 !important;
-                overflow: hidden !important;
+                overflow: visible !important;
                 box-sizing: border-box !important;
                 margin: 0 !important;
                 padding: 0 !important;
@@ -3730,6 +3730,9 @@ elif current_page == "home":
                 border-left: 1px solid #d9dee5 !important;
                 border-right: 1px solid #d9dee5 !important;
                 border-bottom: 1px solid #e4e7ec !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
+                -webkit-overflow-scrolling: touch !important;
                 background: white !important;
             }
 
@@ -3812,7 +3815,8 @@ elif current_page == "home":
                 div[class*="st-key-home_stock_card_"] {
                     width: 100% !important;
                     max-width: 100% !important;
-                    overflow: hidden !important;
+                    min-width: 0 !important;
+                    overflow: visible !important;
                 }
 
                 div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker) {
@@ -3820,7 +3824,10 @@ elif current_page == "home":
                     min-width: 546px !important;
                     max-width: none !important;
                     overflow-x: auto !important;
+                    overflow-y: hidden !important;
                     flex-wrap: nowrap !important;
+                    -webkit-overflow-scrolling: touch !important;
+                    touch-action: pan-x !important;
                 }
 
                 div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker)
