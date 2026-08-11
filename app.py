@@ -3621,150 +3621,175 @@ elif current_page == "home":
             def _fmt_pct(value):
                 return "-" if pd.isna(value) else f"{float(value):+.2f}%"
 
+                # ============================================================
+        # Mobile-safe horizontal stock cards
+        # 7 columns ALWAYS stay on the same row
+        # ============================================================
+        st.markdown(
+            """
+            <style>
+            /* Prevent Streamlit columns from wrapping on mobile */
+            div[data-testid="stHorizontalBlock"] {
+                flex-wrap: nowrap !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
+                width: max-content !important;
+                min-width: 100% !important;
+            }
+
+            /* Keep every column at a fixed width */
+            div[data-testid="stHorizontalBlock"]
+            > div[data-testid="stColumn"] {
+                min-width: 120px !important;
+                width: 120px !important;
+                flex: 0 0 120px !important;
+            }
+
+            /* Stock card */
+            .stock-card {
+                display: flex;
+                flex-direction: row;
+                align-items: center;
+                gap: 0;
+                width: max-content;
+                min-width: 840px;
+                padding: 12px 8px;
+                margin: 8px 0;
+                border: 1px solid #d9d9d9;
+                border-radius: 10px;
+                background: white;
+                box-sizing: border-box;
+            }
+
+            .stock-cell {
+                width: 120px;
+                min-width: 120px;
+                text-align: center;
+                font-size: 17px;
+                white-space: nowrap;
+                box-sizing: border-box;
+            }
+
+            .stock-code-cell {
+                font-weight: 600;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
         for row in sorted_rows:
             ticker = row["Code"]
 
             render_scroll_anchor(get_home_stock_anchor_id(ticker))
 
-            # =========================
-            # 7-column horizontal card
-            # =========================
-            with st.container(
-                horizontal=True,
-                border=True,
-                gap="small",
-                vertical_alignment="center",
-            ):
+            cols = st.columns([1, 1, 1, 1, 1, 1, 1])
 
-                # -------------------------
-                # Code - clickable
-                # -------------------------
-                with st.container(width=120):
-                    if st.button(
-                        ticker,
-                        key=f"home_code_{ticker}",
-                        use_container_width=True,
-                    ):
-                        st.session_state.home_selected_ticker = ticker
-                        st.session_state.home_return_anchor = (
-                            get_home_stock_anchor_id(ticker)
-                        )
-                        set_current_page("home_detail", ticker)
-                        st.rerun()
-
-                # -------------------------
-                # CPRD
-                # -------------------------
-                with st.container(width=120):
-                    value = row.get("CPRD", None)
-                    st.markdown(
-                        f"""
-                        <div style="
-                            text-align:center;
-                            font-size:18px;
-                            white-space:nowrap;
-                            padding:10px 0;
-                        ">
-                            {f"{value:.2f}" if isinstance(value, (int, float)) else "-"}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
+            # ========================================================
+            # Code - clickable
+            # ========================================================
+            with cols[0]:
+                if st.button(
+                    ticker,
+                    key=f"home_code_{ticker}",
+                    use_container_width=True,
+                ):
+                    st.session_state.home_selected_ticker = ticker
+                    st.session_state.home_return_anchor = (
+                        get_home_stock_anchor_id(ticker)
                     )
+                    set_current_page("home_detail", ticker)
+                    st.rerun()
 
-                # -------------------------
-                # Dev 0
-                # -------------------------
-                with st.container(width=120):
-                    value = row.get("Dev 0", None)
-                    st.markdown(
-                        f"""
-                        <div style="
-                            text-align:center;
-                            font-size:18px;
-                            white-space:nowrap;
-                            padding:10px 0;
-                        ">
-                            {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+            # ========================================================
+            # CPRD
+            # ========================================================
+            with cols[1]:
+                value = row.get("CPRD", None)
 
-                # -------------------------
-                # Dev 3
-                # -------------------------
-                with st.container(width=120):
-                    value = row.get("Dev 3", None)
-                    st.markdown(
-                        f"""
-                        <div style="
-                            text-align:center;
-                            font-size:18px;
-                            white-space:nowrap;
-                            padding:10px 0;
-                        ">
-                            {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                st.markdown(
+                    f"""
+                    <div class="stock-cell">
+                        {f"{value:.2f}" if isinstance(value, (int, float)) else "-"}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-                # -------------------------
-                # Dev 7
-                # -------------------------
-                with st.container(width=120):
-                    value = row.get("Dev 7", None)
-                    st.markdown(
-                        f"""
-                        <div style="
-                            text-align:center;
-                            font-size:18px;
-                            white-space:nowrap;
-                            padding:10px 0;
-                        ">
-                            {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+            # ========================================================
+            # Dev 0
+            # ========================================================
+            with cols[2]:
+                value = row.get("Dev 0", None)
 
-                # -------------------------
-                # Dev 14
-                # -------------------------
-                with st.container(width=120):
-                    value = row.get("Dev 14", None)
-                    st.markdown(
-                        f"""
-                        <div style="
-                            text-align:center;
-                            font-size:18px;
-                            white-space:nowrap;
-                            padding:10px 0;
-                        ">
-                            {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                st.markdown(
+                    f"""
+                    <div class="stock-cell">
+                        {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-                # -------------------------
-                # Dev 28
-                # -------------------------
-                with st.container(width=120):
-                    value = row.get("Dev 28", None)
-                    st.markdown(
-                        f"""
-                        <div style="
-                            text-align:center;
-                            font-size:18px;
-                            white-space:nowrap;
-                            padding:10px 0;
-                        ">
-                            {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+            # ========================================================
+            # Dev 3
+            # ========================================================
+            with cols[3]:
+                value = row.get("Dev 3", None)
+
+                st.markdown(
+                    f"""
+                    <div class="stock-cell">
+                        {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            # ========================================================
+            # Dev 7
+            # ========================================================
+            with cols[4]:
+                value = row.get("Dev 7", None)
+
+                st.markdown(
+                    f"""
+                    <div class="stock-cell">
+                        {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            # ========================================================
+            # Dev 14
+            # ========================================================
+            with cols[5]:
+                value = row.get("Dev 14", None)
+
+                st.markdown(
+                    f"""
+                    <div class="stock-cell">
+                        {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            # ========================================================
+            # Dev 28
+            # ========================================================
+            with cols[6]:
+                value = row.get("Dev 28", None)
+
+                st.markdown(
+                    f"""
+                    <div class="stock-cell">
+                        {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 elif not current_code:
     st.title("📈 單股分析")
     st.info("請先從左側輸入股票代號或點擊收藏清單，再查看單股功能。")
