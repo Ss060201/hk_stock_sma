@@ -3622,59 +3622,56 @@ elif current_page == "home":
                 return "-" if pd.isna(value) else f"{float(value):+.2f}%"
 
                 # ============================================================
-        # Mobile-safe horizontal stock cards
-        # 7 columns ALWAYS stay on the same row
+        # Home stock cards: keep all 7 fields on one horizontal row.
+        # Mobile uses horizontal scrolling instead of stacking columns.
         # ============================================================
+        home_card_css = []
+        for home_row in sorted_rows:
+            home_ticker = str(home_row["Code"]).replace("\\", "\\\\").replace('"', '\\"')
+            home_card_css.append(
+                f"""
+                div[data-testid="stHorizontalBlock"]:has(button[aria-label="{home_ticker}"]) {{
+                    flex-direction: row !important;
+                    flex-wrap: nowrap !important;
+                    overflow-x: auto !important;
+                    overflow-y: hidden !important;
+                    width: 100% !important;
+                    min-width: 0 !important;
+                    box-sizing: border-box !important;
+                    padding: 8px !important;
+                    margin: 8px 0 !important;
+                    border: 1px solid #d9d9d9 !important;
+                    border-radius: 10px !important;
+                    background: white !important;
+                    gap: 0 !important;
+                }}
+                div[data-testid="stHorizontalBlock"]:has(button[aria-label="{home_ticker}"]) > div[data-testid="stColumn"] {{
+                    min-width: 120px !important;
+                    width: 120px !important;
+                    max-width: 120px !important;
+                    flex: 0 0 120px !important;
+                    margin: 0 !important;
+                }}
+                div[data-testid="stHorizontalBlock"]:has(button[aria-label="{home_ticker}"]) .stock-cell {{
+                    width: 120px !important;
+                    min-width: 120px !important;
+                    text-align: center !important;
+                    font-size: 17px !important;
+                    line-height: 32px !important;
+                    white-space: nowrap !important;
+                    box-sizing: border-box !important;
+                }}
+                div[data-testid="stHorizontalBlock"]:has(button[aria-label="{home_ticker}"]) .stButton > button {{
+                    width: 120px !important;
+                    min-width: 120px !important;
+                    white-space: nowrap !important;
+                    margin: 0 !important;
+                }}
+                """
+            )
+
         st.markdown(
-            """
-            <style>
-            /* Prevent Streamlit columns from wrapping on mobile */
-            div[data-testid="stHorizontalBlock"] {
-                flex-wrap: nowrap !important;
-                overflow-x: auto !important;
-                overflow-y: hidden !important;
-                width: max-content !important;
-                min-width: 100% !important;
-            }
-
-            /* Keep every column at a fixed width */
-            div[data-testid="stHorizontalBlock"]
-            > div[data-testid="stColumn"] {
-                min-width: 120px !important;
-                width: 120px !important;
-                flex: 0 0 120px !important;
-            }
-
-            /* Stock card */
-            .stock-card {
-                display: flex;
-                flex-direction: row;
-                align-items: center;
-                gap: 0;
-                width: max-content;
-                min-width: 840px;
-                padding: 12px 8px;
-                margin: 8px 0;
-                border: 1px solid #d9d9d9;
-                border-radius: 10px;
-                background: white;
-                box-sizing: border-box;
-            }
-
-            .stock-cell {
-                width: 120px;
-                min-width: 120px;
-                text-align: center;
-                font-size: 17px;
-                white-space: nowrap;
-                box-sizing: border-box;
-            }
-
-            .stock-code-cell {
-                font-weight: 600;
-            }
-            </style>
-            """,
+            "<style>\n" + "\n".join(home_card_css) + "\n</style>",
             unsafe_allow_html=True,
         )
 
@@ -3706,11 +3703,10 @@ elif current_page == "home":
             # ========================================================
             with cols[1]:
                 value = row.get("CPRD", None)
-
                 st.markdown(
                     f"""
                     <div class="stock-cell">
-                        {f"{value:.2f}" if isinstance(value, (int, float)) else "-"}
+                        {_fmt_num(value)}
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -3721,11 +3717,10 @@ elif current_page == "home":
             # ========================================================
             with cols[2]:
                 value = row.get("Dev 0", None)
-
                 st.markdown(
                     f"""
                     <div class="stock-cell">
-                        {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                        {_fmt_pct(value)}
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -3736,11 +3731,10 @@ elif current_page == "home":
             # ========================================================
             with cols[3]:
                 value = row.get("Dev 3", None)
-
                 st.markdown(
                     f"""
                     <div class="stock-cell">
-                        {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                        {_fmt_pct(value)}
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -3751,11 +3745,10 @@ elif current_page == "home":
             # ========================================================
             with cols[4]:
                 value = row.get("Dev 7", None)
-
                 st.markdown(
                     f"""
                     <div class="stock-cell">
-                        {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                        {_fmt_pct(value)}
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -3766,11 +3759,10 @@ elif current_page == "home":
             # ========================================================
             with cols[5]:
                 value = row.get("Dev 14", None)
-
                 st.markdown(
                     f"""
                     <div class="stock-cell">
-                        {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                        {_fmt_pct(value)}
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -3781,15 +3773,15 @@ elif current_page == "home":
             # ========================================================
             with cols[6]:
                 value = row.get("Dev 28", None)
-
                 st.markdown(
                     f"""
                     <div class="stock-cell">
-                        {f"{value:.2f}%" if isinstance(value, (int, float)) else "-"}
+                        {_fmt_pct(value)}
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
+
 elif not current_code:
     st.title("📈 單股分析")
     st.info("請先從左側輸入股票代號或點擊收藏清單，再查看單股功能。")
