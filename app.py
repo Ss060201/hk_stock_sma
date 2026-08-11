@@ -3670,7 +3670,51 @@ elif current_page == "home":
         st.markdown(
             """
             <style>
-            /* Only HorizontalBlocks containing our hidden marker are Home stock rows. */
+            /* Compact table-like Home stock list.
+               Desktop: 7 equal columns.
+               Mobile: same 7 columns, horizontally scrollable. */
+            .home-stock-table-header {
+                display: grid;
+                grid-template-columns: repeat(7, minmax(0, 1fr));
+                width: 100%;
+                min-width: 0;
+                overflow-x: auto;
+                box-sizing: border-box;
+                border: 1px solid #d9dee5;
+                border-bottom: 0;
+                border-radius: 6px 6px 0 0;
+                background: #f5f7fa;
+            }
+
+            .home-stock-table-header > div {
+                min-width: 0;
+                padding: 3px 4px;
+                border-right: 1px solid #d9dee5;
+                text-align: center;
+                font-size: 10px;
+                line-height: 18px;
+                color: #667085;
+                white-space: nowrap;
+                box-sizing: border-box;
+            }
+
+            .home-stock-table-header > div:last-child {
+                border-right: 0;
+            }
+
+            div[class*="st-key-home_stock_card_"] {
+                width: 100% !important;
+                max-width: 100% !important;
+                min-width: 0 !important;
+                overflow: hidden !important;
+                box-sizing: border-box !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                border: 0 !important;
+                border-radius: 0 !important;
+                background: transparent !important;
+            }
+
             div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker) {
                 flex-direction: row !important;
                 flex-wrap: nowrap !important;
@@ -3681,85 +3725,128 @@ elif current_page == "home":
                 overflow-y: hidden !important;
                 gap: 0 !important;
                 margin: 0 !important;
-                padding: 0 2px !important;
+                padding: 0 !important;
                 box-sizing: border-box !important;
-                scrollbar-width: thin !important;
+                border-left: 1px solid #d9dee5 !important;
+                border-right: 1px solid #d9dee5 !important;
+                border-bottom: 1px solid #e4e7ec !important;
+                background: white !important;
             }
 
             div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker)
             > div[data-testid="stColumn"] {
-                flex: 0 0 95px !important;
-                width: 95px !important;
-                min-width: 95px !important;
-                max-width: 95px !important;
+                flex: 1 1 0 !important;
+                width: auto !important;
+                min-width: 78px !important;
+                max-width: none !important;
                 margin: 0 !important;
-                padding: 0 2px !important;
+                padding: 0 !important;
                 box-sizing: border-box !important;
+                border-right: 1px solid #e4e7ec !important;
+            }
+
+            div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker)
+            > div[data-testid="stColumn"]:last-child {
+                border-right: 0 !important;
             }
 
             div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker) .stock-cell {
-                width: 95px !important;
-                min-width: 95px !important;
+                width: 100% !important;
+                min-width: 78px !important;
+                height: 25px !important;
+                padding: 2px 3px !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
                 text-align: center !important;
-                font-size: 14px !important;
-                line-height: 26px !important;
+                font-size: 11px !important;
+                line-height: 18px !important;
+                font-weight: 500 !important;
                 white-space: nowrap !important;
                 box-sizing: border-box !important;
             }
 
-            div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker) .stButton > button {
-                width: 95px !important;
-                min-width: 95px !important;
-                max-width: 95px !important;
-                white-space: nowrap !important;
+            div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker)
+            .stButton {
                 margin: 0 !important;
-                min-height: 30px !important;
-                padding: 4px 6px !important;
-                font-size: 14px !important;
+                padding: 0 !important;
+            }
+
+            div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker)
+            .stButton > button {
+                width: 100% !important;
+                min-width: 78px !important;
+                max-width: none !important;
+                min-height: 25px !important;
+                height: 25px !important;
+                padding: 2px 4px !important;
+                margin: 0 !important;
+                border: 0 !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+                white-space: nowrap !important;
+                font-size: 11px !important;
+                line-height: 18px !important;
                 box-sizing: border-box !important;
             }
 
-            /* The marker itself is only a CSS hook and must never be visible. */
             .home-stock-card-marker {
                 display: none !important;
             }
 
-            /* Mobile: make each stock row a bounded horizontal scroller. */
             @media (max-width: 768px) {
+                .home-stock-table-header {
+                    grid-template-columns: repeat(7, 78px);
+                    width: max-content;
+                    min-width: 546px;
+                }
+
+                .home-stock-table-header > div {
+                    width: 78px;
+                    min-width: 78px;
+                    font-size: 9px;
+                    line-height: 17px;
+                    padding: 2px 3px;
+                }
+
                 div[class*="st-key-home_stock_card_"] {
                     width: 100% !important;
                     max-width: 100% !important;
-                    min-width: 0 !important;
                     overflow: hidden !important;
-                    box-sizing: border-box !important;
-                    margin: 8px 0 !important;
-                    padding: 8px !important;
-                    border: 1px solid #d9d9d9 !important;
-                    border-radius: 10px !important;
-                    background: white !important;
                 }
 
                 div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker) {
-                    flex-direction: row !important;
-                    flex-wrap: nowrap !important;
+                    width: max-content !important;
+                    min-width: 546px !important;
+                    max-width: none !important;
                     overflow-x: auto !important;
-                    overflow-y: hidden !important;
-                    width: 100% !important;
-                    max-width: 100% !important;
-                    min-width: 0 !important;
+                    flex-wrap: nowrap !important;
                 }
 
                 div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker)
                 > div[data-testid="stColumn"] {
-                    flex: 0 0 95px !important;
-                    width: 95px !important;
-                    min-width: 95px !important;
-                    max-width: 95px !important;
-                    margin: 0 !important;
-                    padding: 0 2px !important;
+                    flex: 0 0 78px !important;
+                    width: 78px !important;
+                    min-width: 78px !important;
+                    max-width: 78px !important;
                 }
             }
             </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            """
+            <div class="home-stock-table-header">
+                <div>Code</div>
+                <div>CPRD</div>
+                <div>Dev 0</div>
+                <div>Dev 3</div>
+                <div>Dev 7</div>
+                <div>Dev 14</div>
+                <div>Dev 28</div>
+            </div>
             """,
             unsafe_allow_html=True,
         )
