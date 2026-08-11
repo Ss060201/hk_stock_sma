@@ -2943,7 +2943,7 @@ def render_home_snapshot_detail_page(ticker: str):
     ]
     dev_extended_columns = ["Dev 57", "Dev 106"]
     show_extended_key = f"home_detail_show_dev_extended_{ticker}"
-    show_extended = bool(st.session_state.get(show_extended_key, False))
+    show_extended = bool(st.session_state.get(show_extended_key, True))
 
     if st.button(
         "顯示 Dev 57 / Dev 106" if not show_extended else "隱藏 Dev 57 / Dev 106",
