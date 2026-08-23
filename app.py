@@ -3765,6 +3765,9 @@ elif current_page == "home":
                 font-size: 11px !important;
                 line-height: 18px !important;
                 font-weight: 500 !important;
+                color: #111827 !important;
+                -webkit-text-fill-color: #111827 !important;
+                background: #ffffff !important;
                 white-space: nowrap !important;
                 box-sizing: border-box !important;
             }
@@ -3836,6 +3839,13 @@ elif current_page == "home":
                     width: 78px !important;
                     min-width: 78px !important;
                     max-width: 78px !important;
+                }
+
+                div[data-testid="stHorizontalBlock"]:has(.home-stock-card-marker)
+                .stock-cell {
+                    color: #111827 !important;
+                    -webkit-text-fill-color: #111827 !important;
+                    background: #ffffff !important;
                 }
             }
             </style>
