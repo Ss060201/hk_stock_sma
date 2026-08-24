@@ -415,6 +415,32 @@ st.markdown("""
         border-radius: 8px;
     }
 
+    /* Favorites: ticker + delete button stay on one compact row. */
+    div[data-testid="stVerticalBlock"]:has(.favorite-row-marker)
+    div[data-testid="stHorizontalBlock"] {
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        width: 100% !important;
+        gap: 6px !important;
+        align-items: center !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(.favorite-row-marker)
+    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:first-child {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        width: auto !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(.favorite-row-marker)
+    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:last-child {
+        flex: 0 0 48px !important;
+        width: 48px !important;
+        min-width: 48px !important;
+        max-width: 48px !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(.favorite-row-marker) button {
+        margin: 0 !important;
+    }
+
     @media (max-width: 768px) {
         .main .block-container { padding: var(--mobile-padding) !important; padding-bottom: 88px !important; max-width: 100% !important; }
         div[data-testid="stHorizontalBlock"] { flex-direction: column !important; }
@@ -3595,24 +3621,21 @@ with st.sidebar:
     st.subheader(f"我的收藏 ({len(watchlist_list)})")
     if watchlist_list:
         for ticker in watchlist_list:
-            nav_col, delete_col = st.columns([6, 1], gap="small")
-            with nav_col:
-                if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
-                    set_current_page("stock", ticker)
-                    st.rerun()
-            with delete_col:
-                if st.button("🗑️", key=f"nav_remove_{ticker}", use_container_width=True):
-                    remove_stock_from_db(ticker)
-
-                    # If the deleted stock is currently selected, clear the
-                    # current stock context so the app does not point to a
-                    # stock that no longer exists in the watchlist.
-                    if st.session_state.get("current_view") == ticker:
-                        st.session_state.current_view = ""
-                        if st.session_state.get("current_page") in {"stock", "home_detail"}:
-                            st.session_state.current_page = "home"
-
-                    st.rerun()
+            with st.container(key=f"favorite_row_{ticker}"):
+                st.markdown('<span class="favorite-row-marker"></span>', unsafe_allow_html=True)
+                nav_col, delete_col = st.columns([7, 1], gap="small")
+                with nav_col:
+                    if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
+                        set_current_page("stock", ticker)
+                        st.rerun()
+                with delete_col:
+                    if st.button("🗑️", key=f"nav_remove_{ticker}", use_container_width=True):
+                        remove_stock_from_db(ticker)
+                        if st.session_state.get("current_view") == ticker:
+                            st.session_state.current_view = ""
+                            if st.session_state.get("current_page") in {"stock", "home_detail"}:
+                                st.session_state.current_page = "home"
+                        st.rerun()
     else:
         st.caption("暫無收藏")
     
