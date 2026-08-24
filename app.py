@@ -2877,7 +2877,20 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
         return None
 
     work_df = df.copy()
-    close = work_df["Close"].astype(float)
+
+    # Yahoo Finance can occasionally return a trailing row whose Close is NaN
+    # (for example around the current/incomplete trading session).  The old
+    # logic used that row as current_close, which made Dev 0/3/7/14/28 all
+    # become NaN even though CPRD (the previous valid close) was available.
+    # Remove rows without a valid Close BEFORE calculating any Dev values.
+    close_numeric = pd.to_numeric(work_df["Close"], errors="coerce")
+    valid_close_mask = close_numeric.notna()
+    work_df = work_df.loc[valid_close_mask].copy()
+    if work_df.empty or len(work_df) < 2:
+        return None
+
+    work_df["Close"] = close_numeric.loc[valid_close_mask].astype(float)
+    close = work_df["Close"]
     current_close = float(close.iloc[-1])
     prev_close = close.shift(1).iloc[-1]
     prev_close = float(prev_close) if pd.notna(prev_close) and float(prev_close) != 0 else np.nan
@@ -2966,7 +2979,7 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
 def get_home_watchlist_snapshot(
     watchlist_codes: List[str],
     ref_date: str,
-    snapshot_version: str = "v12",
+    snapshot_version: str = "v13",
 ) -> Dict[str, Any]:
     summaries: List[Dict[str, Any]] = []
     details: Dict[str, Dict[str, Any]] = {}
@@ -3025,7 +3038,7 @@ def render_home_snapshot_detail_page(ticker: str):
     with top_cols[2]:
         st.caption("此頁一次性展示 Dev / TOR / Amp / SMA 全部統計資料。")
 
-    snapshot = get_home_watchlist_snapshot([ticker], str(st.session_state.ref_date), "v12")
+    snapshot = get_home_watchlist_snapshot([ticker], str(st.session_state.ref_date), "v13")
     selected_detail = snapshot.get("details", {}).get(ticker)
     if not selected_detail:
         st.warning("目前無法取得這支股票的首頁統計數據。")
@@ -3729,7 +3742,7 @@ elif current_page == "home":
     if not watchlist_list:
         st.info("👈 您的收藏清單為空，請從左側加入股票。")
     else:
-        snapshot = get_home_watchlist_snapshot(watchlist_list, str(st.session_state.ref_date), "v12")
+        snapshot = get_home_watchlist_snapshot(watchlist_list, str(st.session_state.ref_date), "v13")
         summary_rows = snapshot.get("summaries", [])
 
         c_btn_1, c_btn_2 = st.columns(2)
