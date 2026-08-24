@@ -2753,6 +2753,44 @@ def sync_date_window_state(start_key: str, end_key: str, min_d: date, max_d: dat
     st.session_state[start_key] = start_value
     st.session_state[end_key] = end_value
 
+def _resolve_share_base_fallback(ticker_obj, symbol: str):
+    """
+    Fallback for the turnover denominator.
+
+    Priority:
+    1. Existing provider chain (handled by get_turnover_share_base).
+    2. Yahoo floatShares.
+    3. Yahoo sharesOutstanding.
+
+    The fallback is deliberately isolated here so the existing provider
+    architecture and turnover calculation remain unchanged.
+    """
+    try:
+        info = ticker_obj.info or {}
+
+        float_shares = info.get("floatShares")
+        if float_shares is not None:
+            try:
+                value = float(float_shares)
+                if np.isfinite(value) and value > 0:
+                    return value, "Yahoo floatShares"
+            except Exception:
+                pass
+
+        outstanding = info.get("sharesOutstanding")
+        if outstanding is not None:
+            try:
+                value = float(outstanding)
+                if np.isfinite(value) and value > 0:
+                    return value, "Yahoo sharesOutstanding"
+            except Exception:
+                pass
+    except Exception as exc:
+        LOGGER.warning("Yahoo share-base fallback failed for %s: %s", symbol, exc)
+
+    return None, None
+
+
 @st.cache_data(ttl=900)
 def get_data_v7(symbol, end_date):
     try:
@@ -2760,8 +2798,19 @@ def get_data_v7(symbol, end_date):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df = df[df.index <= pd.to_datetime(end_date)]
+
         t = yf.Ticker(symbol)
         share_base = get_turnover_share_base(t)
+
+        if share_base is None or (isinstance(share_base, (int, float)) and share_base <= 0):
+            share_base, fallback_method = _resolve_share_base_fallback(t, symbol)
+            if fallback_method:
+                LOGGER.info(
+                    "Using turnover share-base fallback for %s: %s",
+                    symbol,
+                    fallback_method,
+                )
+
         return df, share_base
     except Exception as exc:
         LOGGER.warning("Failed to load data for %s: %s", symbol, exc)
@@ -3546,9 +3595,24 @@ with st.sidebar:
     st.subheader(f"我的收藏 ({len(watchlist_list)})")
     if watchlist_list:
         for ticker in watchlist_list:
-            if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
-                set_current_page("stock", ticker)
-                st.rerun()
+            nav_col, delete_col = st.columns([6, 1], gap="small")
+            with nav_col:
+                if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
+                    set_current_page("stock", ticker)
+                    st.rerun()
+            with delete_col:
+                if st.button("🗑️", key=f"nav_remove_{ticker}", use_container_width=True):
+                    remove_stock_from_db(ticker)
+
+                    # If the deleted stock is currently selected, clear the
+                    # current stock context so the app does not point to a
+                    # stock that no longer exists in the watchlist.
+                    if st.session_state.get("current_view") == ticker:
+                        st.session_state.current_view = ""
+                        if st.session_state.get("current_page") in {"stock", "home_detail"}:
+                            st.session_state.current_page = "home"
+
+                    st.rerun()
     else:
         st.caption("暫無收藏")
     
