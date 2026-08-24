@@ -481,6 +481,36 @@ st.markdown("""
         .home-stock-metric .value { font-size: 11px; }
         .home-detail-panel { padding: 7px; border-radius: 9px; margin: 4px 0 8px 0; }
         .home-avg-note { font-size: 9px; padding: 1px 6px; }
+
+        /* Favorites exception: keep ticker + delete on ONE row on mobile. */
+        div[data-testid="stVerticalBlock"]:has(.favorite-row-marker)
+        div[data-testid="stHorizontalBlock"] {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            align-items: center !important;
+            width: 100% !important;
+            gap: 6px !important;
+        }
+        div[data-testid="stVerticalBlock"]:has(.favorite-row-marker)
+        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:first-child {
+            flex: 1 1 0 !important;
+            width: auto !important;
+            min-width: 0 !important;
+            margin-bottom: 0 !important;
+        }
+        div[data-testid="stVerticalBlock"]:has(.favorite-row-marker)
+        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:last-child {
+            flex: 0 0 46px !important;
+            width: 46px !important;
+            min-width: 46px !important;
+            max-width: 46px !important;
+            margin-bottom: 0 !important;
+        }
+        div[data-testid="stVerticalBlock"]:has(.favorite-row-marker) button {
+            width: 100% !important;
+            margin: 0 !important;
+        }
     }
 
     @media (min-width: 1024px) {
@@ -2853,9 +2883,16 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
     prev_close = float(prev_close) if pd.notna(prev_close) and float(prev_close) != 0 else np.nan
 
     def pct_change(current_value, base_value):
-        if pd.isna(base_value) or float(base_value) == 0:
+        # Defensive numeric conversion: never let object/string values silently
+        # turn every Dev field into NaN.
+        try:
+            current_num = pd.to_numeric(current_value, errors="coerce")
+            base_num = pd.to_numeric(base_value, errors="coerce")
+            if pd.isna(current_num) or pd.isna(base_num) or float(base_num) == 0:
+                return np.nan
+            return (float(current_num) / float(base_num) - 1.0) * 100.0
+        except Exception:
             return np.nan
-        return (float(current_value) / float(base_value) - 1) * 100
 
     dev_periods = [3, 7, 14, 28, 57, 106]
     dev_values = {"Dev 0": pct_change(current_close, prev_close)}
@@ -2926,7 +2963,11 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
     }
 
 @st.cache_data(ttl=900)
-def get_home_watchlist_snapshot(watchlist_codes: List[str], ref_date: str) -> Dict[str, Any]:
+def get_home_watchlist_snapshot(
+    watchlist_codes: List[str],
+    ref_date: str,
+    snapshot_version: str = "v12",
+) -> Dict[str, Any]:
     summaries: List[Dict[str, Any]] = []
     details: Dict[str, Dict[str, Any]] = {}
 
@@ -2984,7 +3025,7 @@ def render_home_snapshot_detail_page(ticker: str):
     with top_cols[2]:
         st.caption("此頁一次性展示 Dev / TOR / Amp / SMA 全部統計資料。")
 
-    snapshot = get_home_watchlist_snapshot([ticker], str(st.session_state.ref_date))
+    snapshot = get_home_watchlist_snapshot([ticker], str(st.session_state.ref_date), "v12")
     selected_detail = snapshot.get("details", {}).get(ticker)
     if not selected_detail:
         st.warning("目前無法取得這支股票的首頁統計數據。")
@@ -3688,7 +3729,7 @@ elif current_page == "home":
     if not watchlist_list:
         st.info("👈 您的收藏清單為空，請從左側加入股票。")
     else:
-        snapshot = get_home_watchlist_snapshot(watchlist_list, str(st.session_state.ref_date))
+        snapshot = get_home_watchlist_snapshot(watchlist_list, str(st.session_state.ref_date), "v12")
         summary_rows = snapshot.get("summaries", [])
 
         c_btn_1, c_btn_2 = st.columns(2)
