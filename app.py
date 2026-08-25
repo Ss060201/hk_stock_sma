@@ -26,11 +26,6 @@ from turnover_utils import (
     TURNOVER_STATUS_CALCULATED,
     apply_turnover_rate,
 )
-from watchlist_storage import (
-    delete_watchlist_symbol,
-    get_watchlist_from_firestore,
-    save_watchlist_symbol,
-)
 
 # --- 1. 系統初始化 ---
 st.set_page_config(page_title="港股 SMA 矩陣", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
@@ -420,32 +415,6 @@ st.markdown("""
         border-radius: 8px;
     }
 
-    /* Favorites: ticker + delete button stay on one compact row. */
-    div[data-testid="stVerticalBlock"]:has(.favorite-row-marker)
-    div[data-testid="stHorizontalBlock"] {
-        display: flex !important;
-        flex-wrap: nowrap !important;
-        width: 100% !important;
-        gap: 6px !important;
-        align-items: center !important;
-    }
-    div[data-testid="stVerticalBlock"]:has(.favorite-row-marker)
-    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:first-child {
-        flex: 1 1 auto !important;
-        min-width: 0 !important;
-        width: auto !important;
-    }
-    div[data-testid="stVerticalBlock"]:has(.favorite-row-marker)
-    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:last-child {
-        flex: 0 0 48px !important;
-        width: 48px !important;
-        min-width: 48px !important;
-        max-width: 48px !important;
-    }
-    div[data-testid="stVerticalBlock"]:has(.favorite-row-marker) button {
-        margin: 0 !important;
-    }
-
     @media (max-width: 768px) {
         .main .block-container { padding: var(--mobile-padding) !important; padding-bottom: 88px !important; max-width: 100% !important; }
         div[data-testid="stHorizontalBlock"] { flex-direction: column !important; }
@@ -486,36 +455,6 @@ st.markdown("""
         .home-stock-metric .value { font-size: 11px; }
         .home-detail-panel { padding: 7px; border-radius: 9px; margin: 4px 0 8px 0; }
         .home-avg-note { font-size: 9px; padding: 1px 6px; }
-
-        /* Favorites exception: keep ticker + delete on ONE row on mobile. */
-        div[data-testid="stVerticalBlock"]:has(.favorite-row-marker)
-        div[data-testid="stHorizontalBlock"] {
-            display: flex !important;
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
-            align-items: center !important;
-            width: 100% !important;
-            gap: 6px !important;
-        }
-        div[data-testid="stVerticalBlock"]:has(.favorite-row-marker)
-        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:first-child {
-            flex: 1 1 0 !important;
-            width: auto !important;
-            min-width: 0 !important;
-            margin-bottom: 0 !important;
-        }
-        div[data-testid="stVerticalBlock"]:has(.favorite-row-marker)
-        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:last-child {
-            flex: 0 0 46px !important;
-            width: 46px !important;
-            min-width: 46px !important;
-            max-width: 46px !important;
-            margin-bottom: 0 !important;
-        }
-        div[data-testid="stVerticalBlock"]:has(.favorite-row-marker) button {
-            width: 100% !important;
-            margin: 0 !important;
-        }
     }
 
     @media (min-width: 1024px) {
@@ -607,37 +546,47 @@ def get_watchlist_from_db():
     db = get_db()
     if not db: return {}
     try:
-        return get_watchlist_from_firestore(db)
-    except Exception as exc:
-        LOGGER.warning("Failed to load watchlist from Firestore: %s", exc)
-        return {}
+        doc_ref = db.collection('stock_app').document('watchlist')
+        doc = doc_ref.get()
+        if doc.exists: return doc.to_dict()
+        else: return {}
+    except: return {}
 
 def update_stock_in_db(symbol, params=None):
     db = get_db()
     if not db:
         st.error("無法連接數據庫")
-        return False
-    try:
-        saved_symbol = save_watchlist_symbol(db, symbol, params)
-    except Exception as exc:
-        LOGGER.warning("Failed to save watchlist ticker %s: %s", symbol, exc)
-        st.error(f"收藏失敗：{symbol} 無法寫入資料庫。")
-        return False
-    st.toast(f"已同步 {saved_symbol}", icon="☁️")
-    return True
+        return
+    doc_ref = db.collection('stock_app').document('watchlist')
+    data = {
+        symbol: params
+        if params
+        else {
+            "box1_start": "",
+            "box1_end": "",
+            "box2_start": "",
+            "box2_end": "",
+            "interactive_range_start": "",
+            "interactive_range_end": "",
+            "abc_date_p1_start": "",
+            "abc_date_p1_end": "",
+            "abc_date_p2_end": "",
+            "abc_price_p1_high": 0.0,
+            "abc_price_p1_low": 0.0,
+            "abc_price_p2_high": 0.0,
+            "cdm_p1_avg_override": 0.0,
+            "cdm_p2_avg_override": 0.0,
+        }
+    }
+    doc_ref.set(data, merge=True)
+    st.toast(f"已同步 {symbol}", icon="☁️")
 
 def remove_stock_from_db(symbol):
     db = get_db()
-    if not db:
-        return False
-    try:
-        removed_symbol = delete_watchlist_symbol(db, symbol)
-    except Exception as exc:
-        LOGGER.warning("Failed to remove watchlist ticker %s: %s", symbol, exc)
-        st.error(f"移除失敗：{symbol} 無法從資料庫刪除。")
-        return False
-    st.toast(f"已移除 {removed_symbol}", icon="🗑️")
-    return True
+    if not db: return
+    doc_ref = db.collection('stock_app').document('watchlist')
+    doc_ref.update({symbol: firestore.DELETE_FIELD})
+    st.toast(f"已移除 {symbol}", icon="🗑️")
 
 # --- 4. 輔助功能與邏輯 ---
 def clean_ticker_input(symbol):
@@ -2804,44 +2753,6 @@ def sync_date_window_state(start_key: str, end_key: str, min_d: date, max_d: dat
     st.session_state[start_key] = start_value
     st.session_state[end_key] = end_value
 
-def _resolve_share_base_fallback(ticker_obj, symbol: str):
-    """
-    Fallback for the turnover denominator.
-
-    Priority:
-    1. Existing provider chain (handled by get_turnover_share_base).
-    2. Yahoo floatShares.
-    3. Yahoo sharesOutstanding.
-
-    The fallback is deliberately isolated here so the existing provider
-    architecture and turnover calculation remain unchanged.
-    """
-    try:
-        info = ticker_obj.info or {}
-
-        float_shares = info.get("floatShares")
-        if float_shares is not None:
-            try:
-                value = float(float_shares)
-                if np.isfinite(value) and value > 0:
-                    return value, "Yahoo floatShares"
-            except Exception:
-                pass
-
-        outstanding = info.get("sharesOutstanding")
-        if outstanding is not None:
-            try:
-                value = float(outstanding)
-                if np.isfinite(value) and value > 0:
-                    return value, "Yahoo sharesOutstanding"
-            except Exception:
-                pass
-    except Exception as exc:
-        LOGGER.warning("Yahoo share-base fallback failed for %s: %s", symbol, exc)
-
-    return None, None
-
-
 @st.cache_data(ttl=900)
 def get_data_v7(symbol, end_date):
     try:
@@ -2849,19 +2760,8 @@ def get_data_v7(symbol, end_date):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df = df[df.index <= pd.to_datetime(end_date)]
-
         t = yf.Ticker(symbol)
         share_base = get_turnover_share_base(t)
-
-        if share_base is None or (isinstance(share_base, (int, float)) and share_base <= 0):
-            share_base, fallback_method = _resolve_share_base_fallback(t, symbol)
-            if fallback_method:
-                LOGGER.info(
-                    "Using turnover share-base fallback for %s: %s",
-                    symbol,
-                    fallback_method,
-                )
-
         return df, share_base
     except Exception as exc:
         LOGGER.warning("Failed to load data for %s: %s", symbol, exc)
@@ -2872,35 +2772,15 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
         return None
 
     work_df = df.copy()
-
-    # Yahoo Finance can occasionally return a trailing row whose Close is NaN
-    # (for example around the current/incomplete trading session).  The old
-    # logic used that row as current_close, which made Dev 0/3/7/14/28 all
-    # become NaN even though CPRD (the previous valid close) was available.
-    # Remove rows without a valid Close BEFORE calculating any Dev values.
-    close_numeric = pd.to_numeric(work_df["Close"], errors="coerce")
-    valid_close_mask = close_numeric.notna()
-    work_df = work_df.loc[valid_close_mask].copy()
-    if work_df.empty or len(work_df) < 2:
-        return None
-
-    work_df["Close"] = close_numeric.loc[valid_close_mask].astype(float)
-    close = work_df["Close"]
+    close = work_df["Close"].astype(float)
     current_close = float(close.iloc[-1])
     prev_close = close.shift(1).iloc[-1]
     prev_close = float(prev_close) if pd.notna(prev_close) and float(prev_close) != 0 else np.nan
 
     def pct_change(current_value, base_value):
-        # Defensive numeric conversion: never let object/string values silently
-        # turn every Dev field into NaN.
-        try:
-            current_num = pd.to_numeric(current_value, errors="coerce")
-            base_num = pd.to_numeric(base_value, errors="coerce")
-            if pd.isna(current_num) or pd.isna(base_num) or float(base_num) == 0:
-                return np.nan
-            return (float(current_num) / float(base_num) - 1.0) * 100.0
-        except Exception:
+        if pd.isna(base_value) or float(base_value) == 0:
             return np.nan
+        return (float(current_value) / float(base_value) - 1) * 100
 
     dev_periods = [3, 7, 14, 28, 57, 106]
     dev_values = {"Dev 0": pct_change(current_close, prev_close)}
@@ -2971,11 +2851,7 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
     }
 
 @st.cache_data(ttl=900)
-def get_home_watchlist_snapshot(
-    watchlist_codes: List[str],
-    ref_date: str,
-    snapshot_version: str = "v13",
-) -> Dict[str, Any]:
+def get_home_watchlist_snapshot(watchlist_codes: List[str], ref_date: str) -> Dict[str, Any]:
     summaries: List[Dict[str, Any]] = []
     details: Dict[str, Dict[str, Any]] = {}
 
@@ -3033,7 +2909,7 @@ def render_home_snapshot_detail_page(ticker: str):
     with top_cols[2]:
         st.caption("此頁一次性展示 Dev / TOR / Amp / SMA 全部統計資料。")
 
-    snapshot = get_home_watchlist_snapshot([ticker], str(st.session_state.ref_date), "v13")
+    snapshot = get_home_watchlist_snapshot([ticker], str(st.session_state.ref_date))
     selected_detail = snapshot.get("details", {}).get(ticker)
     if not selected_detail:
         st.warning("目前無法取得這支股票的首頁統計數據。")
@@ -3670,21 +3546,9 @@ with st.sidebar:
     st.subheader(f"我的收藏 ({len(watchlist_list)})")
     if watchlist_list:
         for ticker in watchlist_list:
-            with st.container(key=f"favorite_row_{ticker}"):
-                st.markdown('<span class="favorite-row-marker"></span>', unsafe_allow_html=True)
-                nav_col, delete_col = st.columns([7, 1], gap="small")
-                with nav_col:
-                    if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
-                        set_current_page("stock", ticker)
-                        st.rerun()
-                with delete_col:
-                    if st.button("🗑️", key=f"nav_remove_{ticker}", use_container_width=True):
-                        remove_stock_from_db(ticker)
-                        if st.session_state.get("current_view") == ticker:
-                            st.session_state.current_view = ""
-                            if st.session_state.get("current_page") in {"stock", "home_detail"}:
-                                st.session_state.current_page = "home"
-                        st.rerun()
+            if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
+                set_current_page("stock", ticker)
+                st.rerun()
     else:
         st.caption("暫無收藏")
     
@@ -3737,7 +3601,7 @@ elif current_page == "home":
     if not watchlist_list:
         st.info("👈 您的收藏清單為空，請從左側加入股票。")
     else:
-        snapshot = get_home_watchlist_snapshot(watchlist_list, str(st.session_state.ref_date), "v13")
+        snapshot = get_home_watchlist_snapshot(watchlist_list, str(st.session_state.ref_date))
         summary_rows = snapshot.get("summaries", [])
 
         c_btn_1, c_btn_2 = st.columns(2)
@@ -4092,12 +3956,12 @@ else:
         is_in_watchlist = current_code in watchlist_list
         if is_in_watchlist:
             if st.button("★ 已收藏", type="primary", use_container_width=True):
-                if remove_stock_from_db(current_code):
-                    st.rerun()
+                remove_stock_from_db(current_code)
+                st.rerun()
         else:
             if st.button("☆ 加入", use_container_width=True):
-                if update_stock_in_db(current_code):
-                    st.rerun()
+                update_stock_in_db(current_code)
+                st.rerun()
 
     df, share_base = get_data_v7(yahoo_ticker, st.session_state.ref_date)
 
@@ -4624,7 +4488,7 @@ else:
                         box2_start = str(new_date_p1_end)
                         box2_end = str(new_date_p2_end)
 
-                        save_ok = update_stock_in_db(
+                        update_stock_in_db(
                             current_code,
                             {
                                 "interactive_range_start": str(new_range_start),
@@ -4643,8 +4507,7 @@ else:
                                 "box2_end": box2_end,
                             },
                         )
-                        if save_ok:
-                            st.rerun()
+                        st.rerun()
 
 
         # --- D. 數據呈現 ---
