@@ -70,10 +70,6 @@ def _migrate_legacy_watchlist_if_needed(db) -> Dict[str, Dict[str, Any]]:
         )
         migrated[ticker] = params
 
-    # Legacy storage kept every ticker as a top-level field on the root document.
-    # That breaks on pure numeric field names during merge/update. Once copied into
-    # per-ticker documents, the legacy root document can be removed safely.
-    _root_doc_ref(db).delete()
     return migrated
 
 
@@ -88,10 +84,11 @@ def get_watchlist_from_firestore(db) -> Dict[str, Dict[str, Any]]:
         params = payload.get("params", payload)
         watchlist[ticker] = normalize_watchlist_params(params)
 
-    if watchlist:
-        return watchlist
+    legacy_watchlist = _migrate_legacy_watchlist_if_needed(db)
+    for ticker, params in legacy_watchlist.items():
+        watchlist.setdefault(ticker, params)
 
-    return _migrate_legacy_watchlist_if_needed(db)
+    return watchlist
 
 
 def save_watchlist_symbol(db, symbol: object, params: Any = None) -> str:

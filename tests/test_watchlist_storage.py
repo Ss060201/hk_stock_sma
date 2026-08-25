@@ -122,7 +122,18 @@ class WatchlistStorageTests(unittest.TestCase):
 
         self.assertIn("00290", data)
         self.assertEqual(data["00290"]["box1_start"], "2026-08-25")
-        self.assertFalse(root_doc.get().exists)
+        self.assertTrue(root_doc.get().exists)
+
+    def test_legacy_and_new_storage_are_merged(self):
+        db = FakeDB()
+        root_doc = db.collection("stock_app").document("watchlist")
+        root_doc.set({"00290": {"box1_start": "2026-08-25"}})
+        save_watchlist_symbol(db, "2577", {"box1_end": "2026-08-26"})
+
+        data = get_watchlist_from_firestore(db)
+
+        self.assertIn("00290", data)
+        self.assertIn("2577", data)
 
     def test_partial_params_are_normalized(self):
         db = FakeDB()

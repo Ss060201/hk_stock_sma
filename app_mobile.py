@@ -468,7 +468,7 @@ else:
             st.markdown(f"<h3 style='text-align: center; margin: 0;'>{display_ticker}</h3>", unsafe_allow_html=True)
         with col3:
             is_in_watchlist = current_code in watchlist_list
-            btn_label = "★" if is_in_watchlist else "☆"
+            btn_label = "★ 已收藏" if is_in_watchlist else "☆ 加入"
             if st.button(btn_label, use_container_width=True, key="mobile_fav"):
                 if is_in_watchlist:
                     remove_stock_from_db(current_code)
