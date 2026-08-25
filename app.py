@@ -616,25 +616,28 @@ def update_stock_in_db(symbol, params=None):
     db = get_db()
     if not db:
         st.error("無法連接數據庫")
-        return
+        return False
     try:
         saved_symbol = save_watchlist_symbol(db, symbol, params)
     except Exception as exc:
         LOGGER.warning("Failed to save watchlist ticker %s: %s", symbol, exc)
         st.error(f"收藏失敗：{symbol} 無法寫入資料庫。")
-        return
+        return False
     st.toast(f"已同步 {saved_symbol}", icon="☁️")
+    return True
 
 def remove_stock_from_db(symbol):
     db = get_db()
-    if not db: return
+    if not db:
+        return False
     try:
         removed_symbol = delete_watchlist_symbol(db, symbol)
     except Exception as exc:
         LOGGER.warning("Failed to remove watchlist ticker %s: %s", symbol, exc)
         st.error(f"移除失敗：{symbol} 無法從資料庫刪除。")
-        return
+        return False
     st.toast(f"已移除 {removed_symbol}", icon="🗑️")
+    return True
 
 # --- 4. 輔助功能與邏輯 ---
 def clean_ticker_input(symbol):
@@ -4089,12 +4092,12 @@ else:
         is_in_watchlist = current_code in watchlist_list
         if is_in_watchlist:
             if st.button("★ 已收藏", type="primary", use_container_width=True):
-                remove_stock_from_db(current_code)
-                st.rerun()
+                if remove_stock_from_db(current_code):
+                    st.rerun()
         else:
             if st.button("☆ 加入", use_container_width=True):
-                update_stock_in_db(current_code)
-                st.rerun()
+                if update_stock_in_db(current_code):
+                    st.rerun()
 
     df, share_base = get_data_v7(yahoo_ticker, st.session_state.ref_date)
 
@@ -4621,7 +4624,7 @@ else:
                         box2_start = str(new_date_p1_end)
                         box2_end = str(new_date_p2_end)
 
-                        update_stock_in_db(
+                        save_ok = update_stock_in_db(
                             current_code,
                             {
                                 "interactive_range_start": str(new_range_start),
@@ -4640,7 +4643,8 @@ else:
                                 "box2_end": box2_end,
                             },
                         )
-                        st.rerun()
+                        if save_ok:
+                            st.rerun()
 
 
         # --- D. 數據呈現 ---

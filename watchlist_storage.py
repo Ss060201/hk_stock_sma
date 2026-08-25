@@ -48,29 +48,36 @@ def _items_collection_ref(db):
     return _root_doc_ref(db).collection(WATCHLIST_ITEMS_SUBCOLLECTION)
 
 
-def _migrate_legacy_watchlist_if_needed(db) -> Dict[str, Dict[str, Any]]:
-    migrated: Dict[str, Dict[str, Any]] = {}
+def _load_legacy_watchlist(db) -> Dict[str, Dict[str, Any]]:
+    legacy_watchlist: Dict[str, Dict[str, Any]] = {}
     root_doc = _root_doc_ref(db).get()
     raw = root_doc.to_dict() if root_doc.exists else {}
     if not isinstance(raw, dict) or not raw:
-        return migrated
+        return legacy_watchlist
 
-    items_ref = _items_collection_ref(db)
     for raw_key, raw_value in raw.items():
         ticker = clean_watchlist_symbol(raw_key)
         if not ticker:
             continue
-        params = normalize_watchlist_params(raw_value)
-        items_ref.document(ticker).set(
-            {
-                "ticker": ticker,
-                "params": params,
-            },
-            merge=True,
-        )
-        migrated[ticker] = params
+        legacy_watchlist[ticker] = normalize_watchlist_params(raw_value)
 
-    return migrated
+    return legacy_watchlist
+
+
+def _sync_legacy_watchlist_to_items(db, legacy_watchlist: Dict[str, Dict[str, Any]]) -> None:
+    items_ref = _items_collection_ref(db)
+    for ticker, params in legacy_watchlist.items():
+        try:
+            items_ref.document(ticker).set(
+                {
+                    "ticker": ticker,
+                    "params": params,
+                },
+                merge=True,
+            )
+        except Exception:
+            # Legacy data should still be readable even if background sync fails.
+            continue
 
 
 def get_watchlist_from_firestore(db) -> Dict[str, Dict[str, Any]]:
@@ -84,7 +91,9 @@ def get_watchlist_from_firestore(db) -> Dict[str, Dict[str, Any]]:
         params = payload.get("params", payload)
         watchlist[ticker] = normalize_watchlist_params(params)
 
-    legacy_watchlist = _migrate_legacy_watchlist_if_needed(db)
+    legacy_watchlist = _load_legacy_watchlist(db)
+    if legacy_watchlist:
+        _sync_legacy_watchlist_to_items(db, legacy_watchlist)
     for ticker, params in legacy_watchlist.items():
         watchlist.setdefault(ticker, params)
 

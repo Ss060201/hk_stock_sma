@@ -165,25 +165,27 @@ def update_stock_in_db(symbol, params=None):
     db = get_db()
     if not db:
         st.error("無法連接數據庫")
-        return
+        return False
     try:
         saved_symbol = save_watchlist_symbol(db, symbol, params)
     except Exception:
         st.error(f"收藏失敗：{symbol} 無法寫入資料庫。")
-        return
+        return False
     st.toast(f"已同步 {saved_symbol}", icon="☁️")
+    return True
 
 
 def remove_stock_from_db(symbol):
     db = get_db()
     if not db:
-        return
+        return False
     try:
         removed_symbol = delete_watchlist_symbol(db, symbol)
     except Exception:
         st.error(f"移除失敗：{symbol} 無法從資料庫刪除。")
-        return
+        return False
     st.toast(f"已移除 {removed_symbol}", icon="🗑️")
+    return True
 
 # --- 輔助功能 ---
 def clean_ticker_input(symbol):
@@ -471,10 +473,11 @@ else:
             btn_label = "★ 已收藏" if is_in_watchlist else "☆ 加入"
             if st.button(btn_label, use_container_width=True, key="mobile_fav"):
                 if is_in_watchlist:
-                    remove_stock_from_db(current_code)
+                    action_ok = remove_stock_from_db(current_code)
                 else:
-                    update_stock_in_db(current_code)
-                st.rerun()
+                    action_ok = update_stock_in_db(current_code)
+                if action_ok:
+                    st.rerun()
     else:
         # 桌面版头部
         col_t, col_b = st.columns([0.85, 0.15])
@@ -485,12 +488,12 @@ else:
             is_in_watchlist = current_code in watchlist_list
             if is_in_watchlist:
                 if st.button("★ 已收藏", type="primary", use_container_width=True):
-                    remove_stock_from_db(current_code)
-                    st.rerun()
+                    if remove_stock_from_db(current_code):
+                        st.rerun()
             else:
                 if st.button("☆ 加入", use_container_width=True):
-                    update_stock_in_db(current_code)
-                    st.rerun()
+                    if update_stock_in_db(current_code):
+                        st.rerun()
     
     @st.cache_data(ttl=900)
     def get_data_v7(symbol, end_date):
