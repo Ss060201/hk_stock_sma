@@ -553,35 +553,49 @@ def get_watchlist_from_db():
         return {}
     try:
         return get_watchlist_from_firestore(db)
-    except Exception:
+    except Exception as e:
+        try:
+            doc_ref = db.collection('stock_app').document('watchlist')
+            doc = doc_ref.get()
+            if doc.exists:
+                return doc.to_dict() or {}
+        except Exception:
+            pass
         return {}
 
 
 def update_stock_in_db(symbol, params=None):
     db = get_db()
     if not db:
-        st.error("無法連接數據庫")
+        st.error("無法連接數據庫：Firebase 未初始化，請檢查 secrets 或 service_account.json")
         return False
     try:
         saved_symbol = save_watchlist_symbol(db, symbol, params)
-    except Exception:
-        st.error(f"收藏失敗：{symbol} 無法寫入資料庫。")
+        st.toast(f"已同步 {saved_symbol}", icon="☁️")
+        return True
+    except Exception as e:
+        err_msg = f"{type(e).__name__}: {str(e)}"
+        if len(err_msg) > 300:
+            err_msg = err_msg[:300] + "..."
+        st.error(f"收藏失敗：{symbol} 無法寫入資料庫。\n錯誤：{err_msg}")
         return False
-    st.toast(f"已同步 {saved_symbol}", icon="☁️")
-    return True
 
 
 def remove_stock_from_db(symbol):
     db = get_db()
     if not db:
+        st.error("無法連接數據庫：Firebase 未初始化，請檢查 secrets 或 service_account.json")
         return False
     try:
         removed_symbol = delete_watchlist_symbol(db, symbol)
-    except Exception:
-        st.error(f"移除失敗：{symbol} 無法從資料庫刪除。")
+        st.toast(f"已移除 {removed_symbol}", icon="🗑️")
+        return True
+    except Exception as e:
+        err_msg = f"{type(e).__name__}: {str(e)}"
+        if len(err_msg) > 300:
+            err_msg = err_msg[:300] + "..."
+        st.error(f"移除失敗：{symbol} 無法從資料庫刪除。\n錯誤：{err_msg}")
         return False
-    st.toast(f"已移除 {removed_symbol}", icon="🗑️")
-    return True
 
 # --- 4. 輔助功能與邏輯 ---
 def clean_ticker_input(symbol):
@@ -3951,12 +3965,12 @@ else:
         is_in_watchlist = current_code in watchlist_list
         if is_in_watchlist:
             if st.button("★ 已收藏", type="primary", use_container_width=True):
-                remove_stock_from_db(current_code)
-                st.rerun()
+                if remove_stock_from_db(current_code):
+                    st.rerun()
         else:
             if st.button("☆ 加入", use_container_width=True):
-                update_stock_in_db(current_code)
-                st.rerun()
+                if update_stock_in_db(current_code):
+                    st.rerun()
 
     df, share_base = get_data_v7(yahoo_ticker, st.session_state.ref_date)
 
@@ -4483,7 +4497,7 @@ else:
                         box2_start = str(new_date_p1_end)
                         box2_end = str(new_date_p2_end)
 
-                        update_stock_in_db(
+                        if update_stock_in_db(
                             current_code,
                             {
                                 "interactive_range_start": str(new_range_start),
@@ -4501,8 +4515,8 @@ else:
                                 "box2_start": box2_start,
                                 "box2_end": box2_end,
                             },
-                        )
-                        st.rerun()
+                        ):
+                            st.rerun()
 
 
         # --- D. 數據呈現 ---

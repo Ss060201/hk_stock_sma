@@ -157,35 +157,49 @@ def get_watchlist_from_db():
         return {}
     try:
         return get_watchlist_from_firestore(db)
-    except Exception:
+    except Exception as e:
+        try:
+            doc_ref = db.collection('stock_app').document('watchlist')
+            doc = doc_ref.get()
+            if doc.exists:
+                return doc.to_dict() or {}
+        except Exception:
+            pass
         return {}
 
 
 def update_stock_in_db(symbol, params=None):
     db = get_db()
     if not db:
-        st.error("無法連接數據庫")
+        st.error("無法連接數據庫：Firebase 未初始化，請檢查 secrets 或 service_account.json")
         return False
     try:
         saved_symbol = save_watchlist_symbol(db, symbol, params)
-    except Exception:
-        st.error(f"收藏失敗：{symbol} 無法寫入資料庫。")
+        st.toast(f"已同步 {saved_symbol}", icon="☁️")
+        return True
+    except Exception as e:
+        err_msg = f"{type(e).__name__}: {str(e)}"
+        if len(err_msg) > 300:
+            err_msg = err_msg[:300] + "..."
+        st.error(f"收藏失敗：{symbol} 無法寫入資料庫。\n錯誤：{err_msg}")
         return False
-    st.toast(f"已同步 {saved_symbol}", icon="☁️")
-    return True
 
 
 def remove_stock_from_db(symbol):
     db = get_db()
     if not db:
+        st.error("無法連接數據庫：Firebase 未初始化，請檢查 secrets 或 service_account.json")
         return False
     try:
         removed_symbol = delete_watchlist_symbol(db, symbol)
-    except Exception:
-        st.error(f"移除失敗：{symbol} 無法從資料庫刪除。")
+        st.toast(f"已移除 {removed_symbol}", icon="🗑️")
+        return True
+    except Exception as e:
+        err_msg = f"{type(e).__name__}: {str(e)}"
+        if len(err_msg) > 300:
+            err_msg = err_msg[:300] + "..."
+        st.error(f"移除失敗：{symbol} 無法從資料庫刪除。\n錯誤：{err_msg}")
         return False
-    st.toast(f"已移除 {removed_symbol}", icon="🗑️")
-    return True
 
 # --- 輔助功能 ---
 def clean_ticker_input(symbol):

@@ -83,19 +83,25 @@ def _sync_legacy_watchlist_to_items(db, legacy_watchlist: Dict[str, Dict[str, An
 def get_watchlist_from_firestore(db) -> Dict[str, Dict[str, Any]]:
     watchlist: Dict[str, Dict[str, Any]] = {}
 
-    for doc in _items_collection_ref(db).stream():
-        payload = doc.to_dict() or {}
-        ticker = clean_watchlist_symbol(payload.get("ticker") or doc.id)
-        if not ticker:
-            continue
-        params = payload.get("params", payload)
-        watchlist[ticker] = normalize_watchlist_params(params)
+    try:
+        for doc in _items_collection_ref(db).stream():
+            payload = doc.to_dict() or {}
+            ticker = clean_watchlist_symbol(payload.get("ticker") or doc.id)
+            if not ticker:
+                continue
+            params = payload.get("params", payload)
+            watchlist[ticker] = normalize_watchlist_params(params)
+    except Exception:
+        pass
 
-    legacy_watchlist = _load_legacy_watchlist(db)
-    if legacy_watchlist:
-        _sync_legacy_watchlist_to_items(db, legacy_watchlist)
-    for ticker, params in legacy_watchlist.items():
-        watchlist.setdefault(ticker, params)
+    try:
+        legacy_watchlist = _load_legacy_watchlist(db)
+        if legacy_watchlist:
+            _sync_legacy_watchlist_to_items(db, legacy_watchlist)
+        for ticker, params in legacy_watchlist.items():
+            watchlist.setdefault(ticker, params)
+    except Exception:
+        pass
 
     return watchlist
 
