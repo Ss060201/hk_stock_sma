@@ -2780,51 +2780,94 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
     if df is None or df.empty or len(df) < 2:
         return None
 
+    required_cols = ["Close", "High", "Low"]
+    for col in required_cols:
+        if col not in df.columns:
+            return None
+
     work_df = df.copy()
+    for col in required_cols + (["Volume"] if "Volume" in work_df.columns else []):
+        work_df[col] = pd.to_numeric(work_df[col], errors="coerce")
+
+    valid_mask = pd.notna(work_df["Close"]) & (work_df["Close"].astype(float) != 0)
+    work_df = work_df.loc[valid_mask]
+
+    if work_df.empty or len(work_df) < 2:
+        return None
+
     close = work_df["Close"].astype(float)
-    current_close = float(close.iloc[-1])
-    prev_close = close.shift(1).iloc[-1]
-    prev_close = float(prev_close) if pd.notna(prev_close) and float(prev_close) != 0 else np.nan
+    raw_current_close = close.iloc[-1]
+    current_close = float(raw_current_close) if pd.notna(raw_current_close) and float(raw_current_close) != 0 else float("nan")
+    raw_prev_close = close.shift(1).iloc[-1]
+    prev_close = float(raw_prev_close) if pd.notna(raw_prev_close) and float(raw_prev_close) != 0 else float("nan")
 
     def pct_change(current_value, base_value):
-        if pd.isna(base_value) or float(base_value) == 0:
-            return np.nan
-        return (float(current_value) / float(base_value) - 1) * 100
+        try:
+            cv = float(current_value)
+            bv = float(base_value)
+        except Exception:
+            return float("nan")
+        if pd.isna(cv) or pd.isna(bv) or bv == 0:
+            return float("nan")
+        return (cv / bv - 1) * 100
 
     dev_periods = [3, 7, 14, 28, 57, 106]
     dev_values = {"Dev 0": pct_change(current_close, prev_close)}
     for p in dev_periods:
-        base_value = close.shift(p).iloc[-1] if len(close) > p else np.nan
+        if len(close) > p:
+            shifted = close.shift(p).iloc[-1]
+            base_value = float(shifted) if pd.notna(shifted) and float(shifted) != 0 else float("nan")
+        else:
+            base_value = float("nan")
         dev_values[f"Dev {p}"] = pct_change(current_close, base_value)
 
     periods_sma = [7, 14, 28, 57, 106]
     sma_values = {}
     for p in periods_sma:
-        sma = close.rolling(p).mean().iloc[-1] if len(close) >= p else np.nan
-        sma_values[f"SMA {p}"] = float(sma) if pd.notna(sma) else np.nan
+        if len(close) >= p:
+            sma = close.rolling(p).mean().iloc[-1]
+        else:
+            sma = float("nan")
+        sma_values[f"SMA {p}"] = float(sma) if pd.notna(sma) else float("nan")
 
-    prev_close_series = close.shift(1).replace(0, np.nan)
-    work_df["AMP"] = (work_df["High"] - work_df["Low"]) / prev_close_series * 100
-    amp_values = {"Amp 0": float(work_df["AMP"].iloc[-1]) if pd.notna(work_df["AMP"].iloc[-1]) else np.nan}
+    prev_close_series = close.shift(1).replace(0, float("nan"))
+    if "High" in work_df.columns and "Low" in work_df.columns:
+        work_high = pd.to_numeric(work_df["High"], errors="coerce").astype(float)
+        work_low = pd.to_numeric(work_df["Low"], errors="coerce").astype(float)
+        work_df["AMP"] = (work_high - work_low) / prev_close_series * 100
+    else:
+        work_df["AMP"] = float("nan")
+    amp_last = work_df["AMP"].iloc[-1]
+    amp_values = {"Amp 0": float(amp_last) if pd.notna(amp_last) else float("nan")}
     for p in periods_sma:
-        amp = work_df["AMP"].tail(p).mean() if len(work_df) >= p else np.nan
-        amp_values[f"Amp {p}"] = float(amp) if pd.notna(amp) else np.nan
+        if len(work_df) >= p:
+            amp = work_df["AMP"].tail(p).mean()
+        else:
+            amp = float("nan")
+        amp_values[f"Amp {p}"] = float(amp) if pd.notna(amp) else float("nan")
 
-    tor_values = {f"TOR {p}": np.nan for p in [0, 7, 14, 28, 57, 106]}
+    tor_values = {f"TOR {p}": float("nan") for p in [0, 7, 14, 28, 57, 106]}
     work_df, turnover_status, turnover_reason = apply_turnover_rate(work_df, share_base)
-    if turnover_status == TURNOVER_STATUS_CALCULATED:
-        tor_values["TOR 0"] = float(work_df["Turnover_Rate"].iloc[-1]) if pd.notna(work_df["Turnover_Rate"].iloc[-1]) else np.nan
+    if turnover_status == TURNOVER_STATUS_CALCULATED and "Turnover_Rate" in work_df.columns:
+        tor_last = work_df["Turnover_Rate"].iloc[-1]
+        tor_values["TOR 0"] = float(tor_last) if pd.notna(tor_last) else float("nan")
         for p in periods_sma:
-            tor = work_df["Turnover_Rate"].tail(p).mean() if len(work_df) >= p else np.nan
-            tor_values[f"TOR {p}"] = float(tor) if pd.notna(tor) else np.nan
+            if len(work_df) >= p:
+                tor = work_df["Turnover_Rate"].tail(p).mean()
+            else:
+                tor = float("nan")
+            tor_values[f"TOR {p}"] = float(tor) if pd.notna(tor) else float("nan")
 
-    # Keep the latest six trading days so the Home detail page can
-    # display a compact history table matching the requested layout.
     dev_history = []
-    for row_pos in range(max(0, len(work_df) - 6), len(work_df)):
-        row_close = float(close.iloc[row_pos]) if pd.notna(close.iloc[row_pos]) else np.nan
-        row_prev = close.iloc[row_pos - 1] if row_pos > 0 else np.nan
-        row_prev = float(row_prev) if pd.notna(row_prev) and float(row_prev) != 0 else np.nan
+    history_start = max(0, len(work_df) - 6)
+    for row_pos in range(history_start, len(work_df)):
+        row_close_raw = close.iloc[row_pos]
+        row_close = float(row_close_raw) if pd.notna(row_close_raw) and float(row_close_raw) != 0 else float("nan")
+        if row_pos > 0:
+            row_prev_raw = close.iloc[row_pos - 1]
+            row_prev = float(row_prev_raw) if pd.notna(row_prev_raw) and float(row_prev_raw) != 0 else float("nan")
+        else:
+            row_prev = float("nan")
 
         row_values = {
             "Code": ticker,
@@ -2833,7 +2876,11 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
         }
         for p in dev_periods:
             base_pos = row_pos - p
-            base_value = close.iloc[base_pos] if base_pos >= 0 else np.nan
+            if base_pos >= 0:
+                base_raw = close.iloc[base_pos]
+                base_value = float(base_raw) if pd.notna(base_raw) and float(base_raw) != 0 else float("nan")
+            else:
+                base_value = float("nan")
             row_values[f"Dev {p}"] = pct_change(row_close, base_value)
         dev_history.append(row_values)
 
@@ -2863,16 +2910,22 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
 def get_home_watchlist_snapshot(watchlist_codes: List[str], ref_date: str) -> Dict[str, Any]:
     summaries: List[Dict[str, Any]] = []
     details: Dict[str, Dict[str, Any]] = {}
+    diagnostic: Dict[str, str] = {}
 
     for ticker in watchlist_codes:
         df, share_base = get_data_v7(get_yahoo_ticker(ticker), ref_date)
+        if df is None:
+            diagnostic[ticker] = "數據載入失敗（Yahoo 可能暫不可用）"
+            continue
+        raw_len = len(df)
         snapshot = _compute_home_snapshot_for_stock(ticker, df, share_base)
         if not snapshot:
+            diagnostic[ticker] = f"有效交易日不足：載入 {raw_len} 列，過濾 NaN/0 後不足 2 列可計算"
             continue
         summaries.append(snapshot["summary"])
         details[ticker] = snapshot["detail"]
 
-    return {"summaries": summaries, "details": details}
+    return {"summaries": summaries, "details": details, "diagnostic": diagnostic}
 
 def set_current_page(page: str, code: Optional[str] = None):
     st.session_state.current_page = page
@@ -3612,10 +3665,12 @@ elif current_page == "home":
     else:
         snapshot = get_home_watchlist_snapshot(watchlist_list, str(st.session_state.ref_date))
         summary_rows = snapshot.get("summaries", [])
+        diagnostic = snapshot.get("diagnostic", {}) or {}
 
         c_btn_1, c_btn_2 = st.columns(2)
         with c_btn_1:
             if st.button("🔄 刷新所有數據", use_container_width=True):
+                get_home_watchlist_snapshot.clear()
                 st.rerun()
         with c_btn_2:
             if st.button("📊 比較模式", use_container_width=True, type="primary"):
@@ -3623,8 +3678,13 @@ elif current_page == "home":
                 st.rerun()
         st.write("---")
 
+        if diagnostic:
+            with st.expander(f"⚠️ {len(diagnostic)} 支股票暫無數據", expanded=False):
+                for tk, msg in sorted(diagnostic.items()):
+                    st.caption(f"- `{tk}`：{msg}")
+
         if not summary_rows:
-            st.warning("目前沒有足夠數據可生成收藏股列表。")
+            st.warning("目前沒有足夠數據可生成收藏股列表。請稍後再試，或檢查收藏清單中的股票代號是否正確。")
         else:
             sort_options = ["Dev 3", "Dev 7", "Dev 14", "Dev 28"]
             if "home_sort_metric" not in st.session_state or st.session_state.home_sort_metric not in sort_options:
