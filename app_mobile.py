@@ -569,35 +569,68 @@ else:
         st.divider()
         
         # ===== [改动6.3] 关键指标 =====
-        curr_close = float(df['Close'].iloc[-1])
-        prev_close = df['Close'].shift(1).iloc[-1]
-        prev_close = float(prev_close) if pd.notna(prev_close) else 0.0
-        curr_open = float(df['Open'].iloc[-1])
-        curr_high = float(df['High'].iloc[-1])
-        curr_low = float(df['Low'].iloc[-1])
-        chg = (curr_close - prev_close) if prev_close else 0.0
-        pct = (chg / prev_close * 100) if prev_close else 0.0
-        amp = ((curr_high - curr_low) / prev_close * 100) if prev_close else 0.0
-        
+        raw_close = df['Close'].replace(0, np.nan).iloc[-1]
+        raw_prev_close = df['Close'].replace(0, np.nan).shift(1).iloc[-1]
+        raw_open = df['Open'].replace(0, np.nan).iloc[-1]
+        raw_high = df['High'].replace(0, np.nan).iloc[-1]
+        raw_low = df['Low'].replace(0, np.nan).iloc[-1]
+
+        curr_close = float(raw_close) if pd.notna(raw_close) else float('nan')
+        prev_close = float(raw_prev_close) if pd.notna(raw_prev_close) else None
+        curr_open = float(raw_open) if pd.notna(raw_open) else float('nan')
+        curr_high = float(raw_high) if pd.notna(raw_high) else float('nan')
+        curr_low = float(raw_low) if pd.notna(raw_low) else float('nan')
+
+        has_prev_close = prev_close is not None and pd.notna(prev_close) and prev_close != 0
+        chg = (curr_close - prev_close) if (pd.notna(curr_close) and has_prev_close) else float('nan')
+        pct = (chg / prev_close * 100) if (pd.notna(chg) and has_prev_close) else float('nan')
+        amp = ((curr_high - curr_low) / prev_close * 100) if (pd.notna(curr_high) and pd.notna(curr_low) and has_prev_close) else float('nan')
+
+        def _fmt_price(v, decimals=3):
+            if pd.isna(v):
+                return "-"
+            return f"{float(v):.{decimals}f}"
+
+        def _fmt_chg_line(chg_val, pct_val, decimals_chg=3, decimals_pct=2):
+            if pd.isna(chg_val) or pd.isna(pct_val):
+                return "-"
+            return f"{float(chg_val):+.{decimals_chg}f} ({float(pct_val):+.{decimals_pct}f}%)"
+
+        def _fmt_amp(v, decimals=2):
+            if pd.isna(v):
+                return "-"
+            return f"{float(v):.{decimals}f}%"
+
         if is_mobile:
-            st.metric("現價", f"{curr_close:.3f}", f"{chg:+.3f} ({pct:+.2f}%)")
+            st.metric(
+                "現價",
+                _fmt_price(curr_close),
+                _fmt_chg_line(chg, pct),
+            )
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("開市", f"{curr_open:.3f}")
+                st.metric("開市", _fmt_price(curr_open))
             with col2:
-                st.metric("最高", f"{curr_high:.3f}")
+                st.metric("最高", _fmt_price(curr_high))
             with col3:
-                st.metric("最低", f"{curr_low:.3f}")
+                st.metric("最低", _fmt_price(curr_low))
         else:
             c_sum_1, c_sum_2 = st.columns(2)
             with c_sum_1:
-                st.metric("現價", f"{curr_close:.3f}", f"{chg:+.3f} ({pct:+.2f}%)")
-                st.metric("前收市", f"{prev_close:.3f}" if prev_close else "-")
-                st.metric("波幅(AA)", f"{amp:.2f}%" if prev_close else "-")
+                st.metric(
+                    "現價",
+                    _fmt_price(curr_close),
+                    _fmt_chg_line(chg, pct),
+                )
+                st.metric(
+                    "前收市",
+                    _fmt_price(prev_close) if has_prev_close else "-",
+                )
+                st.metric("波幅(AA)", _fmt_amp(amp))
             with c_sum_2:
-                st.metric("開市", f"{curr_open:.3f}")
-                st.metric("最高", f"{curr_high:.3f}")
-                st.metric("最低", f"{curr_low:.3f}")
+                st.metric("開市", _fmt_price(curr_open))
+                st.metric("最高", _fmt_price(curr_high))
+                st.metric("最低", _fmt_price(curr_low))
         
         # ===== [改动6.4] 响应式图表 =====
         end_date_dt = pd.to_datetime(st.session_state.ref_date)

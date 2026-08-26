@@ -4010,43 +4010,70 @@ else:
         
         st.divider()
 
-        curr_close = float(df['Close'].iloc[-1])
-        prev_close = df['Close'].shift(1).iloc[-1]
-        prev_close = float(prev_close) if pd.notna(prev_close) else 0.0
-        curr_open = float(df['Open'].iloc[-1])
-        curr_high = float(df['High'].iloc[-1])
-        curr_low = float(df['Low'].iloc[-1])
-        chg = (curr_close - prev_close) if prev_close else 0.0
-        pct = (chg / prev_close * 100) if prev_close else 0.0
-        amp = ((curr_high - curr_low) / prev_close * 100) if prev_close else 0.0
+        raw_close = df['Close'].replace(0, np.nan).iloc[-1]
+        raw_prev_close = df['Close'].replace(0, np.nan).shift(1).iloc[-1]
+        raw_open = df['Open'].replace(0, np.nan).iloc[-1]
+        raw_high = df['High'].replace(0, np.nan).iloc[-1]
+        raw_low = df['Low'].replace(0, np.nan).iloc[-1]
 
-        delta_cls = "pos" if chg >= 0 else "neg"
+        curr_close = float(raw_close) if pd.notna(raw_close) else float('nan')
+        prev_close = float(raw_prev_close) if pd.notna(raw_prev_close) else None
+        curr_open = float(raw_open) if pd.notna(raw_open) else float('nan')
+        curr_high = float(raw_high) if pd.notna(raw_high) else float('nan')
+        curr_low = float(raw_low) if pd.notna(raw_low) else float('nan')
+
+        has_prev_close = prev_close is not None and pd.notna(prev_close) and prev_close != 0
+        chg = (curr_close - prev_close) if (pd.notna(curr_close) and has_prev_close) else float('nan')
+        pct = (chg / prev_close * 100) if (pd.notna(chg) and has_prev_close) else float('nan')
+        amp = ((curr_high - curr_low) / prev_close * 100) if (pd.notna(curr_high) and pd.notna(curr_low) and has_prev_close) else float('nan')
+
+        def _fmt_price(v, decimals=3):
+            if pd.isna(v):
+                return "-"
+            return f"{float(v):.{decimals}f}"
+
+        def _fmt_signed(v, decimals=3, suffix=""):
+            if pd.isna(v):
+                return "-"
+            return f"{float(v):+.{decimals}f}{suffix}"
+
+        def _fmt_pct(v, decimals=2):
+            if pd.isna(v):
+                return "-"
+            return f"{float(v):+.{decimals}f}%"
+
+        def _chg_class(v):
+            if not pd.notna(v):
+                return ""
+            return "pos" if v >= 0 else "neg"
+
+        delta_cls = _chg_class(chg)
         summary_cards = f"""
         <div class="compact-grid">
             <div class="compact-card">
                 <div class="label">現價</div>
-                <div class="value">{curr_close:.3f}</div>
-                <div class="sub {delta_cls}">{chg:+.3f} ({pct:+.2f}%)</div>
+                <div class="value">{_fmt_price(curr_close)}</div>
+                <div class="sub {delta_cls}">{_fmt_signed(chg)} ({_fmt_pct(pct)})</div>
             </div>
             <div class="compact-card">
                 <div class="label">前收市</div>
-                <div class="value">{f"{prev_close:.3f}" if prev_close else "-"}</div>
+                <div class="value">{_fmt_price(prev_close) if has_prev_close else "-"}</div>
             </div>
             <div class="compact-card">
                 <div class="label">開市</div>
-                <div class="value">{curr_open:.3f}</div>
+                <div class="value">{_fmt_price(curr_open)}</div>
             </div>
             <div class="compact-card">
                 <div class="label">波幅(AA)</div>
-                <div class="value">{f"{amp:.2f}%" if prev_close else "-"}</div>
+                <div class="value">{_fmt_pct(amp)}</div>
             </div>
             <div class="compact-card">
                 <div class="label">最高</div>
-                <div class="value">{curr_high:.3f}</div>
+                <div class="value">{_fmt_price(curr_high)}</div>
             </div>
             <div class="compact-card">
                 <div class="label">最低</div>
-                <div class="value">{curr_low:.3f}</div>
+                <div class="value">{_fmt_price(curr_low)}</div>
             </div>
         </div>
         """
