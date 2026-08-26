@@ -4070,22 +4070,26 @@ else:
         
         st.divider()
 
-        raw_close = df['Close'].replace(0, np.nan).iloc[-1]
-        raw_prev_close = df['Close'].replace(0, np.nan).shift(1).iloc[-1]
-        raw_open = df['Open'].replace(0, np.nan).iloc[-1]
-        raw_high = df['High'].replace(0, np.nan).iloc[-1]
-        raw_low = df['Low'].replace(0, np.nan).iloc[-1]
+        def _last_valid(series):
+            s = pd.to_numeric(series, errors="coerce").replace(0, np.nan).dropna()
+            return float(s.iloc[-1]) if len(s) >= 1 else float("nan")
 
-        curr_close = float(raw_close) if pd.notna(raw_close) else float('nan')
-        prev_close = float(raw_prev_close) if pd.notna(raw_prev_close) else None
-        curr_open = float(raw_open) if pd.notna(raw_open) else float('nan')
-        curr_high = float(raw_high) if pd.notna(raw_high) else float('nan')
-        curr_low = float(raw_low) if pd.notna(raw_low) else float('nan')
+        def _nth_last_valid(series, n_from_last):
+            s = pd.to_numeric(series, errors="coerce").replace(0, np.nan).dropna()
+            idx = len(s) - 1 - n_from_last
+            return float(s.iloc[idx]) if idx >= 0 else float("nan")
+
+        curr_close = _last_valid(df["Close"])
+        prev_close_raw = _nth_last_valid(df["Close"], 1)
+        prev_close = prev_close_raw if pd.notna(prev_close_raw) else None
+        curr_open = _last_valid(df["Open"]) if "Open" in df.columns else float("nan")
+        curr_high = _last_valid(df["High"]) if "High" in df.columns else float("nan")
+        curr_low = _last_valid(df["Low"]) if "Low" in df.columns else float("nan")
 
         has_prev_close = prev_close is not None and pd.notna(prev_close) and prev_close != 0
-        chg = (curr_close - prev_close) if (pd.notna(curr_close) and has_prev_close) else float('nan')
-        pct = (chg / prev_close * 100) if (pd.notna(chg) and has_prev_close) else float('nan')
-        amp = ((curr_high - curr_low) / prev_close * 100) if (pd.notna(curr_high) and pd.notna(curr_low) and has_prev_close) else float('nan')
+        chg = (curr_close - prev_close) if (pd.notna(curr_close) and has_prev_close) else float("nan")
+        pct = (chg / prev_close * 100) if (pd.notna(chg) and has_prev_close) else float("nan")
+        amp = ((curr_high - curr_low) / prev_close * 100) if (pd.notna(curr_high) and pd.notna(curr_low) and has_prev_close) else float("nan")
 
         def _fmt_price(v, decimals=3):
             if pd.isna(v):
