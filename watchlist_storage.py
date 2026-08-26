@@ -111,13 +111,32 @@ def save_watchlist_symbol(db, symbol: object, params: Any = None) -> str:
     if not ticker:
         raise ValueError("Ticker is empty.")
 
-    _items_collection_ref(db).document(ticker).set(
-        {
-            "ticker": ticker,
-            "params": normalize_watchlist_params(params),
-        },
-        merge=True,
-    )
+    normalized_params = normalize_watchlist_params(params)
+
+    root_ok = False
+    try:
+        _root_doc_ref(db).set({ticker: normalized_params}, merge=True)
+        root_ok = True
+    except Exception:
+        root_ok = False
+
+    try:
+        _items_collection_ref(db).document(ticker).set(
+            {
+                "ticker": ticker,
+                "params": normalized_params,
+            },
+            merge=True,
+        )
+    except Exception:
+        pass
+
+    if not root_ok:
+        raise RuntimeError(
+            "Failed to write watchlist to Firestore root document. "
+            "Subcollection write may also have been skipped silently."
+        )
+
     return ticker
 
 
@@ -126,5 +145,24 @@ def delete_watchlist_symbol(db, symbol: object) -> str:
     if not ticker:
         raise ValueError("Ticker is empty.")
 
-    _items_collection_ref(db).document(ticker).delete()
+    root_ok = False
+    try:
+        from firebase_admin import firestore as _firestore
+
+        _root_doc_ref(db).update({ticker: _firestore.DELETE_FIELD})
+        root_ok = True
+    except Exception:
+        root_ok = False
+
+    try:
+        _items_collection_ref(db).document(ticker).delete()
+    except Exception:
+        pass
+
+    if not root_ok:
+        raise RuntimeError(
+            "Failed to delete watchlist from Firestore root document. "
+            "Subcollection delete may also have been skipped silently."
+        )
+
     return ticker
