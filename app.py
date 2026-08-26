@@ -26,6 +26,11 @@ from turnover_utils import (
     TURNOVER_STATUS_CALCULATED,
     apply_turnover_rate,
 )
+from watchlist_storage import (
+    delete_watchlist_symbol,
+    get_watchlist_from_firestore,
+    save_watchlist_symbol,
+)
 
 # --- 1. 系統初始化 ---
 st.set_page_config(page_title="港股 SMA 矩陣", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
@@ -544,49 +549,39 @@ def get_db():
 
 def get_watchlist_from_db():
     db = get_db()
-    if not db: return {}
+    if not db:
+        return {}
     try:
-        doc_ref = db.collection('stock_app').document('watchlist')
-        doc = doc_ref.get()
-        if doc.exists: return doc.to_dict()
-        else: return {}
-    except: return {}
+        return get_watchlist_from_firestore(db)
+    except Exception:
+        return {}
+
 
 def update_stock_in_db(symbol, params=None):
     db = get_db()
     if not db:
         st.error("無法連接數據庫")
-        return
-    doc_ref = db.collection('stock_app').document('watchlist')
-    data = {
-        symbol: params
-        if params
-        else {
-            "box1_start": "",
-            "box1_end": "",
-            "box2_start": "",
-            "box2_end": "",
-            "interactive_range_start": "",
-            "interactive_range_end": "",
-            "abc_date_p1_start": "",
-            "abc_date_p1_end": "",
-            "abc_date_p2_end": "",
-            "abc_price_p1_high": 0.0,
-            "abc_price_p1_low": 0.0,
-            "abc_price_p2_high": 0.0,
-            "cdm_p1_avg_override": 0.0,
-            "cdm_p2_avg_override": 0.0,
-        }
-    }
-    doc_ref.set(data, merge=True)
-    st.toast(f"已同步 {symbol}", icon="☁️")
+        return False
+    try:
+        saved_symbol = save_watchlist_symbol(db, symbol, params)
+    except Exception:
+        st.error(f"收藏失敗：{symbol} 無法寫入資料庫。")
+        return False
+    st.toast(f"已同步 {saved_symbol}", icon="☁️")
+    return True
+
 
 def remove_stock_from_db(symbol):
     db = get_db()
-    if not db: return
-    doc_ref = db.collection('stock_app').document('watchlist')
-    doc_ref.update({symbol: firestore.DELETE_FIELD})
-    st.toast(f"已移除 {symbol}", icon="🗑️")
+    if not db:
+        return False
+    try:
+        removed_symbol = delete_watchlist_symbol(db, symbol)
+    except Exception:
+        st.error(f"移除失敗：{symbol} 無法從資料庫刪除。")
+        return False
+    st.toast(f"已移除 {removed_symbol}", icon="🗑️")
+    return True
 
 # --- 4. 輔助功能與邏輯 ---
 def clean_ticker_input(symbol):
