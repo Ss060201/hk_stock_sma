@@ -153,14 +153,22 @@ class _YFSessionManager_M:
 _YF_SESS_MGR_M = _YFSessionManager_M()
 
 _APP_BUILD_M = {
-    "commit": "fa90eba+formfix",
-    "time": "2026-08-27 13:12",
-    "tag": "終極同行 + session 黑名單",
+    "commit": "9a20e68+ylock",
+    "time": "2026-08-28 11:14",
+    "tag": "yfinance鎖0.2.59 + 原生HTML同行",
 }
 try:
     _APP_BUILD_M["yf_version"] = getattr(yf, "__version__", "n/a")
 except Exception:
     _APP_BUILD_M["yf_version"] = "n/a"
+
+# yfinance 版本緊急守門員：1.x 直接 fallback 原生 requests
+try:
+    _yfv_parts_m = [int(p) for p in (getattr(yf, "__version__", "0.0.0") or "0.0.0").split(".") if p.isdigit()]
+    _YF_VER_MAJOR_M = _yfv_parts_m[0] if _yfv_parts_m else 0
+except Exception:
+    _YF_VER_MAJOR_M = 0
+_YF_IS_BROKEN_V1_M = _YF_VER_MAJOR_M >= 1
 
 # --- CSS 樣式 ---
 st.markdown("""
@@ -464,6 +472,10 @@ if not is_mobile:
         watchlist_list = list(watchlist_data.keys()) if watchlist_data else []
 
         st.subheader(f"我的收藏 ({len(watchlist_list)})")
+        _tip_m = (f"🎯 渲染模式：原生 HTML form inline-flex（V9，保證同行不拆行）  "
+                  f"|  Build: {_APP_BUILD_M.get('commit','?')}  "
+                  f"|  yfinance: {_APP_BUILD_M.get('yf_version','?')}{'  [1.x detected → native requests fallback 🔥]' if _YF_IS_BROKEN_V1_M else ''}")
+        st.caption(_tip_m)
         if watchlist_list:
             for ticker in watchlist_list:
                 _btns_style_m = (
@@ -701,6 +713,64 @@ else:
                     if update_stock_in_db(current_code):
                         st.rerun()
     
+    def _native_yahoo_chart_download_m(symbol, range_: str = "3y", interval: str = "1d", timeout: int = 25):
+        from urllib.parse import urlencode as _urlenc_m
+        params_m = {
+            "range": range_, "interval": interval,
+            "includeAdjustedClose": "false", "includePrePost": "false",
+            "events": "div%2Csplits",
+        }
+        urls_m = [
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?{_urlenc_m(params_m)}",
+            f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?{_urlenc_m(params_m)}",
+        ]
+        ua_m = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 "
+                "(KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1")
+        last_err_m = None
+        for u in urls_m:
+            try:
+                with requests.Session() as s_m:
+                    s_m.headers.update({
+                        "User-Agent": ua_m,
+                        "Accept": "application/json,text/plain,*/*",
+                        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+                    })
+                    r_m = s_m.get(u, timeout=timeout, allow_redirects=True)
+                    if r_m.status_code != 200:
+                        last_err_m = RuntimeError(f"HTTP {r_m.status_code}")
+                        continue
+                    d_m = r_m.json()
+                    res_l = d_m.get("chart", {}).get("result") or []
+                    if not res_l:
+                        last_err_m = RuntimeError("empty chart result")
+                        continue
+                    res = res_l[0]
+                    ts_m = res.get("timestamp") or []
+                    q_m = (res.get("indicators") or {}).get("quote") or []
+                    if not ts_m or not q_m:
+                        last_err_m = RuntimeError("missing ts/quote")
+                        continue
+                    q0 = q_m[0]
+                    idx = pd.to_datetime(ts_m, unit="s", utc=True).tz_convert(None)
+                    o_m = q0.get("open") or []
+                    h_m = q0.get("high") or []
+                    l_m = q0.get("low") or []
+                    c_m = q0.get("close") or []
+                    v_m = q0.get("volume") or []
+                    n_m = min(len(idx), len(o_m), len(h_m), len(l_m), len(c_m), len(v_m))
+                    if n_m < 10:
+                        last_err_m = RuntimeError(f"rows too few ({n_m})")
+                        continue
+                    df_m = pd.DataFrame({
+                        "Open": o_m[:n_m], "High": h_m[:n_m], "Low": l_m[:n_m],
+                        "Close": c_m[:n_m], "Volume": v_m[:n_m],
+                    }, index=idx[:n_m])
+                    return df_m, None
+            except Exception as e_m:
+                last_err_m = e_m
+                continue
+        raise RuntimeError(f"native yahoo chart fallback failed: {last_err_m}")
+
     @st.cache_data(ttl=900)
     def get_data_v7(symbol, end_date):
         last_err = None
@@ -709,32 +779,38 @@ else:
         for attempt in range(3):
             try:
                 sess_m = _YF_SESS_MGR_M.get_session()
-                if sess_m is not None:
+                if _YF_IS_BROKEN_V1_M:
+                    df, share_base = _native_yahoo_chart_download_m(symbol, range_="3y", interval="1d", timeout=25)
+                else:
+                    if sess_m is not None:
+                        try:
+                            yf_sess_getter = getattr(yf, "_get_session", None)
+                            if callable(yf_sess_getter):
+                                yf_cur = yf_sess_getter()
+                                if yf_cur is not None:
+                                    for k, v in sess_m.headers.items():
+                                        try:
+                                            yf_cur.headers[k] = v
+                                        except Exception:
+                                            continue
+                        except Exception:
+                            pass
+                    df = yf.download(symbol, period="3y", progress=False, auto_adjust=False)
+                    if isinstance(df.columns, pd.MultiIndex): 
+                        df.columns = df.columns.get_level_values(0)
                     try:
-                        yf_sess_getter = getattr(yf, "_get_session", None)
-                        if callable(yf_sess_getter):
-                            yf_cur = yf_sess_getter()
-                            if yf_cur is not None:
-                                for k, v in sess_m.headers.items():
-                                    try:
-                                        yf_cur.headers[k] = v
-                                    except Exception:
-                                        continue
+                        t = yf.Ticker(symbol)
+                        share_base = get_turnover_share_base(t)
                     except Exception:
-                        pass
-                df = yf.download(symbol, period="3y", progress=False, auto_adjust=False)
-                if isinstance(df.columns, pd.MultiIndex): 
-                    df.columns = df.columns.get_level_values(0)
+                        share_base = None
                 df = df[df.index <= pd.to_datetime(end_date)]
-                t = yf.Ticker(symbol)
-                share_base = get_turnover_share_base(t)
                 _YF_SESS_MGR_M.record_success(symbol)
                 return df, share_base
             except Exception as exc:
                 last_err = exc
                 msg = str(exc) or ""
                 name = type(exc).__name__
-                if attempt < 2 and ("Invalid Crumb" in msg or "Unauthorized" in msg or "RateLimit" in name or "Too Many Requests" in msg):
+                if attempt < 2 and ("Invalid Crumb" in msg or "Unauthorized" in msg or "RateLimit" in name or "Too Many Requests" in msg or "HTTP 4" in msg):
                     backoff_m = (2 ** attempt) * (1.0 + _rand_mod.random())
                     _time_mod.sleep(backoff_m)
                     continue

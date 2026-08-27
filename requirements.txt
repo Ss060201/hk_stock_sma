@@ -1,6 +1,7 @@
 streamlit
-yfinance>=0.2.44
-pandas
+# ⚠️ 絕對不能升級到 yfinance 1.x（1.0+ API 整個重構會導致 Invalid Crumb 401！鎖死 0.2.59 穩定版）
+yfinance==0.2.59
+pandas>=2.0
 plotly
 numpy
 python-dateutil
