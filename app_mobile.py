@@ -319,14 +319,20 @@ if not is_mobile:
         st.subheader(f"我的收藏 ({len(watchlist_list)})")
         if watchlist_list:
             for ticker in watchlist_list:
-                col_nav, col_del = st.columns([5, 1])
+                st.markdown(
+                    """<div style="display:flex; flex-wrap:nowrap; align-items:center; gap:6px; margin:3px 0;">""",
+                    unsafe_allow_html=True
+                )
+                col_nav, col_del = st.columns([5, 1], gap="small")
                 with col_nav:
                     if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
                         st.session_state.current_view = ticker
+                        st.rerun()
                 with col_del:
                     if st.button("🗑️", key=f"nav_del_{ticker}", help=f"取消收藏 {ticker}", use_container_width=True):
                         if remove_stock_from_db(ticker):
                             st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
         else:
             st.caption("暫無收藏")
         
