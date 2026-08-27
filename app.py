@@ -56,6 +56,103 @@ _YF_UAS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
 ]
 
+# yfinance session 共享管理器 + 錯誤黑名單 (連續失敗 N 次後 M 秒內不重試)
+class _YFSessionManager:
+    def __init__(self):
+        self._sessions: List[Any] = []
+        self._last_refresh = 0.0
+        self._error_count: Dict[str, int] = {}     # ticker -> 連續失敗次數
+        self._error_until: Dict[str, float] = {}   # ticker -> 時間戳(秒)，在此之前 skip
+        self._lock = None
+        try:
+            import threading as _th
+            self._lock = _th.RLock()
+        except Exception:
+            self._lock = None
+
+    def _acquire(self):
+        if self._lock is not None:
+            self._lock.acquire()
+
+    def _release(self):
+        if self._lock is not None:
+            self._lock.release()
+
+    def _maybe_refresh_sessions(self) -> None:
+        import time as _t
+        now = _t.time()
+        if self._sessions and (now - self._last_refresh) < 600:
+            return
+        new_sessions = []
+        try:
+            for ua in _YF_UAS:
+                try:
+                    sess = requests.Session()
+                    sess.headers["User-Agent"] = ua
+                    sess.headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                    sess.headers["Accept-Language"] = "en-US,en;q=0.9,zh-HK;q=0.8,zh;q=0.7"
+                    new_sessions.append(sess)
+                except Exception:
+                    continue
+            if new_sessions:
+                self._sessions = new_sessions
+                self._last_refresh = now
+                # 嘗試把 session 掛到 yfinance 全域
+                yf_sess_getter = getattr(yf, "_get_session", None)
+                if callable(yf_sess_getter):
+                    try:
+                        cur = yf_sess_getter()
+                        if cur is not None and new_sessions:
+                            cur.headers["User-Agent"] = new_sessions[0].headers["User-Agent"]
+                            cur.headers.update(new_sessions[0].headers)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def should_skip(self, ticker: str):
+        import time as _t
+        self._acquire()
+        try:
+            until = self._error_until.get(ticker, 0.0)
+            if until and _t.time() < until:
+                return True
+            return False
+        finally:
+            self._release()
+
+    def get_session(self):
+        import random as _r, time as _t
+        self._acquire()
+        try:
+            self._maybe_refresh_sessions()
+            if self._sessions:
+                return self._sessions[_r.randint(0, len(self._sessions) - 1)]
+            return None
+        finally:
+            self._release()
+
+    def record_success(self, ticker: str):
+        self._acquire()
+        try:
+            self._error_count[ticker] = 0
+            self._error_until.pop(ticker, None)
+        finally:
+            self._release()
+
+    def record_failure(self, ticker: str, cooldown_sec: int = 180):
+        import time as _t
+        self._acquire()
+        try:
+            c = (self._error_count.get(ticker, 0) or 0) + 1
+            self._error_count[ticker] = c
+            if c >= 2:
+                self._error_until[ticker] = _t.time() + cooldown_sec
+        finally:
+            self._release()
+
+_YF_SESS_MGR = _YFSessionManager()
+
 # --- 2. CSS 樣式 (合併 v9.4 與 v9.6) ---
 st.markdown("""
 <style>
@@ -2784,25 +2881,35 @@ def sync_date_window_state(start_key: str, end_key: str, min_d: date, max_d: dat
 @st.cache_data(ttl=900)
 def get_data_v7(symbol, end_date):
     last_err = None
+
+    # session/error manager: 連續失敗 2 次 → 180s 不重試（節省 YF request 配額）
+    if _YF_SESS_MGR.should_skip(symbol):
+        return None, None
+
     for attempt in range(3):
         try:
-            try:
-                _yf_sess = getattr(yf, "_get_session", lambda: None)()
-                if _yf_sess is not None:
-                    _ua = _YF_UAS[(attempt + random.randint(0, 1000)) % len(_YF_UAS)]
-                    try:
-                        _yf_sess.headers["User-Agent"] = _ua
-                        _yf_sess.headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            # 嘗試換一個自訂 session + UA 給 yfinance 全域
+            sess = _YF_SESS_MGR.get_session()
+            if sess is not None:
+                try:
+                    yf_sess_getter = getattr(yf, "_get_session", None)
+                    if callable(yf_sess_getter):
+                        yf_cur_sess = yf_sess_getter()
+                        if yf_cur_sess is not None:
+                            for k, v in sess.headers.items():
+                                try:
+                                    yf_cur_sess.headers[k] = v
+                                except Exception:
+                                    continue
+                except Exception:
+                    pass
             df = yf.download(symbol, period="5y", progress=False, auto_adjust=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df = df[df.index <= pd.to_datetime(end_date)]
             t = yf.Ticker(symbol)
             share_base = get_turnover_share_base(t)
+            _YF_SESS_MGR.record_success(symbol)
             return df, share_base
         except Exception as exc:
             last_err = exc
@@ -2814,6 +2921,7 @@ def get_data_v7(symbol, end_date):
                 continue
             LOGGER.warning("Failed to load data for %s: %s", symbol, exc)
             break
+    _YF_SESS_MGR.record_failure(symbol, cooldown_sec=180)
     return None, None
 
 def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) -> Optional[Dict[str, Any]]:
@@ -3692,82 +3800,40 @@ with st.sidebar:
     st.markdown(
         """
         <style>
-        /* 收藏同行 V6 - 不用 st.columns，直接鎖 Streamlit 自動合成的 HorizontalBlock */
-        [data-testid="stSidebar"] .watchlist-row-marker
-          + [data-testid="stVerticalBlock"]
-          > div[data-testid="stHorizontalBlock"],
-        [data-testid="stSidebar"] .watchlist-row-marker
-          + div
-          > div[data-testid="stHorizontalBlock"] {
-            display: flex          !important;
-            flex-direction: row    !important;
-            flex-wrap: nowrap      !important;
-            align-items: stretch   !important;
-            gap: 6px               !important;
-            width: 100%            !important;
-            min-width: 0           !important;
+        /* 收藏同行終極方案：每個收藏 = 一個 st.form，鎖 form 內容器為 flex row nowrap */
+        [data-testid="stSidebar"] [data-testid="stForm"][data-form-key^="wl_form_"] {
+            margin-bottom: 6px;
         }
-
-        /* 第一個 column（nav 按鈕）= 自動伸長 */
-        [data-testid="stSidebar"] .watchlist-row-marker
-          + [data-testid="stVerticalBlock"]
-          > div[data-testid="stHorizontalBlock"]
-          > div:nth-of-type(1),
-        [data-testid="stSidebar"] .watchlist-row-marker
-          + div
-          > div[data-testid="stHorizontalBlock"]
+        [data-testid="stSidebar"] [data-testid="stForm"][data-form-key^="wl_form_"]
           > div:nth-of-type(1) {
-            flex: 1 1 auto !important;
-            min-width: 0   !important;
-            width: auto    !important;
-            display: flex  !important;
-        }
-
-        /* 第二個 column（🗑️ 按鈕）= 固定窄寬 */
-        [data-testid="stSidebar"] .watchlist-row-marker
-          + [data-testid="stVerticalBlock"]
-          > div[data-testid="stHorizontalBlock"]
-          > div:nth-of-type(2),
-        [data-testid="stSidebar"] .watchlist-row-marker
-          + div
-          > div[data-testid="stHorizontalBlock"]
-          > div:nth-of-type(2) {
-            flex: 0 0 56px !important;
-            width: 56px    !important;
-            min-width: 0   !important;
-            display: flex  !important;
-        }
-
-        /* Column 裡面的 StyledBlock 也要 flex */
-        [data-testid="stSidebar"] .watchlist-row-marker
-          ~ div[data-testid="stHorizontalBlock"]
-          div[data-testid="column"] {
-            width: auto     !important;
-            flex: inherit   !important;
-            min-width: 0    !important;
-            display: flex   !important;
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
             align-items: stretch !important;
+            gap: 6px !important;
+            width: 100% !important;
         }
-
-        /* button 100% 撐滿 column 高度，文字不折行 */
-        [data-testid="stSidebar"] .watchlist-row-marker
-          ~ div[data-testid="stHorizontalBlock"]
-          button {
-            width: 100%       !important;
-            height: 100%      !important;
+        [data-testid="stSidebar"] [data-testid="stForm"][data-form-key^="wl_form_"]
+          [data-testid="stFormSubmitButton"]:nth-of-type(1) {
+            flex: 1 1 auto !important;
+            min-width: 0 !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stForm"][data-form-key^="wl_form_"]
+          [data-testid="stFormSubmitButton"]:nth-of-type(2) {
+            flex: 0 0 56px !important;
+            width: 56px !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stForm"][data-form-key^="wl_form_"]
+          [data-testid="stFormSubmitButton"] button {
+            width: 100% !important;
+            height: 100% !important;
             white-space: nowrap !important;
         }
-
         @media (max-width: 768px) {
-          [data-testid="stSidebar"] .watchlist-row-marker
-            ~ div[data-testid="stHorizontalBlock"]
-            > div:nth-of-type(2),
-          [data-testid="stSidebar"] .watchlist-row-marker
-            + div
-            > div[data-testid="stHorizontalBlock"]
-            > div:nth-of-type(2) {
+          [data-testid="stSidebar"] [data-testid="stForm"][data-form-key^="wl_form_"]
+            [data-testid="stFormSubmitButton"]:nth-of-type(2) {
               flex: 0 0 48px !important;
-              width: 48px    !important;
+              width: 48px !important;
           }
         }
         </style>
@@ -3776,20 +3842,20 @@ with st.sidebar:
     )
     if watchlist_list:
         for ticker in watchlist_list:
-            st.markdown(
-                f'<span class="watchlist-row-marker wl-{ticker}" aria-hidden="true"></span>',
-                unsafe_allow_html=True,
-            )
-            col_nav, col_del = st.columns([5, 1], gap="small")
-            with col_nav:
-                if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
-                    st.session_state.current_view = ticker
-                    set_current_page("stock", ticker)
+            with st.form(key=f"wl_form_{ticker}", clear_on_submit=False, border=False):
+                col_submit = st.form_submit_button(
+                    ticker, use_container_width=True,
+                )
+                del_submit = st.form_submit_button(
+                    "🗑️", use_container_width=True, help=f"取消收藏 {ticker}",
+                )
+            if col_submit:
+                st.session_state.current_view = ticker
+                set_current_page("stock", ticker)
+                st.rerun()
+            if del_submit:
+                if remove_stock_from_db(ticker):
                     st.rerun()
-            with col_del:
-                if st.button("🗑️", key=f"nav_del_{ticker}", use_container_width=True, help=f"取消收藏 {ticker}"):
-                    if remove_stock_from_db(ticker):
-                        st.rerun()
     else:
         st.caption("暫無收藏")
     
