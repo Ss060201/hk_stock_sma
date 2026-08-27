@@ -154,9 +154,9 @@ class _YFSessionManager:
 _YF_SESS_MGR = _YFSessionManager()
 
 _APP_BUILD = {
-    "commit": "7aeffb8+steplog",
-    "time": "2026-08-28 20:42",
-    "tag": "原生8endpoint+隨機UA+每步step log+persist err log顯示",
+    "commit": "a891e33+stooqfinal",
+    "time": "2026-08-28 21:08",
+    "tag": "拔HK mirror(404/DNS)+Stooq CSV最終備援+step log升級24條顯示",
 }
 try:
     _APP_BUILD["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -2925,7 +2925,7 @@ def _yf_append_log(log_list: list, payload, limit: int = 20):
 
 def _yf_log_step(symbol: str, stage: str, message: str):
     _yf_append_log(_YF_NATIVE_STEP_LOG,
-                   (time.strftime("%H:%M:%S"), symbol, stage, (message or "")[:260]), limit=60)
+                   (time.strftime("%H:%M:%S"), symbol, stage, (message or "")[:260]), limit=200)
 
 def _persist_last_error(symbol: str, route: str, detail: str):
     try:
@@ -2937,12 +2937,13 @@ def _persist_last_error(symbol: str, route: str, detail: str):
     except Exception:
         pass
     _yf_append_log(_YF_PERSIST_ERR_LOG,
-                   (time.strftime("%H:%M:%S"), symbol, route, (detail or "")[:240]), limit=30)
+                   (time.strftime("%H:%M:%S"), symbol, route, (detail or "")[:240]), limit=80)
 
 def _native_yahoo_chart_download(symbol, range_: str = "5y", interval: str = "1d", timeout: int = 25):
     """
-    優先路線：原生 requests 打 Yahoo v8 chart API。
-    加強：6 個 endpoint（query1/query2/hk1/hk2/basic/events）+ 4 UA 隨機 + Referer + step log。
+    Route 1（優先）: 原生 requests 打 Yahoo v8 chart API。
+    只保留美國 query1/query2 × events/basic = 4 endpoints（HK mirror 404/.hk DNS 不存在已拔掉）。
+    + 4 UA 隨機 + Referer + Accept-Language + step log 每步全記。
     """
     from urllib.parse import urlencode as _urlenc
     uas = [
@@ -2965,6 +2966,7 @@ def _native_yahoo_chart_download(symbol, range_: str = "5y", interval: str = "1d
         s.headers.update(common_headers)
         last_err = None
         try:
+            time.sleep(random.uniform(0.3, 0.9))
             _yf_log_step(symbol, "native.warmup1", "GET finance.yahoo.com/")
             r = s.get("https://finance.yahoo.com/", timeout=min(timeout, 12), allow_redirects=True)
             _yf_log_step(symbol, "native.warmup1", f"status={r.status_code} len={len(r.content or b'')}")
@@ -2987,12 +2989,11 @@ def _native_yahoo_chart_download(symbol, range_: str = "5y", interval: str = "1d
                 f"https://{host}/v8/finance/chart/{symbol}?{_urlenc(p_basic)}",
             ]
         base_urls = (make_urls("query1.finance.yahoo.com") +
-                     make_urls("query2.finance.yahoo.com") +
-                     make_urls("hk.finance.yahoo.com") +
-                     make_urls("query1.finance.yahoo.com.hk"))
+                     make_urls("query2.finance.yahoo.com"))
         _yf_log_step(symbol, "native.urls", f"count={len(base_urls)} first={base_urls[0].split('?')[0]}")
         for idx, url in enumerate(base_urls):
             try:
+                time.sleep(random.uniform(0.2, 0.7))
                 _yf_log_step(symbol, f"native.req[{idx}]", f"GET {url.split('//')[1].split('?')[0]}")
                 r = s.get(url, timeout=timeout, allow_redirects=True)
                 body_len = len(r.content or b"")
@@ -3052,6 +3053,80 @@ def _native_yahoo_chart_download(symbol, range_: str = "5y", interval: str = "1d
                 _yf_log_step(symbol, f"native.req[{idx}]", f"EXCEPTION {type(e).__name__}: {str(e)[:140]}")
                 continue
     raise RuntimeError(f"native yahoo chart failed: {last_err}")
+
+
+def _native_stooq_download(symbol: str, period_years: int = 5, timeout: int = 25):
+    """
+    Route 3（Yahoo 雙路線全失敗的最終備援）：Stooq 歷史 CSV API。
+    完全不需要 cookie / crumb / UA 擬態！HK 股格式 00290.HK。
+    """
+    from io import StringIO
+    from datetime import datetime, timedelta
+    _yf_log_step(symbol, "stooq.init", f"period={period_years}y symbol={symbol}")
+    try:
+        stooq_sym = symbol.replace(".HK", "^HK").replace(".hk", "^HK") if False else symbol
+        to_d = datetime.now()
+        from_d = to_d - timedelta(days=int(period_years * 365.25) + 20)
+        d1, m1, y1 = str(from_d.day).zfill(2), str(from_d.month).zfill(2), str(from_d.year)
+        d2, m2, y2 = str(to_d.day).zfill(2), str(to_d.month).zfill(2), str(to_d.year)
+        uas_stooq = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0",
+        ]
+        hdrs = {
+            "User-Agent": random.choice(uas_stooq),
+            "Accept": "text/csv,text/html,*/*;q=0.6",
+            "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.7",
+        }
+        urls = [
+            f"https://stooq.com/q/d/l/?s={stooq_sym}&d1={y1}{m1}{d1}&d2={y2}{m2}{d2}&i=d",
+            f"https://stooq.pl/q/d/l/?s={stooq_sym}&d1={y1}{m1}{d1}&d2={y2}{m2}{d2}&i=d",
+        ]
+        _yf_log_step(symbol, "stooq.urls", f"count={len(urls)} first_s={stooq_sym}")
+        last_err = None
+        for idx, url in enumerate(urls):
+            try:
+                time.sleep(random.uniform(0.3, 0.8))
+                _yf_log_step(symbol, f"stooq.req[{idx}]", f"GET {url.split('//')[1].split('&')[0]}")
+                r = requests.get(url, headers=hdrs, timeout=timeout, allow_redirects=True)
+                body = r.text or ""
+                _yf_log_step(symbol, f"stooq.req[{idx}]", f"status={r.status_code} len={len(body)} snip={body[:120]}")
+                if r.status_code != 200 or "Date,Open,High,Low,Close,Volume" not in body:
+                    last_err = RuntimeError(f"Stooq[{idx}] invalid resp status={r.status_code} | head={body[:100]}")
+                    _persist_last_error(symbol, f"stooq[{idx}]", str(last_err))
+                    continue
+                try:
+                    df = pd.read_csv(StringIO(body), parse_dates=["Date"])
+                except Exception as pe:
+                    last_err = RuntimeError(f"Stooq[{idx}] csv parse failed: {pe}")
+                    _persist_last_error(symbol, f"stooq[{idx}]", str(last_err))
+                    continue
+                if len(df) < 20 or "Close" not in df.columns:
+                    last_err = RuntimeError(f"Stooq[{idx}] rows too few ({len(df)}) or no Close")
+                    _persist_last_error(symbol, f"stooq[{idx}]", str(last_err))
+                    continue
+                df = df.rename(columns={"Date": "Date"}).set_index("Date").sort_index()
+                df.index = pd.to_datetime(df.index)
+                df.columns = [c if c in ("Open","High","Low","Close","Volume") else c.capitalize() for c in df.columns]
+                for col in ("Open","High","Low","Close","Volume"):
+                    if col not in df.columns:
+                        df[col] = np.nan
+                df = df[["Open","High","Low","Close","Volume"]]
+                df = df.dropna(subset=["Close"])
+                if len(df) < 20:
+                    last_err = RuntimeError(f"Stooq[{idx}] after dropna rows too few ({len(df)})")
+                    _persist_last_error(symbol, f"stooq[{idx}]", str(last_err))
+                    continue
+                _yf_log_step(symbol, f"stooq.req[{idx}]", f"SUCCESS rows={len(df)} close_last={float(df['Close'].iloc[-1])}")
+                return df, None
+            except Exception as e:
+                last_err = RuntimeError(f"Stooq[{idx}] {type(e).__name__}: {str(e)[:160]}")
+                _persist_last_error(symbol, f"stooq[{idx}]", str(last_err))
+                _yf_log_step(symbol, f"stooq.req[{idx}]", f"EXCEPTION {type(e).__name__}: {str(e)[:120]}")
+                continue
+        raise RuntimeError(f"Stooq all failed: {last_err}")
+    except Exception as e_out:
+        raise RuntimeError(f"Stooq outer: {type(e_out).__name__}: {str(e_out)[:160]}") from e_out
 
 
 def _try_yfinance_download(symbol, period: str = "5y", timeout: int = 30):
@@ -3126,6 +3201,19 @@ def get_data_v7(symbol, end_date):
                 return df, share_base
         except Exception as exc_yf:
             last_err = exc_yf
+
+        # --- Route 3: Yahoo 雙路線全失敗 → 最終備援 Stooq CSV（完全不需要 crumb） ---
+        _NATIVE_DOWNLOAD_STATS["stooq_attempts"] = _NATIVE_DOWNLOAD_STATS.get("stooq_attempts", 0) + 1
+        try:
+            df, share_base = _native_stooq_download(symbol, period_years=5, timeout=25)
+            df = df[df.index <= pd.to_datetime(end_date)]
+            if df is not None and len(df) > 5:
+                _YF_SESS_MGR.record_success(symbol)
+                _NATIVE_DOWNLOAD_STATS["stooq_success"] = _NATIVE_DOWNLOAD_STATS.get("stooq_success", 0) + 1
+                _persist_last_error(symbol, "stooq", f"OK rows={len(df)}")
+                return df, share_base
+        except Exception as exc_stooq:
+            last_err = exc_stooq
 
         msg = str(last_err) or ""
         name = type(last_err).__name__
@@ -4530,7 +4618,9 @@ else:
             yf_at = _NATIVE_DOWNLOAD_STATS.get("yf_attempts", 0)
             yf_ok = _NATIVE_DOWNLOAD_STATS.get("yf_success", 0)
             if (n_at + yf_at) > 0:
-                _extra_info.append(f"📊 下載統計：native {n_ok}/{n_at}  |  yfinance {yf_ok}/{yf_at}（本 app instance 累計）")
+                s_at = _NATIVE_DOWNLOAD_STATS.get("stooq_attempts", 0)
+                s_ok = _NATIVE_DOWNLOAD_STATS.get("stooq_success", 0)
+                _extra_info.append(f"📊 下載統計：native {n_ok}/{n_at}  |  yfinance {yf_ok}/{yf_at}  |  stooq {s_ok}/{s_at}（本 app instance 累計）")
         except Exception:
             pass
         try:
@@ -4538,10 +4628,10 @@ else:
             for _t, _sym, _stg, _msg in reversed(_YF_NATIVE_STEP_LOG):
                 if _sym == yahoo_ticker or _sym == current_code:
                     _matches_step.append(f"[{_t}] {_stg} → {_msg}")
-                if len(_matches_step) >= 8:
+                if len(_matches_step) >= 24:
                     break
             if _matches_step:
-                _extra_info.append("🔧 --- DEBUG STEP LOG (最新→最舊，限前 8 條) ---")
+                _extra_info.append("🔧 --- DEBUG STEP LOG (最新→最舊，限前 24 條) ---")
                 for _l in _matches_step:
                     _extra_info.append("🔧 " + _l)
         except Exception:
@@ -4551,15 +4641,15 @@ else:
             for _t, _sym, _rt, _det in reversed(_YF_PERSIST_ERR_LOG):
                 if _sym == yahoo_ticker or _sym == current_code:
                     _matches_perr.append(f"[{_t}] <{_rt}> {_det}")
-                if len(_matches_perr) >= 5:
+                if len(_matches_perr) >= 12:
                     break
             if _matches_perr:
-                _extra_info.append("🚨 --- PERSIST ERRORS (限前 5 條) ---")
+                _extra_info.append("🚨 --- PERSIST ERRORS (限前 12 條) ---")
                 for _l in _matches_perr:
                     _extra_info.append("🚨 " + _l)
         except Exception:
             pass
-        st.error("⚠️ 載入失敗：Yahoo Finance 暫時拒絕連線（Invalid Crumb / 401 Unauthorized）。請稍後按下方按鈕重試或重整頁面。")
+        st.error("⚠️ 載入失敗：Yahoo Finance 暫時拒絕連線（Invalid Crumb / 401 Unauthorized）。已自動切 Stooq 備援；若仍失敗請按下方按鈕重試。")
         for _line in _extra_info:
             st.caption(_line)
         if st.button("🔄 重試載入數據（清除 blacklist + cache）", use_container_width=True, key="stock_retry_df"):
