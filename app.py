@@ -3651,19 +3651,21 @@ with st.sidebar:
     )
     
     st.subheader(f"我的收藏 ({len(watchlist_list)})")
+    st.caption("單擊代號：查看股票 ｜ 再次單擊同一行：取消收藏")
     if watchlist_list:
         for ticker in watchlist_list:
-            st.markdown('<div class="watchlist-inline-row">', unsafe_allow_html=True)
-            col_nav, col_del = st.columns([5, 1], gap="small")
-            with col_nav:
-                if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
+            label = f"{ticker}\u3000\u3000\u3000🗑️"
+            if st.button(label, key=f"nav_{ticker}", use_container_width=True):
+                current = st.session_state.get("current_view", "")
+                if current == ticker:
+                    if remove_stock_from_db(ticker):
+                        st.session_state.current_view = ""
+                        set_current_page("home")
+                        st.rerun()
+                else:
+                    st.session_state.current_view = ticker
                     set_current_page("stock", ticker)
                     st.rerun()
-            with col_del:
-                if st.button("🗑️", key=f"nav_del_{ticker}", help=f"取消收藏 {ticker}", use_container_width=True):
-                    if remove_stock_from_db(ticker):
-                        st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
     else:
         st.caption("暫無收藏")
     
