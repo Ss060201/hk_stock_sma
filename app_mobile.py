@@ -152,6 +152,16 @@ class _YFSessionManager_M:
 
 _YF_SESS_MGR_M = _YFSessionManager_M()
 
+_APP_BUILD_M = {
+    "commit": "fa90eba+formfix",
+    "time": "2026-08-27 13:12",
+    "tag": "終極同行 + session 黑名單",
+}
+try:
+    _APP_BUILD_M["yf_version"] = getattr(yf, "__version__", "n/a")
+except Exception:
+    _APP_BUILD_M["yf_version"] = "n/a"
+
 # --- CSS 樣式 ---
 st.markdown("""
 <style>
@@ -395,6 +405,16 @@ if not is_mobile:
     # ===== 桌面端侧边栏 =====
     with st.sidebar:
         st.header("HK Stock Analysis")
+        try:
+            _build_cap_m = (
+                f"🛠️ Build: {_APP_BUILD_M.get('commit','?')}  "
+                f"| yfinance: {_APP_BUILD_M.get('yf_version','?')}  "
+                f"| {_APP_BUILD_M.get('time','?')}"
+            )
+            st.caption(_build_cap_m)
+            st.caption("💡 如果沒看到上面 Build 號 = Streamlit 仍在跑舊版！請做 Clear cache + Redeploy")
+        except Exception:
+            pass
         
         with st.expander("✈️ Telegram 設定", expanded=False):
             def_token = st.secrets["telegram"]["token"] if "telegram" in st.secrets else ""
@@ -444,71 +464,32 @@ if not is_mobile:
         watchlist_list = list(watchlist_data.keys()) if watchlist_data else []
 
         st.subheader(f"我的收藏 ({len(watchlist_list)})")
-        st.markdown(
-            """
-            <style>
-            /* 收藏同行終極方案：每個收藏 = 一個 st.form */
-            [data-testid="stSidebar"] [data-testid="stForm"][data-form-key^="wl_form_"],
-            [data-testid="stAppViewContainer"] [data-testid="stForm"][data-form-key^="wl_form_"] {
-                margin-bottom: 6px;
-            }
-            [data-testid="stSidebar"] [data-testid="stForm"][data-form-key^="wl_form_"]
-              > div:nth-of-type(1),
-            [data-testid="stAppViewContainer"] [data-testid="stForm"][data-form-key^="wl_form_"]
-              > div:nth-of-type(1) {
-                display: flex !important;
-                flex-direction: row !important;
-                flex-wrap: nowrap !important;
-                align-items: stretch !important;
-                gap: 6px !important;
-                width: 100% !important;
-            }
-            [data-testid="stSidebar"] [data-testid="stForm"][data-form-key^="wl_form_"]
-              [data-testid="stFormSubmitButton"]:nth-of-type(1),
-            [data-testid="stAppViewContainer"] [data-testid="stForm"][data-form-key^="wl_form_"]
-              [data-testid="stFormSubmitButton"]:nth-of-type(1) {
-                flex: 1 1 auto !important;
-                min-width: 0 !important;
-            }
-            [data-testid="stSidebar"] [data-testid="stForm"][data-form-key^="wl_form_"]
-              [data-testid="stFormSubmitButton"]:nth-of-type(2),
-            [data-testid="stAppViewContainer"] [data-testid="stForm"][data-form-key^="wl_form_"]
-              [data-testid="stFormSubmitButton"]:nth-of-type(2) {
-                flex: 0 0 56px !important;
-                width: 56px !important;
-            }
-            [data-testid="stSidebar"] [data-testid="stForm"][data-form-key^="wl_form_"]
-              [data-testid="stFormSubmitButton"] button,
-            [data-testid="stAppViewContainer"] [data-testid="stForm"][data-form-key^="wl_form_"]
-              [data-testid="stFormSubmitButton"] button {
-                width: 100% !important;
-                height: 100% !important;
-                white-space: nowrap !important;
-            }
-            @media (max-width: 768px) {
-              [data-testid="stSidebar"] [data-testid="stForm"][data-form-key^="wl_form_"]
-                [data-testid="stFormSubmitButton"]:nth-of-type(2),
-              [data-testid="stAppViewContainer"] [data-testid="stForm"][data-form-key^="wl_form_"]
-                [data-testid="stFormSubmitButton"]:nth-of-type(2) {
-                  flex: 0 0 48px !important;
-                  width: 48px !important;
-              }
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
         if watchlist_list:
             for ticker in watchlist_list:
-                with st.form(key=f"wl_form_{ticker}", clear_on_submit=False, border=False):
-                    col_submit = st.form_submit_button(ticker, use_container_width=True)
-                    del_submit = st.form_submit_button("🗑️", use_container_width=True, help=f"取消收藏 {ticker}")
-                if col_submit:
-                    st.session_state.current_view = ticker
-                    st.rerun()
-                if del_submit:
-                    if remove_stock_from_db(ticker):
-                        st.rerun()
+                _btns_style_m = (
+                    "display:flex;flex-direction:row;flex-wrap:nowrap;"
+                    "align-items:stretch;gap:6px;width:100%;margin:0 0 6px 0;"
+                )
+                _nav_style_m = (
+                    "flex:1 1 auto;min-width:0;height:44px;font-size:16px;"
+                    "font-weight:600;border:1px solid rgba(49,51,63,0.2);border-radius:6px;"
+                    "background-color:#FFFFFF;color:#31333F;cursor:pointer;"
+                    "white-space:nowrap;padding:4px 10px;"
+                )
+                _del_style_m = (
+                    "flex:0 0 48px;width:48px;height:44px;font-size:18px;"
+                    "border:1px solid rgba(49,51,63,0.2);border-radius:6px;"
+                    "background-color:#FFFFFF;color:#d9534f;cursor:pointer;"
+                    "white-space:nowrap;padding:0;"
+                )
+                _html_m = f"""
+                <form method="get" style="{_btns_style_m}" onsubmit="return true;">
+                  <input type="hidden" name="wl_ticker" value="{ticker}">
+                  <button type="submit" name="wl_action" value="nav" style="{_nav_style_m}">{ticker}</button>
+                  <button type="submit" name="wl_action" value="del" style="{_del_style_m}" title="取消收藏 {ticker}">🗑️</button>
+                </form>
+                """
+                st.markdown(_html_m, unsafe_allow_html=True)
         else:
             st.caption("暫無收藏")
         
@@ -551,6 +532,29 @@ else:
 
 watchlist_data = get_watchlist_from_db()
 watchlist_list = list(watchlist_data.keys()) if watchlist_data else []
+
+# 原生 HTML form query params 導航（同行保證）
+try:
+    _qp_m = st.query_params.to_dict() if hasattr(st, "query_params") else {}
+except Exception:
+    _qp_m = {}
+if _qp_m:
+    _a = _qp_m.get("wl_action")
+    _t = _qp_m.get("wl_ticker")
+    if isinstance(_a, list): _a = _a[0] if _a else ""
+    if isinstance(_t, list): _t = _t[0] if _t else ""
+    _a = str(_a or "").strip(); _t = str(_t or "").strip()
+    if _t and _a in ("nav", "del"):
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
+        if _a == "nav":
+            st.session_state.current_view = _t
+            st.rerun()
+        elif _a == "del":
+            if remove_stock_from_db(_t):
+                st.rerun()
 
 current_code = st.session_state.current_view
 ref_date_str = st.session_state.ref_date.strftime('%Y-%m-%d')
@@ -741,8 +745,31 @@ else:
     df, share_base = get_data_v7(yahoo_ticker, st.session_state.ref_date)
     
     if df is None or len(df) <= 5:
+        _extra_info_m = []
+        _extra_info_m.append(f"🛠️  Build: {_APP_BUILD_M.get('commit','?')}  |  yfinance: {_APP_BUILD_M.get('yf_version','?')}")
+        try:
+            until_m = _YF_SESS_MGR_M._error_until.get(yahoo_ticker, 0.0) or _YF_SESS_MGR_M._error_until.get(current_code, 0.0)
+            left_m = max(0, int(until_m - _time_mod.time()))
+            if left_m > 0:
+                _extra_info_m.append(f"⌛ Error 降級中：{left_m}s 後自動重試（節省 Yahoo 配額）")
+        except Exception:
+            pass
+        try:
+            ec_m = _YF_SESS_MGR_M._error_count.get(yahoo_ticker, 0) or _YF_SESS_MGR_M._error_count.get(current_code, 0)
+            if ec_m:
+                _extra_info_m.append(f"⚠️ 連續失敗次數: {ec_m}")
+        except Exception:
+            pass
         st.error("⚠️ 載入失敗：Yahoo Finance 暫時拒絕連線（Invalid Crumb / 401 Unauthorized）。請稍後按下方按鈕重試或重整頁面。")
-        if st.button("🔄 重試載入數據", use_container_width=True, key="mobile_retry_df"):
+        for _l in _extra_info_m:
+            st.caption(_l)
+        if st.button("🔄 重試載入數據（清除 blacklist + cache）", use_container_width=True, key="mobile_retry_df"):
+            for _tk in (yahoo_ticker, current_code):
+                try:
+                    _YF_SESS_MGR_M._error_count.pop(_tk, None)
+                    _YF_SESS_MGR_M._error_until.pop(_tk, None)
+                except Exception:
+                    pass
             get_data_v7.clear()
             st.rerun()
     else:
