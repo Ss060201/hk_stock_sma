@@ -11,6 +11,8 @@ from firebase_admin import credentials, firestore
 import json
 import logging
 import os
+import time
+import random
 from pathlib import Path
 from io import BytesIO
 from typing import Any, Dict, List, Optional
@@ -2913,17 +2915,37 @@ def get_home_watchlist_snapshot(watchlist_codes: List[str], ref_date: str) -> Di
     diagnostic: Dict[str, str] = {}
 
     for ticker in watchlist_codes:
-        df, share_base = get_data_v7(get_yahoo_ticker(ticker), ref_date)
+        yt = get_yahoo_ticker(ticker)
+        try:
+            df, share_base = get_data_v7(yt, ref_date)
+        except Exception as exc:
+            exc_name = type(exc).__name__
+            exc_msg = str(exc) or ""
+            if "RateLimit" in exc_name or "Too Many Requests" in exc_msg:
+                diagnostic[ticker] = "Yahoo 限流（YFRateLimitError）：請稍後再按刷新按鈕"
+            elif "Invalid Crumb" in exc_msg or "Unauthorized" in exc_msg:
+                diagnostic[ticker] = "Yahoo 暫時拒絕連線（Invalid Crumb/Unauthorized）：約 5-10 分鐘後再試"
+            elif "delisted" in exc_msg.lower():
+                diagnostic[ticker] = f"Yahoo 回傳 possibly delisted：請確認 {ticker} 代號是否正確"
+            else:
+                diagnostic[ticker] = f"{exc_name}：{exc_msg[:80]}"
+            # After an error, add a longer backoff before next ticker.
+            time.sleep(random.uniform(0.8, 1.8))
+            continue
         if df is None:
             diagnostic[ticker] = "數據載入失敗（Yahoo 可能暫不可用）"
+            time.sleep(random.uniform(0.5, 1.1))
             continue
         raw_len = len(df)
         snapshot = _compute_home_snapshot_for_stock(ticker, df, share_base)
         if not snapshot:
             diagnostic[ticker] = f"有效交易日不足：載入 {raw_len} 列，過濾 NaN/0 後不足 2 列可計算"
+            time.sleep(random.uniform(0.3, 0.7))
             continue
         summaries.append(snapshot["summary"])
         details[ticker] = snapshot["detail"]
+        # Success: small randomized delay to avoid hammering Yahoo on next ticker.
+        time.sleep(random.uniform(0.35, 0.95))
 
     return {"summaries": summaries, "details": details, "diagnostic": diagnostic}
 
@@ -3604,11 +3626,35 @@ with st.sidebar:
     st.divider()
     
     # 收藏夾導航
+    st.markdown(
+        """
+        <style>
+        .watchlist-inline-row>div {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            align-items: stretch !important;
+            gap: 6px !important;
+        }
+        .watchlist-inline-row [data-testid="column"] {
+            width: auto !important;
+            flex: 1 1 auto !important;
+            min-width: 0 !important;
+        }
+        .watchlist-inline-row [data-testid="column"]+[data-testid="column"] {
+            flex: 0 0 auto !important;
+            width: auto !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     
     st.subheader(f"我的收藏 ({len(watchlist_list)})")
     if watchlist_list:
         for ticker in watchlist_list:
-            col_nav, col_del = st.columns([5, 1])
+            st.markdown('<div class="watchlist-inline-row">', unsafe_allow_html=True)
+            col_nav, col_del = st.columns([5, 1], gap="small")
             with col_nav:
                 if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
                     set_current_page("stock", ticker)
@@ -3617,6 +3663,7 @@ with st.sidebar:
                 if st.button("🗑️", key=f"nav_del_{ticker}", help=f"取消收藏 {ticker}", use_container_width=True):
                     if remove_stock_from_db(ticker):
                         st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
     else:
         st.caption("暫無收藏")
     
@@ -3954,20 +4001,33 @@ elif current_page == "home":
                     # Hidden CSS hook inside this exact HorizontalBlock.
                     with cols[0]:
                         st.markdown(
-                            '<span class="home-stock-card-marker" aria-hidden="true"></span>',
+                            '<span class="home-stock-card-marker" aria-hidden="true"></span><div class="watchlist-inline-row">',
                             unsafe_allow_html=True,
                         )
-                        if st.button(
-                            ticker,
-                            key=f"home_code_{ticker}",
-                            use_container_width=True,
-                        ):
-                            st.session_state.home_selected_ticker = ticker
-                            st.session_state.home_return_anchor = (
-                                get_home_stock_anchor_id(ticker)
-                            )
-                            set_current_page("home_detail", ticker)
-                            st.rerun()
+                        sub_col_code, sub_col_del = st.columns([4, 1], gap="small")
+                        with sub_col_code:
+                            if st.button(
+                                ticker,
+                                key=f"home_code_{ticker}",
+                                use_container_width=True,
+                            ):
+                                st.session_state.home_selected_ticker = ticker
+                                st.session_state.home_return_anchor = (
+                                    get_home_stock_anchor_id(ticker)
+                                )
+                                set_current_page("home_detail", ticker)
+                                st.rerun()
+                        with sub_col_del:
+                            if st.button(
+                                "🗑️",
+                                key=f"home_code_del_{ticker}",
+                                help=f"取消收藏 {ticker}",
+                                use_container_width=True,
+                            ):
+                                if remove_stock_from_db(ticker):
+                                    get_home_watchlist_snapshot.clear()
+                                    st.rerun()
+                        st.markdown("</div>", unsafe_allow_html=True)
 
                     with cols[1]:
                         st.markdown(
