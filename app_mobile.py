@@ -10,7 +10,10 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import json
 import os
+import time as _time_mod
+import random as _rand_mod
 from pathlib import Path
+from tempfile import gettempdir
 from typing import Dict, Any, Optional, List
 from firebase_admin.exceptions import FirebaseError
 from providers import CSVShareBaseProvider, CompositeShareBaseProvider, YahooShareBaseProvider
@@ -41,6 +44,22 @@ setup_page(
 
 optimizer = init_mobile_optimizer()
 is_mobile = st.session_state.get('is_mobile', False)
+
+# yfinance crumb 穩定化：指定 TZ cache 到可寫 temp 目錄 + 升級 session UA
+try:
+    _yf_tz_dir_m = Path(gettempdir()) / "hk_stock_sma_yf_tzcache_m"
+    _yf_tz_dir_m.mkdir(parents=True, exist_ok=True)
+    try:
+        yf.set_tz_cache_location(str(_yf_tz_dir_m))
+    except Exception:
+        pass
+except Exception:
+    pass
+_YF_UAS_M = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+]
 
 # --- CSS 樣式 ---
 st.markdown("""
@@ -330,36 +349,93 @@ if not is_mobile:
         
         st.divider()
         
- watchlist_data = get_watchlist_from_db()
+        watchlist_data = get_watchlist_from_db()
         watchlist_list = list(watchlist_data.keys()) if watchlist_data else []
 
         st.subheader(f"我的收藏 ({len(watchlist_list)})")
         st.markdown(
             """
             <style>
-            [data-testid="stSidebar"] .watchlist-row,
-            [data-testid="stAppViewContainer"] .watchlist-row {
-                display: flex !important;
-                flex-direction: row !important;
-                flex-wrap: nowrap !important;
-                align-items: stretch !important;
-                gap: 6px !important;
-                width: 100% !important;
+            /* 收藏同行 V6 - 直接鎖 Streamlit 自動合成的 HorizontalBlock */
+            [data-testid="stSidebar"] .watchlist-row-marker
+              + [data-testid="stVerticalBlock"]
+              > div[data-testid="stHorizontalBlock"],
+            [data-testid="stSidebar"] .watchlist-row-marker
+              + div
+              > div[data-testid="stHorizontalBlock"],
+            [data-testid="stAppViewContainer"] .watchlist-row-marker
+              + [data-testid="stVerticalBlock"]
+              > div[data-testid="stHorizontalBlock"] {
+                display: flex          !important;
+                flex-direction: row    !important;
+                flex-wrap: nowrap      !important;
+                align-items: stretch   !important;
+                gap: 6px               !important;
+                width: 100%            !important;
+                min-width: 0           !important;
             }
-            [data-testid="stSidebar"] .watchlist-row > div:nth-of-type(1),
-            [data-testid="stAppViewContainer"] .watchlist-row > div:nth-of-type(1) {
+
+            [data-testid="stSidebar"] .watchlist-row-marker
+              + [data-testid="stVerticalBlock"]
+              > div[data-testid="stHorizontalBlock"]
+              > div:nth-of-type(1),
+            [data-testid="stAppViewContainer"] .watchlist-row-marker
+              + [data-testid="stVerticalBlock"]
+              > div[data-testid="stHorizontalBlock"]
+              > div:nth-of-type(1),
+            [data-testid="stSidebar"] .watchlist-row-marker
+              + div
+              > div[data-testid="stHorizontalBlock"]
+              > div:nth-of-type(1) {
                 flex: 1 1 auto !important;
-                min-width: 0 !important;
-                width: auto !important;
+                min-width: 0   !important;
+                width: auto    !important;
+                display: flex  !important;
             }
-            [data-testid="stSidebar"] .watchlist-row > div:nth-of-type(2),
-            [data-testid="stAppViewContainer"] .watchlist-row > div:nth-of-type(2) {
-                flex: 0 0 auto !important;
-                width: auto !important;
+
+            [data-testid="stSidebar"] .watchlist-row-marker
+              + [data-testid="stVerticalBlock"]
+              > div[data-testid="stHorizontalBlock"]
+              > div:nth-of-type(2),
+            [data-testid="stAppViewContainer"] .watchlist-row-marker
+              + [data-testid="stVerticalBlock"]
+              > div[data-testid="stHorizontalBlock"]
+              > div:nth-of-type(2),
+            [data-testid="stSidebar"] .watchlist-row-marker
+              + div
+              > div[data-testid="stHorizontalBlock"]
+              > div:nth-of-type(2) {
+                flex: 0 0 56px !important;
+                width: 56px    !important;
+                min-width: 0   !important;
+                display: flex  !important;
             }
-            [data-testid="stSidebar"] .watchlist-row button,
-            [data-testid="stAppViewContainer"] .watchlist-row button {
+
+            .watchlist-row-marker
+              ~ div[data-testid="stHorizontalBlock"]
+              div[data-testid="column"] {
+                width: auto     !important;
+                flex: inherit   !important;
+                min-width: 0    !important;
+                display: flex   !important;
+                align-items: stretch !important;
+            }
+
+            .watchlist-row-marker
+              ~ div[data-testid="stHorizontalBlock"]
+              button {
+                width: 100%       !important;
+                height: 100%      !important;
                 white-space: nowrap !important;
+            }
+
+            @media (max-width: 768px) {
+              .watchlist-row-marker
+                ~ div[data-testid="stHorizontalBlock"]
+                > div:nth-of-type(2) {
+                  flex: 0 0 48px !important;
+                  width: 48px    !important;
+              }
             }
             </style>
             """,
@@ -367,8 +443,11 @@ if not is_mobile:
         )
         if watchlist_list:
             for ticker in watchlist_list:
-                st.markdown(f'<div class="watchlist-row wl-{ticker}">', unsafe_allow_html=True)
-                col_nav, col_del = st.columns([5, 1])
+                st.markdown(
+                    f'<span class="watchlist-row-marker wl-{ticker}" aria-hidden="true"></span>',
+                    unsafe_allow_html=True,
+                )
+                col_nav, col_del = st.columns([5, 1], gap="small")
                 with col_nav:
                     if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
                         st.session_state.current_view = ticker
@@ -377,7 +456,6 @@ if not is_mobile:
                     if st.button("🗑️", key=f"nav_del_{ticker}", use_container_width=True, help=f"取消收藏 {ticker}"):
                         if remove_stock_from_db(ticker):
                             st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
         else:
             st.caption("暫無收藏")
         
@@ -569,8 +647,19 @@ else:
     @st.cache_data(ttl=900)
     def get_data_v7(symbol, end_date):
         last_err = None
-        for attempt in range(2):
+        for attempt in range(3):
             try:
+                try:
+                    _yf_sess_m = getattr(yf, "_get_session", lambda: None)()
+                    if _yf_sess_m is not None:
+                        _ua_m = _YF_UAS_M[(attempt + _rand_mod.randint(0, 1000)) % len(_YF_UAS_M)]
+                        try:
+                            _yf_sess_m.headers["User-Agent"] = _ua_m
+                            _yf_sess_m.headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 df = yf.download(symbol, period="3y", progress=False, auto_adjust=False)
                 if isinstance(df.columns, pd.MultiIndex): 
                     df.columns = df.columns.get_level_values(0)
@@ -582,9 +671,9 @@ else:
                 last_err = exc
                 msg = str(exc) or ""
                 name = type(exc).__name__
-                if attempt == 0 and ("Invalid Crumb" in msg or "Unauthorized" in msg or "RateLimit" in name):
-                    import time as _t, random as _r
-                    _t.sleep(_r.uniform(1.0, 2.2))
+                if attempt < 2 and ("Invalid Crumb" in msg or "Unauthorized" in msg or "RateLimit" in name or "Too Many Requests" in msg):
+                    backoff_m = (2 ** attempt) * (1.0 + _rand_mod.random())
+                    _time_mod.sleep(backoff_m)
                     continue
                 break
         return None, None

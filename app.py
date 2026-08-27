@@ -16,6 +16,7 @@ import random
 from pathlib import Path
 from io import BytesIO
 from typing import Any, Dict, List, Optional
+from tempfile import gettempdir
 from streamlit.errors import StreamlitSecretNotFoundError
 from providers import (
     CSVFloatProvider,
@@ -38,6 +39,22 @@ from watchlist_storage import (
 st.set_page_config(page_title="港股 SMA 矩陣", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
 
 LOGGER = logging.getLogger(__name__)
+
+# yfinance crumb 穩定化：指定 TZ cache 到可寫 temp 目錄 + 升級 session UA
+try:
+    _yf_tz_dir = Path(gettempdir()) / "hk_stock_sma_yf_tzcache"
+    _yf_tz_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        yf.set_tz_cache_location(str(_yf_tz_dir))
+    except Exception:
+        pass
+except Exception:
+    pass
+_YF_UAS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+]
 
 # --- 2. CSS 樣式 (合併 v9.4 與 v9.6) ---
 st.markdown("""
@@ -2767,8 +2784,19 @@ def sync_date_window_state(start_key: str, end_key: str, min_d: date, max_d: dat
 @st.cache_data(ttl=900)
 def get_data_v7(symbol, end_date):
     last_err = None
-    for attempt in range(2):
+    for attempt in range(3):
         try:
+            try:
+                _yf_sess = getattr(yf, "_get_session", lambda: None)()
+                if _yf_sess is not None:
+                    _ua = _YF_UAS[(attempt + random.randint(0, 1000)) % len(_YF_UAS)]
+                    try:
+                        _yf_sess.headers["User-Agent"] = _ua
+                        _yf_sess.headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             df = yf.download(symbol, period="5y", progress=False, auto_adjust=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
@@ -2780,9 +2808,9 @@ def get_data_v7(symbol, end_date):
             last_err = exc
             msg = str(exc) or ""
             name = type(exc).__name__
-            if attempt == 0 and ("Invalid Crumb" in msg or "Unauthorized" in msg or "RateLimit" in name):
-                import time as _t, random as _r
-                _t.sleep(_r.uniform(1.0, 2.2))
+            if attempt < 2 and ("Invalid Crumb" in msg or "Unauthorized" in msg or "RateLimit" in name or "Too Many Requests" in msg):
+                backoff = (2 ** attempt) * (1.0 + random.random())
+                time.sleep(backoff)
                 continue
             LOGGER.warning("Failed to load data for %s: %s", symbol, exc)
             break
@@ -3664,25 +3692,83 @@ with st.sidebar:
     st.markdown(
         """
         <style>
-        [data-testid="stSidebar"] .watchlist-row {
-            display: flex !important;
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
-            align-items: stretch !important;
-            gap: 6px !important;
-            width: 100% !important;
+        /* 收藏同行 V6 - 不用 st.columns，直接鎖 Streamlit 自動合成的 HorizontalBlock */
+        [data-testid="stSidebar"] .watchlist-row-marker
+          + [data-testid="stVerticalBlock"]
+          > div[data-testid="stHorizontalBlock"],
+        [data-testid="stSidebar"] .watchlist-row-marker
+          + div
+          > div[data-testid="stHorizontalBlock"] {
+            display: flex          !important;
+            flex-direction: row    !important;
+            flex-wrap: nowrap      !important;
+            align-items: stretch   !important;
+            gap: 6px               !important;
+            width: 100%            !important;
+            min-width: 0           !important;
         }
-        [data-testid="stSidebar"] .watchlist-row > div:nth-of-type(1) {
+
+        /* 第一個 column（nav 按鈕）= 自動伸長 */
+        [data-testid="stSidebar"] .watchlist-row-marker
+          + [data-testid="stVerticalBlock"]
+          > div[data-testid="stHorizontalBlock"]
+          > div:nth-of-type(1),
+        [data-testid="stSidebar"] .watchlist-row-marker
+          + div
+          > div[data-testid="stHorizontalBlock"]
+          > div:nth-of-type(1) {
             flex: 1 1 auto !important;
-            min-width: 0 !important;
-            width: auto !important;
+            min-width: 0   !important;
+            width: auto    !important;
+            display: flex  !important;
         }
-        [data-testid="stSidebar"] .watchlist-row > div:nth-of-type(2) {
-            flex: 0 0 auto !important;
-            width: auto !important;
+
+        /* 第二個 column（🗑️ 按鈕）= 固定窄寬 */
+        [data-testid="stSidebar"] .watchlist-row-marker
+          + [data-testid="stVerticalBlock"]
+          > div[data-testid="stHorizontalBlock"]
+          > div:nth-of-type(2),
+        [data-testid="stSidebar"] .watchlist-row-marker
+          + div
+          > div[data-testid="stHorizontalBlock"]
+          > div:nth-of-type(2) {
+            flex: 0 0 56px !important;
+            width: 56px    !important;
+            min-width: 0   !important;
+            display: flex  !important;
         }
-        [data-testid="stSidebar"] .watchlist-row button {
+
+        /* Column 裡面的 StyledBlock 也要 flex */
+        [data-testid="stSidebar"] .watchlist-row-marker
+          ~ div[data-testid="stHorizontalBlock"]
+          div[data-testid="column"] {
+            width: auto     !important;
+            flex: inherit   !important;
+            min-width: 0    !important;
+            display: flex   !important;
+            align-items: stretch !important;
+        }
+
+        /* button 100% 撐滿 column 高度，文字不折行 */
+        [data-testid="stSidebar"] .watchlist-row-marker
+          ~ div[data-testid="stHorizontalBlock"]
+          button {
+            width: 100%       !important;
+            height: 100%      !important;
             white-space: nowrap !important;
+        }
+
+        @media (max-width: 768px) {
+          [data-testid="stSidebar"] .watchlist-row-marker
+            ~ div[data-testid="stHorizontalBlock"]
+            > div:nth-of-type(2),
+          [data-testid="stSidebar"] .watchlist-row-marker
+            + div
+            > div[data-testid="stHorizontalBlock"]
+            > div:nth-of-type(2) {
+              flex: 0 0 48px !important;
+              width: 48px    !important;
+          }
         }
         </style>
         """,
@@ -3690,8 +3776,11 @@ with st.sidebar:
     )
     if watchlist_list:
         for ticker in watchlist_list:
-            st.markdown(f'<div class="watchlist-row wl-{ticker}">', unsafe_allow_html=True)
-            col_nav, col_del = st.columns([5, 1])
+            st.markdown(
+                f'<span class="watchlist-row-marker wl-{ticker}" aria-hidden="true"></span>',
+                unsafe_allow_html=True,
+            )
+            col_nav, col_del = st.columns([5, 1], gap="small")
             with col_nav:
                 if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
                     st.session_state.current_view = ticker
@@ -3701,7 +3790,6 @@ with st.sidebar:
                 if st.button("🗑️", key=f"nav_del_{ticker}", use_container_width=True, help=f"取消收藏 {ticker}"):
                     if remove_stock_from_db(ticker):
                         st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
     else:
         st.caption("暫無收藏")
     
