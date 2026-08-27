@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -96,6 +97,22 @@ st.markdown("""
     }
     
     .stButton>button { width: 100%; height: 3em; font-size: 18px; }
+    .watchlist-inline-row>div {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        align-items: stretch !important;
+        gap: 6px !important;
+    }
+    .watchlist-inline-row [data-testid="column"] {
+        width: auto !important;
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+    }
+    .watchlist-inline-row [data-testid="column"]+[data-testid="column"] {
+        flex: 0 0 auto !important;
+        width: auto !important;
+    }
     
     /* 手机端优化 */
     @media (max-width: 768px) {
@@ -317,19 +334,19 @@ if not is_mobile:
         watchlist_list = list(watchlist_data.keys()) if watchlist_data else []
         
         st.subheader(f"我的收藏 ({len(watchlist_list)})")
-        st.caption("單擊：查看股票 ｜ 再次單擊：取消收藏")
         if watchlist_list:
             for ticker in watchlist_list:
-                label = f"{ticker}\u3000\u3000\u3000🗑️"
-                if st.button(label, key=f"nav_{ticker}", use_container_width=True):
-                    current = st.session_state.get("current_view", "")
-                    if current == ticker:
-                        if remove_stock_from_db(ticker):
-                            st.session_state.current_view = ""
-                            st.rerun()
-                    else:
+                st.markdown('<div class="watchlist-inline-row">', unsafe_allow_html=True)
+                col_nav, col_del = st.columns([5, 1], gap="small")
+                with col_nav:
+                    if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
                         st.session_state.current_view = ticker
                         st.rerun()
+                with col_del:
+                    if st.button("🗑️", key=f"nav_del_{ticker}", help=f"取消收藏 {ticker}", use_container_width=True):
+                        if remove_stock_from_db(ticker):
+                            st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
         else:
             st.caption("暫無收藏")
         
