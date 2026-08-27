@@ -153,9 +153,9 @@ class _YFSessionManager_M:
 _YF_SESS_MGR_M = _YFSessionManager_M()
 
 _APP_BUILD_M = {
-    "commit": "10e91d2+nativefirst",
-    "time": "2026-08-28 11:48",
-    "tag": "原生requests優先 + cookie consent warmup + 4 endpoint + 錯誤可視",
+    "commit": "7aeffb8+steplog",
+    "time": "2026-08-28 20:42",
+    "tag": "原生8endpoint+隨機UA+每步step log+persist err log顯示",
 }
 try:
     _APP_BUILD_M["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -715,76 +715,121 @@ else:
     
     _YF_LAST_ERROR_M: Dict[str, Any] = {}
     _NATIVE_DL_STATS_M = {"native_attempts": 0, "native_success": 0, "yf_attempts": 0, "yf_success": 0}
+    _YF_PERR_LOG_M = []
+    _YF_STEP_LOG_M = []
+    _YF_LOG_LOCK_M = _YF_SESS_MGR_M._lock if hasattr(_YF_SESS_MGR_M, "_lock") else None
+
+    def _yf_append_log_m(log_list, payload, limit=20):
+        try:
+            if _YF_LOG_LOCK_M: _YF_LOG_LOCK_M.acquire(timeout=0.5)
+            log_list.append(payload)
+            while len(log_list) > limit: log_list.pop(0)
+        except Exception:
+            pass
+        finally:
+            try:
+                if _YF_LOG_LOCK_M and _YF_LOG_LOCK_M.locked(): _YF_LOG_LOCK_M.release()
+            except Exception:
+                pass
+
+    def _yf_log_step_m(symbol, stage, msg):
+        _yf_append_log_m(_YF_STEP_LOG_M,
+                         (_time_mod.strftime("%H:%M:%S"), symbol, stage, (msg or "")[:260]), limit=60)
 
     def _persist_lerr_m(symbol: str, route: str, detail: str):
         try:
             _YF_LAST_ERROR_M[symbol] = {
                 "time": _time_mod.strftime("%H:%M:%S"),
                 "route": route,
-                "detail": (detail or "")[:220],
+                "detail": (detail or "")[:240],
             }
         except Exception:
             pass
+        _yf_append_log_m(_YF_PERR_LOG_M,
+                         (_time_mod.strftime("%H:%M:%S"), symbol, route, (detail or "")[:240]), limit=30)
 
     def _native_yahoo_chart_download_m(symbol, range_: str = "3y", interval: str = "1d", timeout: int = 25):
         from urllib.parse import urlencode as _urlenc_m
-        ua_m = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 "
-                "(KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1")
+        uas_m = [
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
+        ]
+        ua_m = _rand_mod.choice(uas_m)
+        _yf_log_step_m(symbol, "native.init", f"ua={ua_m[:40]}... range={range_}")
         hdrs_m = {
             "User-Agent": ua_m,
-            "Accept": "application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-TW,zh-Hant;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept": "application/json,text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-TW,zh-Hant;q=0.9,zh;q=0.8,en-US;q=0.7,en;q=0.6",
+            "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
+            "Referer": f"https://finance.yahoo.com/quote/{symbol}",
         }
         with requests.Session() as s_m:
             s_m.headers.update(hdrs_m)
             last_err_m = None
             try:
-                s_m.get("https://finance.yahoo.com/", timeout=min(timeout, 12), allow_redirects=True)
-            except Exception as e_w:
-                last_err_m = RuntimeError(f"warmup failed: {type(e_w).__name__}")
+                _yf_log_step_m(symbol, "native.warmup1", "GET finance.yahoo.com/")
+                r = s_m.get("https://finance.yahoo.com/", timeout=min(timeout, 12), allow_redirects=True)
+                _yf_log_step_m(symbol, "native.warmup1", f"status={r.status_code} len={len(r.content or b'')}")
+            except Exception as e:
+                _yf_log_step_m(symbol, "native.warmup1", f"EXCEPTION {type(e).__name__}: {str(e)[:120]}")
+                last_err_m = RuntimeError(f"warmup failed: {type(e).__name__}")
             try:
+                _yf_log_step_m(symbol, "native.warmup2", "GET consent.yahoo.com")
                 s_m.get("https://consent.yahoo.com/v2/collectConsent?sessionId=3_cc-session_" + str(int(_time_mod.time()*1000)),
                         timeout=min(timeout, 8), allow_redirects=True)
-            except Exception:
-                pass
-            p_basic = {"range": range_, "interval": interval,
-                       "includeAdjustedClose": "false", "includePrePost": "false"}
-            p_ev = {**p_basic, "events": "div%2Csplits%2CcapitalGains"}
-            urls_m = [
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?{_urlenc_m(p_ev)}",
-                f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?{_urlenc_m(p_ev)}",
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?{_urlenc_m(p_basic)}",
-                f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?{_urlenc_m(p_basic)}",
-            ]
-            for u in urls_m:
+            except Exception as e_w:
+                _yf_log_step_m(symbol, "native.warmup2", f"EXCEPTION {type(e_w).__name__}")
+
+            p_basic_m = {"range": range_, "interval": interval,
+                         "includeAdjustedClose": "false", "includePrePost": "false"}
+            p_ev_m = {**p_basic_m, "events": "div%2Csplits%2CcapitalGains"}
+            def make_m(host):
+                return [
+                    f"https://{host}/v8/finance/chart/{symbol}?{_urlenc_m(p_ev_m)}",
+                    f"https://{host}/v8/finance/chart/{symbol}?{_urlenc_m(p_basic_m)}",
+                ]
+            urls_m = (make_m("query1.finance.yahoo.com") +
+                      make_m("query2.finance.yahoo.com") +
+                      make_m("hk.finance.yahoo.com") +
+                      make_m("query1.finance.yahoo.com.hk"))
+            _yf_log_step_m(symbol, "native.urls", f"count={len(urls_m)} first={urls_m[0].split('?')[0]}")
+            for i, u in enumerate(urls_m):
                 try:
+                    _yf_log_step_m(symbol, f"native.req[{i}]", f"GET {u.split('//')[1].split('?')[0]}")
                     r_m = s_m.get(u, timeout=timeout, allow_redirects=True)
+                    body_len = len(r_m.content or b"")
+                    snip = ""
+                    try: snip = (r_m.text or "")[:160]
+                    except Exception: pass
+                    _yf_log_step_m(symbol, f"native.req[{i}]", f"status={r_m.status_code} len={body_len} snip={snip}")
                     if r_m.status_code != 200:
-                        snip = ""
-                        try: snip = r_m.text[:220]
-                        except Exception: pass
-                        last_err_m = RuntimeError(f"HTTP {r_m.status_code} @ {u.split('//')[1].split('?')[0][:30]} | {snip}")
-                        _persist_lerr_m(symbol, "native", str(last_err_m))
+                        last_err_m = RuntimeError(f"HTTP {r_m.status_code} @ {u.split('//')[1].split('?')[0][:36]} | {snip}")
+                        _persist_lerr_m(symbol, f"native[{i}]", str(last_err_m))
                         continue
                     try:
                         d_m = r_m.json()
                     except Exception as je:
-                        last_err_m = RuntimeError(f"JSON parse: {je}")
-                        _persist_lerr_m(symbol, "native", str(last_err_m))
+                        last_err_m = RuntimeError(f"JSON parse: {je} | head={snip}")
+                        _persist_lerr_m(symbol, f"native[{i}]", str(last_err_m))
                         continue
                     res_l = d_m.get("chart", {}).get("result") or []
                     if not res_l:
                         err = (d_m.get("chart", {}).get("error") or {})
-                        last_err_m = RuntimeError(f"empty result: code={err.get('code')} desc={str(err.get('description',''))[:80]}")
-                        _persist_lerr_m(symbol, "native", str(last_err_m))
+                        last_err_m = RuntimeError(f"empty result: code={err.get('code')} desc={str(err.get('description',''))[:100]}")
+                        _persist_lerr_m(symbol, f"native[{i}]", str(last_err_m))
                         continue
                     res = res_l[0]
+                    meta = res.get("meta") or {}
+                    _yf_log_step_m(symbol, f"native.req[{i}]",
+                                   f"meta symbol={meta.get('symbol')} currency={meta.get('currency')} ts_len={len(res.get('timestamp') or [])}")
                     ts_m = res.get("timestamp") or []
                     q_m = (res.get("indicators") or {}).get("quote") or []
                     if not ts_m or not q_m:
                         last_err_m = RuntimeError("missing ts/quote")
-                        _persist_lerr_m(symbol, "native", str(last_err_m))
+                        _persist_lerr_m(symbol, f"native[{i}]", str(last_err_m))
                         continue
                     q0 = q_m[0]
                     idx = pd.to_datetime(ts_m, unit="s", utc=True).tz_convert(None)
@@ -796,16 +841,19 @@ else:
                     n_m = min(len(idx), len(o_m), len(h_m), len(l_m), len(c_m), len(v_m))
                     if n_m < 10:
                         last_err_m = RuntimeError(f"rows too few ({n_m})")
-                        _persist_lerr_m(symbol, "native", str(last_err_m))
+                        _persist_lerr_m(symbol, f"native[{i}]", str(last_err_m))
                         continue
                     df_m = pd.DataFrame({
                         "Open": o_m[:n_m], "High": h_m[:n_m], "Low": l_m[:n_m],
                         "Close": c_m[:n_m], "Volume": v_m[:n_m],
                     }, index=idx[:n_m])
+                    _yf_log_step_m(symbol, f"native.req[{i}]",
+                                   f"SUCCESS rows={len(df_m)} close_last={df_m['Close'].iloc[-1] if len(df_m) else '?'}")
                     return df_m, None
                 except Exception as e_ex:
-                    last_err_m = RuntimeError(f"{type(e_ex).__name__}: {str(e_ex)[:160]}")
-                    _persist_lerr_m(symbol, "native", str(last_err_m))
+                    last_err_m = RuntimeError(f"{type(e_ex).__name__}: {str(e_ex)[:180]}")
+                    _persist_lerr_m(symbol, f"native[{i}]", str(last_err_m))
+                    _yf_log_step_m(symbol, f"native.req[{i}]", f"EXCEPTION {type(e_ex).__name__}: {str(e_ex)[:140]}")
                     continue
         raise RuntimeError(f"native yahoo chart failed: {last_err_m}")
 
@@ -889,6 +937,7 @@ else:
     if df is None or len(df) <= 5:
         _extra_info_m = []
         _extra_info_m.append(f"🛠️  Build: {_APP_BUILD_M.get('commit','?')}  |  yfinance: {_APP_BUILD_M.get('yf_version','?')}")
+        _extra_info_m.append(f"🔎  Yahoo ticker 送出: `{yahoo_ticker}`  |  原代碼: `{current_code}`")
         try:
             until_m = _YF_SESS_MGR_M._error_until.get(yahoo_ticker, 0.0) or _YF_SESS_MGR_M._error_until.get(current_code, 0.0)
             left_m = max(0, int(until_m - _time_mod.time()))
@@ -915,6 +964,30 @@ else:
             y_ok = _NATIVE_DL_STATS_M.get("yf_success", 0)
             if (n_at + y_at) > 0:
                 _extra_info_m.append(f"📊 下載統計：native {n_ok}/{n_at}  |  yfinance {y_ok}/{y_at}")
+        except Exception:
+            pass
+        try:
+            _matches_step_m = []
+            for _t, _sym, _stg, _msg in reversed(_YF_STEP_LOG_M):
+                if _sym == yahoo_ticker or _sym == current_code:
+                    _matches_step_m.append(f"[{_t}] {_stg} → {_msg}")
+                if len(_matches_step_m) >= 8: break
+            if _matches_step_m:
+                _extra_info_m.append("🔧 --- DEBUG STEP LOG (限前 8 條) ---")
+                for _l in _matches_step_m:
+                    _extra_info_m.append("🔧 " + _l)
+        except Exception:
+            pass
+        try:
+            _matches_perr_m = []
+            for _t, _sym, _rt, _det in reversed(_YF_PERR_LOG_M):
+                if _sym == yahoo_ticker or _sym == current_code:
+                    _matches_perr_m.append(f"[{_t}] <{_rt}> {_det}")
+                if len(_matches_perr_m) >= 5: break
+            if _matches_perr_m:
+                _extra_info_m.append("🚨 --- PERSIST ERRORS (限前 5 條) ---")
+                for _l in _matches_perr_m:
+                    _extra_info_m.append("🚨 " + _l)
         except Exception:
             pass
         st.error("⚠️ 載入失敗：Yahoo Finance 暫時拒絕連線（Invalid Crumb / 401 Unauthorized）。請稍後按下方按鈕重試或重整頁面。")
