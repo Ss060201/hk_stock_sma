@@ -154,9 +154,9 @@ class _YFSessionManager:
 _YF_SESS_MGR = _YFSessionManager()
 
 _APP_BUILD = {
-    "commit": "9a20e68+ylock",
-    "time": "2026-08-28 11:14",
-    "tag": "yfinance鎖0.2.59 + 原生HTML同行",
+    "commit": "10e91d2+nativefirst",
+    "time": "2026-08-28 11:48",
+    "tag": "原生requests優先 + cookie consent warmup + 4 endpoint + 錯誤可視",
 }
 try:
     _APP_BUILD["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -2902,57 +2902,91 @@ def sync_date_window_state(start_key: str, end_key: str, min_d: date, max_d: dat
     st.session_state[start_key] = start_value
     st.session_state[end_key] = end_value
 
+_YF_LAST_ERROR: Dict[str, Any] = {}
+_NATIVE_DOWNLOAD_STATS: Dict[str, Any] = {"native_attempts": 0, "native_success": 0,
+                                          "yf_attempts": 0, "yf_success": 0}
+
+def _persist_last_error(symbol: str, route: str, detail: str):
+    try:
+        _YF_LAST_ERROR[symbol] = {
+            "time": time.strftime("%H:%M:%S"),
+            "route": route,
+            "detail": (detail or "")[:220],
+        }
+    except Exception:
+        pass
+
 def _native_yahoo_chart_download(symbol, range_: str = "5y", interval: str = "1d", timeout: int = 25):
     """
-    yfinance 1.x cookie/crumb 機制整個重構會導致 401，
-    這裡直接原生 requests 打 Yahoo v8 chart API（已知 chart API 不需要 crumb）。
-    回傳 (pd.DataFrame[Open,High,Low,Close,Volume], share_base or None)
+    優先路線：原生 requests 打 Yahoo v8 chart API，不經過 yfinance crumb 機制。
+    步驟：
+      1. 先到 finance.yahoo.com 跟 consent.yahoo.com 建立 session cookie（避免 401）
+      2. 4 個 endpoint 輪詢（query1/query2 各 v8 普通 + events 版本）
+      3. 取第一個回 200 + 有 timestamp 的 parse 成 OHLCV DataFrame
     失敗 raise Exception，讓 get_data_v7 的 retry/backoff 接手。
     """
-    import json as _json
     from urllib.parse import urlencode as _urlenc
-    params = {
-        "range": range_,
-        "interval": interval,
-        "includeAdjustedClose": "false",
-        "includePrePost": "false",
-        "events": "div%2Csplits",
-    }
-    base_urls = [
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?{_urlenc(params)}",
-        f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?{_urlenc(params)}",
-    ]
     ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36")
-    last_err = None
-    resp_text = ""
-    for url in base_urls:
+    common_headers = {
+        "User-Agent": ua,
+        "Accept": "application/json,text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Connection": "keep-alive",
+    }
+
+    with requests.Session() as s:
+        s.headers.update(common_headers)
+        last_err = None
         try:
-            with requests.Session() as s:
-                s.headers.update({
-                    "User-Agent": ua,
-                    "Accept": "application/json,text/plain,*/*",
-                    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-                })
+            _consent_warmup = s.get("https://finance.yahoo.com/", timeout=min(timeout, 12), allow_redirects=True)
+        except Exception as e:
+            last_err = RuntimeError(f"warmup finance.yahoo.com failed: {type(e).__name__}")
+        try:
+            s.get("https://consent.yahoo.com/v2/collectConsent?sessionId=3_cc-session_" + str(int(time.time()*1000)),
+                  timeout=min(timeout, 8), allow_redirects=True)
+        except Exception:
+            pass
+
+        params_basic = {"range": range_, "interval": interval,
+                        "includeAdjustedClose": "false", "includePrePost": "false"}
+        params_events = {**params_basic, "events": "div%2Csplits%2CcapitalGains"}
+        base_urls = [
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?{_urlenc(params_events)}",
+            f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?{_urlenc(params_events)}",
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?{_urlenc(params_basic)}",
+            f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?{_urlenc(params_basic)}",
+        ]
+        for url in base_urls:
+            try:
                 r = s.get(url, timeout=timeout, allow_redirects=True)
                 if r.status_code != 200:
-                    last_err = RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+                    body_snip = ""
+                    try:
+                        body_snip = r.text[:240]
+                    except Exception:
+                        pass
+                    last_err = RuntimeError(f"HTTP {r.status_code} @ {url.split('//')[1].split('?')[0][:32]} | {body_snip}")
+                    _persist_last_error(symbol, "native", str(last_err))
                     continue
                 try:
                     data = r.json()
                 except Exception as je:
                     last_err = RuntimeError(f"chart JSON parse failed: {je}")
+                    _persist_last_error(symbol, "native", str(last_err))
                     continue
                 result_l = data.get("chart", {}).get("result") or []
                 if not result_l:
                     err = (data.get("chart", {}).get("error") or {})
-                    last_err = RuntimeError(f"chart empty result: {err}")
+                    last_err = RuntimeError(f"chart empty result: code={err.get('code')} desc={str(err.get('description',''))[:80]}")
+                    _persist_last_error(symbol, "native", str(last_err))
                     continue
                 result = result_l[0]
                 ts = result.get("timestamp") or []
                 q = (result.get("indicators") or {}).get("quote") or []
                 if not ts or not q:
                     last_err = RuntimeError("chart missing timestamp/quote")
+                    _persist_last_error(symbol, "native", str(last_err))
                     continue
                 quote = q[0]
                 index = pd.to_datetime(ts, unit="s", utc=True).tz_convert(None)
@@ -2964,16 +2998,57 @@ def _native_yahoo_chart_download(symbol, range_: str = "5y", interval: str = "1d
                 n = min(len(index), len(o), len(h), len(lo), len(c), len(v))
                 if n < 10:
                     last_err = RuntimeError(f"chart rows too few ({n})")
+                    _persist_last_error(symbol, "native", str(last_err))
                     continue
                 df = pd.DataFrame({
                     "Open": o[:n], "High": h[:n], "Low": lo[:n],
                     "Close": c[:n], "Volume": v[:n],
                 }, index=index[:n])
                 return df, None
-        except Exception as e:
-            last_err = e
-            continue
-    raise RuntimeError(f"native yahoo chart fallback failed: {last_err}")
+            except Exception as e:
+                last_err = RuntimeError(f"{type(e).__name__}: {str(e)[:160]}")
+                _persist_last_error(symbol, "native", str(last_err))
+                continue
+    raise RuntimeError(f"native yahoo chart failed: {last_err}")
+
+
+def _try_yfinance_download(symbol, period: str = "5y", timeout: int = 30):
+    """
+    備援路線：yfinance.download()，只有原生 requests 完全失敗才會走到這裡。
+    """
+    try:
+        sess = _YF_SESS_MGR.get_session()
+        if sess is not None:
+            try:
+                yf_sess_getter = getattr(yf, "_get_session", None)
+                if callable(yf_sess_getter):
+                    yf_cur = yf_sess_getter()
+                    if yf_cur is not None:
+                        for k, val in sess.headers.items():
+                            try:
+                                yf_cur.headers[k] = val
+                            except Exception:
+                                continue
+            except Exception:
+                pass
+        df = yf.download(symbol, period=period, progress=False, auto_adjust=False, timeout=timeout)
+        if df is None or df.empty:
+            raise RuntimeError("yfinance.download returned empty DataFrame")
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        share_base = None
+        try:
+            t = yf.Ticker(symbol)
+            share_base = get_turnover_share_base(t)
+        except Exception:
+            share_base = None
+        return df, share_base
+    except Exception as exc:
+        msg = str(exc) or ""
+        name = type(exc).__name__
+        short = f"{name}: {msg[:180]}"
+        _persist_last_error(symbol, "yfinance", short)
+        raise RuntimeError(short) from exc
 
 
 @st.cache_data(ttl=900)
@@ -2984,46 +3059,44 @@ def get_data_v7(symbol, end_date):
         return None, None
 
     for attempt in range(3):
+        # --- Route 1: 優先走原生 requests（不需要 crumb，最穩定） ---
+        _NATIVE_DOWNLOAD_STATS["native_attempts"] = _NATIVE_DOWNLOAD_STATS.get("native_attempts", 0) + 1
         try:
-            sess = _YF_SESS_MGR.get_session()
-            if _YF_IS_BROKEN_V1:
-                df, share_base = _native_yahoo_chart_download(symbol, range_="5y", interval="1d", timeout=25)
-            else:
-                if sess is not None:
-                    try:
-                        yf_sess_getter = getattr(yf, "_get_session", None)
-                        if callable(yf_sess_getter):
-                            yf_cur_sess = yf_sess_getter()
-                            if yf_cur_sess is not None:
-                                for k, v in sess.headers.items():
-                                    try:
-                                        yf_cur_sess.headers[k] = v
-                                    except Exception:
-                                        continue
-                    except Exception:
-                        pass
-                df = yf.download(symbol, period="5y", progress=False, auto_adjust=False)
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                try:
-                    t = yf.Ticker(symbol)
-                    share_base = get_turnover_share_base(t)
-                except Exception:
-                    share_base = None
+            df, share_base = _native_yahoo_chart_download(symbol, range_="5y", interval="1d", timeout=25)
             df = df[df.index <= pd.to_datetime(end_date)]
-            _YF_SESS_MGR.record_success(symbol)
-            return df, share_base
-        except Exception as exc:
-            last_err = exc
-            msg = str(exc) or ""
-            name = type(exc).__name__
-            if attempt < 2 and ("Invalid Crumb" in msg or "Unauthorized" in msg or "RateLimit" in name or "Too Many Requests" in msg or "HTTP 4" in msg):
-                backoff = (2 ** attempt) * (1.0 + random.random())
-                time.sleep(backoff)
-                continue
-            LOGGER.warning("Failed to load data for %s: %s", symbol, exc)
-            break
+            if df is not None and len(df) > 5:
+                _YF_SESS_MGR.record_success(symbol)
+                _NATIVE_DOWNLOAD_STATS["native_success"] = _NATIVE_DOWNLOAD_STATS.get("native_success", 0) + 1
+                _persist_last_error(symbol, "native", f"OK rows={len(df)}")
+                return df, share_base
+        except Exception as exc_native:
+            last_err = exc_native
+
+        # --- Route 2: 原生失敗，才 fallback 到 yfinance.download ---
+        _NATIVE_DOWNLOAD_STATS["yf_attempts"] = _NATIVE_DOWNLOAD_STATS.get("yf_attempts", 0) + 1
+        try:
+            df, share_base = _try_yfinance_download(symbol, period="5y", timeout=30)
+            df = df[df.index <= pd.to_datetime(end_date)]
+            if df is not None and len(df) > 5:
+                _YF_SESS_MGR.record_success(symbol)
+                _NATIVE_DOWNLOAD_STATS["yf_success"] = _NATIVE_DOWNLOAD_STATS.get("yf_success", 0) + 1
+                _persist_last_error(symbol, "yfinance", f"OK rows={len(df)}")
+                return df, share_base
+        except Exception as exc_yf:
+            last_err = exc_yf
+
+        msg = str(last_err) or ""
+        name = type(last_err).__name__
+        if attempt < 2 and ("Invalid Crumb" in msg or "Unauthorized" in msg or "RateLimit" in name
+                            or "Too Many Requests" in msg or "HTTP 40" in msg or "HTTP 5" in msg
+                            or "empty" in msg.lower()):
+            backoff = (2 ** attempt) * (1.0 + random.random())
+            time.sleep(backoff)
+            continue
+        LOGGER.warning("Failed to load data for %s (attempt %s): %s", symbol, attempt+1, last_err)
+        break
     _YF_SESS_MGR.record_failure(symbol, cooldown_sec=180)
+    _persist_last_error(symbol, "final", f"ALL 3 attempts failed | last={type(last_err).__name__}: {str(last_err)[:160]}")
     return None, None
 
 def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) -> Optional[Dict[str, Any]]:
@@ -4400,6 +4473,21 @@ else:
             ec = _YF_SESS_MGR._error_count.get(yahoo_ticker, 0) or _YF_SESS_MGR._error_count.get(current_code, 0)
             if ec:
                 _extra_info.append(f"⚠️ 連續失敗次數: {ec}")
+        except Exception:
+            pass
+        try:
+            _last = _YF_LAST_ERROR.get(yahoo_ticker) or _YF_LAST_ERROR.get(current_code) or _YF_LAST_ERROR.get(yahoo_ticker.replace(".HK","").replace(".hk",""))
+            if _last:
+                _extra_info.append(f"🧭 最後嘗試 [{_last.get('route','?')}] @ {_last.get('time','?')}：{_last.get('detail','')}")
+        except Exception:
+            pass
+        try:
+            n_at = _NATIVE_DOWNLOAD_STATS.get("native_attempts", 0)
+            n_ok = _NATIVE_DOWNLOAD_STATS.get("native_success", 0)
+            yf_at = _NATIVE_DOWNLOAD_STATS.get("yf_attempts", 0)
+            yf_ok = _NATIVE_DOWNLOAD_STATS.get("yf_success", 0)
+            if (n_at + yf_at) > 0:
+                _extra_info.append(f"📊 下載統計：native {n_ok}/{n_at}  |  yfinance {yf_ok}/{yf_at}（本 app instance 累計）")
         except Exception:
             pass
         st.error("⚠️ 載入失敗：Yahoo Finance 暫時拒絕連線（Invalid Crumb / 401 Unauthorized）。請稍後按下方按鈕重試或重整頁面。")
