@@ -153,9 +153,9 @@ class _YFSessionManager_M:
 _YF_SESS_MGR_M = _YFSessionManager_M()
 
 _APP_BUILD_M = {
-    "commit": "a891e33+stooqfinal",
-    "time": "2026-08-28 21:08",
-    "tag": "拔HK mirror(404/DNS)+Stooq CSV最終備援+step log升級24條顯示",
+    "commit": "f55ba10+sina4route",
+    "time": "2026-08-28 21:32",
+    "tag": "Yahoo sleep長(防429)+yf.Ticker.history(repair=True)+新浪財經Route4終極備援",
 }
 try:
     _APP_BUILD_M["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -770,9 +770,9 @@ else:
             s_m.headers.update(hdrs_m)
             last_err_m = None
             try:
-                _time_mod.sleep(_rand_mod.uniform(0.3, 0.9))
+                _time_mod.sleep(_rand_mod.uniform(0.6, 1.4))
                 _yf_log_step_m(symbol, "native.warmup1", "GET finance.yahoo.com/")
-                r = s_m.get("https://finance.yahoo.com/", timeout=min(timeout, 12), allow_redirects=True)
+                r = s_m.get("https://finance.yahoo.com/", timeout=min(timeout, 15), allow_redirects=True)
                 _yf_log_step_m(symbol, "native.warmup1", f"status={r.status_code} len={len(r.content or b'')}")
             except Exception as e:
                 _yf_log_step_m(symbol, "native.warmup1", f"EXCEPTION {type(e).__name__}: {str(e)[:120]}")
@@ -780,9 +780,11 @@ else:
             try:
                 _yf_log_step_m(symbol, "native.warmup2", "GET consent.yahoo.com")
                 s_m.get("https://consent.yahoo.com/v2/collectConsent?sessionId=3_cc-session_" + str(int(_time_mod.time()*1000)),
-                        timeout=min(timeout, 8), allow_redirects=True)
+                        timeout=min(timeout, 10), allow_redirects=True)
             except Exception as e_w:
                 _yf_log_step_m(symbol, "native.warmup2", f"EXCEPTION {type(e_w).__name__}")
+
+            _time_mod.sleep(_rand_mod.uniform(0.8, 1.6))
 
             p_basic_m = {"range": range_, "interval": interval,
                          "includeAdjustedClose": "false", "includePrePost": "false"}
@@ -797,7 +799,7 @@ else:
             _yf_log_step_m(symbol, "native.urls", f"count={len(urls_m)} first={urls_m[0].split('?')[0]}")
             for i, u in enumerate(urls_m):
                 try:
-                    _time_mod.sleep(_rand_mod.uniform(0.2, 0.7))
+                    _time_mod.sleep(_rand_mod.uniform(1.2, 2.8))
                     _yf_log_step_m(symbol, f"native.req[{i}]", f"GET {u.split('//')[1].split('?')[0]}")
                     r_m = s_m.get(u, timeout=timeout, allow_redirects=True)
                     body_len = len(r_m.content or b"")
@@ -938,15 +940,22 @@ else:
                                 except Exception: continue
                 except Exception:
                     pass
-            df = yf.download(symbol, period=period, progress=False, auto_adjust=False, timeout=timeout)
+            try:
+                _persist_lerr_m(symbol, "yfinance", f"Ticker.history period={period} repair=True")
+                t = yf.Ticker(symbol)
+                df = t.history(period=period, auto_adjust=False, actions=False,
+                               repair=True, timeout=timeout)
+            except Exception:
+                _persist_lerr_m(symbol, "yfinance", f"Ticker.history failed → fallback download()")
+                df = yf.download(symbol, period=period, progress=False, auto_adjust=False, timeout=timeout, actions=False)
             if df is None or df.empty:
-                raise RuntimeError("yfinance.download returned empty DataFrame")
+                raise RuntimeError("yfinance returned empty DataFrame")
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             share_base = None
             try:
-                t = yf.Ticker(symbol)
-                share_base = get_turnover_share_base(t)
+                t2 = yf.Ticker(symbol)
+                share_base = get_turnover_share_base(t2)
             except Exception:
                 share_base = None
             return df, share_base
@@ -955,6 +964,90 @@ else:
             short = f"{type(exc).__name__}: {msg[:180]}"
             _persist_lerr_m(symbol, "yfinance", short)
             raise RuntimeError(short) from exc
+
+    def _native_sina_download_m(symbol: str, timeout: int = 25):
+        import json as _json_m
+        import re as _re_m
+        _yf_log_step_m(symbol, "sina.init", f"symbol={symbol}")
+        try:
+            digits = _re_m.sub(r"\D", "", symbol)
+            if not digits:
+                raise RuntimeError(f"sina: symbol {symbol} 沒數字")
+            hk_code = f"hk{digits.zfill(5)}" if len(digits) <= 5 else f"hk{digits}"
+            hdrs = {
+                "User-Agent": _rand_mod.choice([
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                ]),
+                "Accept": "application/json,text/plain,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh-TW;q=0.9,zh;q=0.8,en;q=0.7",
+                "Referer": "https://finance.sina.com.cn/",
+            }
+            urls = [
+                f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={hk_code}&scale=240&ma=no&datalen=1500",
+                f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={hk_code}&scale=240&ma=no&datalen=1500",
+            ]
+            _yf_log_step_m(symbol, "sina.urls", f"hk_code={hk_code} count={len(urls)}")
+            last_err = None
+            for idx, url in enumerate(urls):
+                try:
+                    _time_mod.sleep(_rand_mod.uniform(0.3, 0.9))
+                    _yf_log_step_m(symbol, f"sina.req[{idx}]", f"GET {url.split('//')[1].split('?')[0]}")
+                    r = requests.get(url, headers=hdrs, timeout=timeout, allow_redirects=True)
+                    raw = (r.text or "").strip()
+                    _yf_log_step_m(symbol, f"sina.req[{idx}]", f"status={r.status_code} len={len(raw)} snip={raw[:140]}")
+                    if r.status_code != 200 or not raw:
+                        last_err = RuntimeError(f"sina[{idx}] empty/status={r.status_code} | head={raw[:100]}")
+                        _persist_lerr_m(symbol, f"sina[{idx}]", str(last_err))
+                        continue
+                    if raw.startswith("(") and raw.endswith(")"):
+                        raw = raw[1:-1]
+                    try:
+                        arr = _json_m.loads(raw)
+                    except Exception as je:
+                        last_err = RuntimeError(f"sina[{idx}] JSON parse: {je} | head={raw[:120]}")
+                        _persist_lerr_m(symbol, f"sina[{idx}]", str(last_err))
+                        continue
+                    if not isinstance(arr, list) or len(arr) < 20:
+                        last_err = RuntimeError(f"sina[{idx}] rows too few ({len(arr) if isinstance(arr, list) else type(arr)})")
+                        _persist_lerr_m(symbol, f"sina[{idx}]", str(last_err))
+                        continue
+                    dates, opens, highs, lows, closes, volumes = [], [], [], [], [], []
+                    ok = 0
+                    for item in arr:
+                        if not isinstance(item, dict): continue
+                        try:
+                            d = item.get("day") or item.get("date") or item.get("time")
+                            o = float(item.get("open") or 0)
+                            h = float(item.get("high") or 0)
+                            l = float(item.get("low") or 0)
+                            c = float(item.get("close") or 0)
+                            v = float(item.get("volume") or 0)
+                            if not d or o <= 0 or c <= 0 or h <= 0 or l <= 0:
+                                continue
+                            dates.append(pd.to_datetime(d))
+                            opens.append(o); highs.append(h); lows.append(l); closes.append(c); volumes.append(int(v))
+                            ok += 1
+                        except Exception:
+                            continue
+                    if ok < 20:
+                        last_err = RuntimeError(f"sina[{idx}] valid rows too few ({ok})")
+                        _persist_lerr_m(symbol, f"sina[{idx}]", str(last_err))
+                        continue
+                    df = pd.DataFrame({
+                        "Open": opens, "High": highs, "Low": lows,
+                        "Close": closes, "Volume": volumes,
+                    }, index=dates).sort_index()
+                    _yf_log_step_m(symbol, f"sina.req[{idx}]", f"SUCCESS rows={len(df)} close_last={float(df['Close'].iloc[-1])}")
+                    return df, None
+                except Exception as e:
+                    last_err = RuntimeError(f"sina[{idx}] {type(e).__name__}: {str(e)[:160]}")
+                    _persist_lerr_m(symbol, f"sina[{idx}]", str(last_err))
+                    _yf_log_step_m(symbol, f"sina.req[{idx}]", f"EXCEPTION {type(e).__name__}: {str(e)[:120]}")
+                    continue
+            raise RuntimeError(f"sina all failed: {last_err}")
+        except Exception as e_out:
+            raise RuntimeError(f"sina outer: {type(e_out).__name__}: {str(e_out)[:160]}") from e_out
 
     @st.cache_data(ttl=900)
     def get_data_v7(symbol, end_date):
@@ -999,6 +1092,19 @@ else:
                     return df, share_base
             except Exception as e_sq:
                 last_err = e_sq
+
+            # --- Route 4: Yahoo + Stooq 全失敗 → 新浪財經 HK 歷史 K 線 JSON（完全不需要 crumb） ---
+            _NATIVE_DL_STATS_M["sina_attempts"] = _NATIVE_DL_STATS_M.get("sina_attempts", 0) + 1
+            try:
+                df, share_base = _native_sina_download_m(symbol, timeout=25)
+                df = df[df.index <= pd.to_datetime(end_date)]
+                if df is not None and len(df) > 5:
+                    _YF_SESS_MGR_M.record_success(symbol)
+                    _NATIVE_DL_STATS_M["sina_success"] = _NATIVE_DL_STATS_M.get("sina_success", 0) + 1
+                    _persist_lerr_m(symbol, "sina", f"OK rows={len(df)}")
+                    return df, share_base
+            except Exception as e_si:
+                last_err = e_si
 
             msg = str(last_err) or ""
             name = type(last_err).__name__
@@ -1045,8 +1151,10 @@ else:
             y_ok = _NATIVE_DL_STATS_M.get("yf_success", 0)
             s_at = _NATIVE_DL_STATS_M.get("stooq_attempts", 0)
             s_ok = _NATIVE_DL_STATS_M.get("stooq_success", 0)
-            if (n_at + y_at + s_at) > 0:
-                _extra_info_m.append(f"📊 下載統計：native {n_ok}/{n_at}  |  yfinance {y_ok}/{y_at}  |  stooq {s_ok}/{s_at}")
+            si_at = _NATIVE_DL_STATS_M.get("sina_attempts", 0)
+            si_ok = _NATIVE_DL_STATS_M.get("sina_success", 0)
+            if (n_at + y_at + s_at + si_at) > 0:
+                _extra_info_m.append(f"📊 下載統計：native {n_ok}/{n_at}  |  yfinance {y_ok}/{y_at}  |  stooq {s_ok}/{s_at}  |  sina {si_ok}/{si_at}")
         except Exception:
             pass
         try:

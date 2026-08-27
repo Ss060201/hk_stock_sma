@@ -154,9 +154,9 @@ class _YFSessionManager:
 _YF_SESS_MGR = _YFSessionManager()
 
 _APP_BUILD = {
-    "commit": "a891e33+stooqfinal",
-    "time": "2026-08-28 21:08",
-    "tag": "拔HK mirror(404/DNS)+Stooq CSV最終備援+step log升級24條顯示",
+    "commit": "f55ba10+sina4route",
+    "time": "2026-08-28 21:32",
+    "tag": "Yahoo sleep長(防429)+yf.Ticker.history(repair=True)+新浪財經Route4終極備援",
 }
 try:
     _APP_BUILD["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -2966,9 +2966,9 @@ def _native_yahoo_chart_download(symbol, range_: str = "5y", interval: str = "1d
         s.headers.update(common_headers)
         last_err = None
         try:
-            time.sleep(random.uniform(0.3, 0.9))
+            time.sleep(random.uniform(0.6, 1.4))
             _yf_log_step(symbol, "native.warmup1", "GET finance.yahoo.com/")
-            r = s.get("https://finance.yahoo.com/", timeout=min(timeout, 12), allow_redirects=True)
+            r = s.get("https://finance.yahoo.com/", timeout=min(timeout, 15), allow_redirects=True)
             _yf_log_step(symbol, "native.warmup1", f"status={r.status_code} len={len(r.content or b'')}")
         except Exception as e:
             _yf_log_step(symbol, "native.warmup1", f"EXCEPTION {type(e).__name__}: {str(e)[:120]}")
@@ -2976,9 +2976,11 @@ def _native_yahoo_chart_download(symbol, range_: str = "5y", interval: str = "1d
         try:
             _yf_log_step(symbol, "native.warmup2", "GET consent.yahoo.com ...")
             s.get("https://consent.yahoo.com/v2/collectConsent?sessionId=3_cc-session_" + str(int(time.time()*1000)),
-                  timeout=min(timeout, 8), allow_redirects=True)
+                  timeout=min(timeout, 10), allow_redirects=True)
         except Exception as e_w:
             _yf_log_step(symbol, "native.warmup2", f"EXCEPTION {type(e_w).__name__}")
+
+        time.sleep(random.uniform(0.8, 1.6))
 
         p_basic = {"range": range_, "interval": interval,
                    "includeAdjustedClose": "false", "includePrePost": "false"}
@@ -2993,7 +2995,7 @@ def _native_yahoo_chart_download(symbol, range_: str = "5y", interval: str = "1d
         _yf_log_step(symbol, "native.urls", f"count={len(base_urls)} first={base_urls[0].split('?')[0]}")
         for idx, url in enumerate(base_urls):
             try:
-                time.sleep(random.uniform(0.2, 0.7))
+                time.sleep(random.uniform(1.2, 2.8))
                 _yf_log_step(symbol, f"native.req[{idx}]", f"GET {url.split('//')[1].split('?')[0]}")
                 r = s.get(url, timeout=timeout, allow_redirects=True)
                 body_len = len(r.content or b"")
@@ -3131,7 +3133,8 @@ def _native_stooq_download(symbol: str, period_years: int = 5, timeout: int = 25
 
 def _try_yfinance_download(symbol, period: str = "5y", timeout: int = 30):
     """
-    備援路線：yfinance.download()，只有原生 requests 完全失敗才會走到這裡。
+    備援路線 2：改用 yf.Ticker(symbol).history(repair=True, auto_adjust=False)
+    repair=True 會自動修 Yahoo 偶爾回的壞資料，比 yf.download() 更穩。
     """
     try:
         sess = _YF_SESS_MGR.get_session()
@@ -3148,15 +3151,22 @@ def _try_yfinance_download(symbol, period: str = "5y", timeout: int = 30):
                                 continue
             except Exception:
                 pass
-        df = yf.download(symbol, period=period, progress=False, auto_adjust=False, timeout=timeout)
+        try:
+            _persist_last_error(symbol, "yfinance", f"Ticker.history period={period} repair=True")
+            t = yf.Ticker(symbol)
+            df = t.history(period=period, auto_adjust=False, actions=False,
+                           repair=True, timeout=timeout)
+        except Exception:
+            _persist_last_error(symbol, "yfinance", f"Ticker.history failed → fallback download()")
+            df = yf.download(symbol, period=period, progress=False, auto_adjust=False, timeout=timeout, actions=False)
         if df is None or df.empty:
-            raise RuntimeError("yfinance.download returned empty DataFrame")
+            raise RuntimeError("yfinance returned empty DataFrame")
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         share_base = None
         try:
-            t = yf.Ticker(symbol)
-            share_base = get_turnover_share_base(t)
+            t2 = yf.Ticker(symbol)
+            share_base = get_turnover_share_base(t2)
         except Exception:
             share_base = None
         return df, share_base
@@ -3166,6 +3176,97 @@ def _try_yfinance_download(symbol, period: str = "5y", timeout: int = 30):
         short = f"{name}: {msg[:180]}"
         _persist_last_error(symbol, "yfinance", short)
         raise RuntimeError(short) from exc
+
+
+def _native_sina_download(symbol: str, timeout: int = 25):
+    """
+    Route 4（Yahoo+Stooq 全失敗的最終備援）：新浪財經 HK 歷史 K 線 JSON API。
+    完全不需要 crumb / cookie；HK 股 symbol: hk{4位數字}，例如 hk00290 → 00290.HK。
+    接口：https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=hk00290&scale=240&ma=no&datalen=1500
+    """
+    import json as _json
+    import re
+    _yf_log_step(symbol, "sina.init", f"symbol={symbol}")
+    try:
+        digits = re.sub(r"\D", "", symbol)
+        if not digits:
+            raise RuntimeError(f"sina: symbol {symbol} 沒數字")
+        hk_code = f"hk{digits.zfill(5)}" if len(digits) <= 5 else f"hk{digits}"
+        hdrs = {
+            "User-Agent": random.choice([
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
+            ]),
+            "Accept": "application/json,text/plain,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh-TW;q=0.9,zh;q=0.8,en;q=0.7",
+            "Referer": "https://finance.sina.com.cn/",
+        }
+        urls = [
+            f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={hk_code}&scale=240&ma=no&datalen=1500",
+            f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={hk_code}&scale=240&ma=no&datalen=1500",
+        ]
+        _yf_log_step(symbol, "sina.urls", f"hk_code={hk_code} count={len(urls)}")
+        last_err = None
+        for idx, url in enumerate(urls):
+            try:
+                time.sleep(random.uniform(0.3, 0.9))
+                _yf_log_step(symbol, f"sina.req[{idx}]", f"GET {url.split('//')[1].split('?')[0]}")
+                r = requests.get(url, headers=hdrs, timeout=timeout, allow_redirects=True)
+                raw = (r.text or "").strip()
+                _yf_log_step(symbol, f"sina.req[{idx}]", f"status={r.status_code} len={len(raw)} snip={raw[:140]}")
+                if r.status_code != 200 or not raw:
+                    last_err = RuntimeError(f"sina[{idx}] empty/status={r.status_code} | head={raw[:100]}")
+                    _persist_last_error(symbol, f"sina[{idx}]", str(last_err))
+                    continue
+                if raw.startswith("(") and raw.endswith(")"):
+                    raw = raw[1:-1]
+                try:
+                    arr = _json.loads(raw)
+                except Exception as je:
+                    last_err = RuntimeError(f"sina[{idx}] JSON parse: {je} | head={raw[:120]}")
+                    _persist_last_error(symbol, f"sina[{idx}]", str(last_err))
+                    continue
+                if not isinstance(arr, list) or len(arr) < 20:
+                    last_err = RuntimeError(f"sina[{idx}] rows too few ({len(arr) if isinstance(arr, list) else type(arr)})")
+                    _persist_last_error(symbol, f"sina[{idx}]", str(last_err))
+                    continue
+                dates, opens, highs, lows, closes, volumes = [], [], [], [], [], []
+                ok = 0
+                for item in arr:
+                    if not isinstance(item, dict): continue
+                    try:
+                        d = item.get("day") or item.get("date") or item.get("time")
+                        o = float(item.get("open") or 0)
+                        h = float(item.get("high") or 0)
+                        l = float(item.get("low") or 0)
+                        c = float(item.get("close") or 0)
+                        v = float(item.get("volume") or 0)
+                        if not d or o <= 0 or c <= 0 or h <= 0 or l <= 0:
+                            continue
+                        dates.append(pd.to_datetime(d))
+                        opens.append(o); highs.append(h); lows.append(l); closes.append(c); volumes.append(int(v))
+                        ok += 1
+                    except Exception:
+                        continue
+                if ok < 20:
+                    last_err = RuntimeError(f"sina[{idx}] valid rows too few ({ok})")
+                    _persist_last_error(symbol, f"sina[{idx}]", str(last_err))
+                    continue
+                df = pd.DataFrame({
+                    "Open": opens, "High": highs, "Low": lows,
+                    "Close": closes, "Volume": volumes,
+                }, index=dates)
+                df = df.sort_index()
+                _yf_log_step(symbol, f"sina.req[{idx}]", f"SUCCESS rows={len(df)} close_last={float(df['Close'].iloc[-1])}")
+                return df, None
+            except Exception as e:
+                last_err = RuntimeError(f"sina[{idx}] {type(e).__name__}: {str(e)[:160]}")
+                _persist_last_error(symbol, f"sina[{idx}]", str(last_err))
+                _yf_log_step(symbol, f"sina.req[{idx}]", f"EXCEPTION {type(e).__name__}: {str(e)[:120]}")
+                continue
+        raise RuntimeError(f"sina all failed: {last_err}")
+    except Exception as e_out:
+        raise RuntimeError(f"sina outer: {type(e_out).__name__}: {str(e_out)[:160]}") from e_out
 
 
 @st.cache_data(ttl=900)
@@ -3214,6 +3315,19 @@ def get_data_v7(symbol, end_date):
                 return df, share_base
         except Exception as exc_stooq:
             last_err = exc_stooq
+
+        # --- Route 4: Yahoo + Stooq 全失敗 → 新浪財經 HK 歷史 K 線 JSON（完全不需要 crumb） ---
+        _NATIVE_DOWNLOAD_STATS["sina_attempts"] = _NATIVE_DOWNLOAD_STATS.get("sina_attempts", 0) + 1
+        try:
+            df, share_base = _native_sina_download(symbol, timeout=25)
+            df = df[df.index <= pd.to_datetime(end_date)]
+            if df is not None and len(df) > 5:
+                _YF_SESS_MGR.record_success(symbol)
+                _NATIVE_DOWNLOAD_STATS["sina_success"] = _NATIVE_DOWNLOAD_STATS.get("sina_success", 0) + 1
+                _persist_last_error(symbol, "sina", f"OK rows={len(df)}")
+                return df, share_base
+        except Exception as exc_sina:
+            last_err = exc_sina
 
         msg = str(last_err) or ""
         name = type(last_err).__name__
@@ -4620,7 +4734,9 @@ else:
             if (n_at + yf_at) > 0:
                 s_at = _NATIVE_DOWNLOAD_STATS.get("stooq_attempts", 0)
                 s_ok = _NATIVE_DOWNLOAD_STATS.get("stooq_success", 0)
-                _extra_info.append(f"📊 下載統計：native {n_ok}/{n_at}  |  yfinance {yf_ok}/{yf_at}  |  stooq {s_ok}/{s_at}（本 app instance 累計）")
+                si_at = _NATIVE_DOWNLOAD_STATS.get("sina_attempts", 0)
+                si_ok = _NATIVE_DOWNLOAD_STATS.get("sina_success", 0)
+                _extra_info.append(f"📊 下載統計：native {n_ok}/{n_at}  |  yfinance {yf_ok}/{yf_at}  |  stooq {s_ok}/{s_at}  |  sina {si_ok}/{si_at}（本 app instance 累計）")
         except Exception:
             pass
         try:
