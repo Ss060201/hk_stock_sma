@@ -330,23 +330,54 @@ if not is_mobile:
         
         st.divider()
         
-        watchlist_data = get_watchlist_from_db()
+ watchlist_data = get_watchlist_from_db()
         watchlist_list = list(watchlist_data.keys()) if watchlist_data else []
 
         st.subheader(f"我的收藏 ({len(watchlist_list)})")
-        st.caption("單擊代號：查看股票 ｜ 再次單擊同一行：取消收藏")
+        st.markdown(
+            """
+            <style>
+            [data-testid="stSidebar"] .watchlist-row,
+            [data-testid="stAppViewContainer"] .watchlist-row {
+                display: flex !important;
+                flex-direction: row !important;
+                flex-wrap: nowrap !important;
+                align-items: stretch !important;
+                gap: 6px !important;
+                width: 100% !important;
+            }
+            [data-testid="stSidebar"] .watchlist-row > div:nth-of-type(1),
+            [data-testid="stAppViewContainer"] .watchlist-row > div:nth-of-type(1) {
+                flex: 1 1 auto !important;
+                min-width: 0 !important;
+                width: auto !important;
+            }
+            [data-testid="stSidebar"] .watchlist-row > div:nth-of-type(2),
+            [data-testid="stAppViewContainer"] .watchlist-row > div:nth-of-type(2) {
+                flex: 0 0 auto !important;
+                width: auto !important;
+            }
+            [data-testid="stSidebar"] .watchlist-row button,
+            [data-testid="stAppViewContainer"] .watchlist-row button {
+                white-space: nowrap !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
         if watchlist_list:
             for ticker in watchlist_list:
-                label = f"{ticker}\u3000\u3000\u3000🗑️"
-                if st.button(label, key=f"nav_{ticker}", use_container_width=True):
-                    current = st.session_state.get("current_view", "")
-                    if current == ticker:
-                        if remove_stock_from_db(ticker):
-                            st.session_state.current_view = ""
-                            st.rerun()
-                    else:
+                st.markdown(f'<div class="watchlist-row wl-{ticker}">', unsafe_allow_html=True)
+                col_nav, col_del = st.columns([5, 1])
+                with col_nav:
+                    if st.button(ticker, key=f"nav_{ticker}", use_container_width=True):
                         st.session_state.current_view = ticker
                         st.rerun()
+                with col_del:
+                    if st.button("🗑️", key=f"nav_del_{ticker}", use_container_width=True, help=f"取消收藏 {ticker}"):
+                        if remove_stock_from_db(ticker):
+                            st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
         else:
             st.caption("暫無收藏")
         
@@ -537,20 +568,35 @@ else:
     
     @st.cache_data(ttl=900)
     def get_data_v7(symbol, end_date):
-        try:
-            df = yf.download(symbol, period="3y", auto_adjust=False)
-            if isinstance(df.columns, pd.MultiIndex): 
-                df.columns = df.columns.get_level_values(0)
-            df = df[df.index <= pd.to_datetime(end_date)]
-            t = yf.Ticker(symbol)
-            share_base = get_turnover_share_base(t)
-            return df, share_base
-        except Exception:
-            return None, None
+        last_err = None
+        for attempt in range(2):
+            try:
+                df = yf.download(symbol, period="3y", progress=False, auto_adjust=False)
+                if isinstance(df.columns, pd.MultiIndex): 
+                    df.columns = df.columns.get_level_values(0)
+                df = df[df.index <= pd.to_datetime(end_date)]
+                t = yf.Ticker(symbol)
+                share_base = get_turnover_share_base(t)
+                return df, share_base
+            except Exception as exc:
+                last_err = exc
+                msg = str(exc) or ""
+                name = type(exc).__name__
+                if attempt == 0 and ("Invalid Crumb" in msg or "Unauthorized" in msg or "RateLimit" in name):
+                    import time as _t, random as _r
+                    _t.sleep(_r.uniform(1.0, 2.2))
+                    continue
+                break
+        return None, None
     
     df, share_base = get_data_v7(yahoo_ticker, st.session_state.ref_date)
     
-    if df is not None and len(df) > 5:
+    if df is None or len(df) <= 5:
+        st.error("⚠️ 載入失敗：Yahoo Finance 暫時拒絕連線（Invalid Crumb / 401 Unauthorized）。請稍後按下方按鈕重試或重整頁面。")
+        if st.button("🔄 重試載入數據", use_container_width=True, key="mobile_retry_df"):
+            get_data_v7.clear()
+            st.rerun()
+    else:
         periods_sma = [7, 14, 28, 57, 106, 212]
         for p in periods_sma: 
             df[f'SMA_{p}'] = df['Close'].rolling(p).mean()
