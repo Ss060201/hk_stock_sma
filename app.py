@@ -4001,33 +4001,20 @@ elif current_page == "home":
                     # Hidden CSS hook inside this exact HorizontalBlock.
                     with cols[0]:
                         st.markdown(
-                            '<span class="home-stock-card-marker" aria-hidden="true"></span><div class="watchlist-inline-row">',
+                            '<span class="home-stock-card-marker" aria-hidden="true"></span>',
                             unsafe_allow_html=True,
                         )
-                        sub_col_code, sub_col_del = st.columns([4, 1], gap="small")
-                        with sub_col_code:
-                            if st.button(
-                                ticker,
-                                key=f"home_code_{ticker}",
-                                use_container_width=True,
-                            ):
-                                st.session_state.home_selected_ticker = ticker
-                                st.session_state.home_return_anchor = (
-                                    get_home_stock_anchor_id(ticker)
-                                )
-                                set_current_page("home_detail", ticker)
-                                st.rerun()
-                        with sub_col_del:
-                            if st.button(
-                                "🗑️",
-                                key=f"home_code_del_{ticker}",
-                                help=f"取消收藏 {ticker}",
-                                use_container_width=True,
-                            ):
-                                if remove_stock_from_db(ticker):
-                                    get_home_watchlist_snapshot.clear()
-                                    st.rerun()
-                        st.markdown("</div>", unsafe_allow_html=True)
+                        if st.button(
+                            ticker,
+                            key=f"home_code_{ticker}",
+                            use_container_width=True,
+                        ):
+                            st.session_state.home_selected_ticker = ticker
+                            st.session_state.home_return_anchor = (
+                                get_home_stock_anchor_id(ticker)
+                            )
+                            set_current_page("home_detail", ticker)
+                            st.rerun()
 
                     with cols[1]:
                         st.markdown(
