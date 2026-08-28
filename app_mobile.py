@@ -153,9 +153,9 @@ class _YFSessionManager_M:
 _YF_SESS_MGR_M = _YFSessionManager_M()
 
 _APP_BUILD_M = {
-    "commit": "f55ba10+sina4route",
-    "time": "2026-08-28 21:32",
-    "tag": "Yahoo sleep長(防429)+yf.Ticker.history(repair=True)+新浪財經Route4終極備援",
+    "commit": "be2d117+tormerge4",
+    "time": "2026-08-28 22:08",
+    "tag": "TOR share_base fallback(近120日均量÷0.35%近似) + home_detail SMA/Amp/TOR三表整合成總表",
 }
 try:
     _APP_BUILD_M["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -368,6 +368,44 @@ def get_share_base_provider() -> CompositeShareBaseProvider:
 
 def get_turnover_share_base(ticker_obj):
     return get_share_base_provider().get_share_base(ticker_obj).share_base
+
+
+def _resolve_share_base_post_m(df: pd.DataFrame, symbol: str,
+                               fallback_avg_tor_pct: float = 0.35,
+                               fallback_window: int = 120):
+    approx_note = None
+    share_base = None
+    try:
+        t_obj = yf.Ticker(symbol)
+        share_base = get_turnover_share_base(t_obj)
+    except Exception:
+        share_base = None
+
+    if share_base is not None and pd.notna(share_base) and float(share_base) > 0:
+        return float(share_base), approx_note
+
+    if df is None or df.empty or "Volume" not in df.columns:
+        return None, "NO_VOLUME"
+
+    try:
+        vol = pd.to_numeric(df["Volume"], errors="coerce")
+        use_n = min(int(fallback_window), len(vol))
+        if use_n < 10:
+            return None, "NO_VOLUME"
+        tail = vol.tail(use_n).replace(0, np.nan).dropna()
+        if len(tail) < 10:
+            return None, "NO_VOLUME"
+        avg_vol = float(tail.mean())
+        if avg_vol <= 0:
+            return None, "NO_VOLUME"
+        denom = max(0.0005, float(fallback_avg_tor_pct) / 100.0)
+        share_base_approx = avg_vol / denom
+        if not np.isfinite(share_base_approx) or share_base_approx <= 0:
+            return None, "NO_VOLUME"
+        approx_note = f"APPROX_{fallback_avg_tor_pct:g}pct_window{fallback_window}"
+        return float(share_base_approx), approx_note
+    except Exception:
+        return None, "NO_VOLUME"
 
 def send_telegram_msg(token, chat_id, message):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -1061,6 +1099,8 @@ else:
                 df, share_base = _native_yahoo_chart_download_m(symbol, range_="3y", interval="1d", timeout=25)
                 df = df[df.index <= pd.to_datetime(end_date)]
                 if df is not None and len(df) > 5:
+                    if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+                        share_base, _ = _resolve_share_base_post_m(df, symbol)
                     _YF_SESS_MGR_M.record_success(symbol)
                     _NATIVE_DL_STATS_M["native_success"] = _NATIVE_DL_STATS_M.get("native_success", 0) + 1
                     _persist_lerr_m(symbol, "native", f"OK rows={len(df)}")
@@ -1073,6 +1113,8 @@ else:
                 df, share_base = _try_yfinance_download_m(symbol, period="3y", timeout=30)
                 df = df[df.index <= pd.to_datetime(end_date)]
                 if df is not None and len(df) > 5:
+                    if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+                        share_base, _ = _resolve_share_base_post_m(df, symbol)
                     _YF_SESS_MGR_M.record_success(symbol)
                     _NATIVE_DL_STATS_M["yf_success"] = _NATIVE_DL_STATS_M.get("yf_success", 0) + 1
                     _persist_lerr_m(symbol, "yfinance", f"OK rows={len(df)}")
@@ -1086,6 +1128,8 @@ else:
                 df, share_base = _native_stooq_download_m(symbol, period_years=5, timeout=25)
                 df = df[df.index <= pd.to_datetime(end_date)]
                 if df is not None and len(df) > 5:
+                    if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+                        share_base, _ = _resolve_share_base_post_m(df, symbol)
                     _YF_SESS_MGR_M.record_success(symbol)
                     _NATIVE_DL_STATS_M["stooq_success"] = _NATIVE_DL_STATS_M.get("stooq_success", 0) + 1
                     _persist_lerr_m(symbol, "stooq", f"OK rows={len(df)}")
@@ -1099,6 +1143,8 @@ else:
                 df, share_base = _native_sina_download_m(symbol, timeout=25)
                 df = df[df.index <= pd.to_datetime(end_date)]
                 if df is not None and len(df) > 5:
+                    if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+                        share_base, _ = _resolve_share_base_post_m(df, symbol)
                     _YF_SESS_MGR_M.record_success(symbol)
                     _NATIVE_DL_STATS_M["sina_success"] = _NATIVE_DL_STATS_M.get("sina_success", 0) + 1
                     _persist_lerr_m(symbol, "sina", f"OK rows={len(df)}")
@@ -1203,6 +1249,15 @@ else:
             df[f'SMA_{sma2}'] = df['Close'].rolling(sma2).mean()
         
         df, turnover_status, turnover_reason = apply_turnover_rate(df, share_base)
+        if turnover_status != TURNOVER_STATUS_CALCULATED and (share_base is None or not (pd.notna(share_base) and float(share_base) > 0)):
+            try:
+                approx_base, approx_note = _resolve_share_base_post_m(df, yahoo_ticker)
+                if approx_base is not None and approx_note and approx_note != "NO_VOLUME":
+                    df, turnover_status, turnover_reason = apply_turnover_rate(df, approx_base)
+                    share_base = approx_base
+                    st.session_state[f"tor_approx_m_{current_code}"] = approx_note
+            except Exception:
+                pass
         has_turnover = turnover_status == TURNOVER_STATUS_CALCULATED
         if has_turnover:
             df = simulate_bs_data(df, share_base)

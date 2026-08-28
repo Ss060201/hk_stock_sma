@@ -154,9 +154,9 @@ class _YFSessionManager:
 _YF_SESS_MGR = _YFSessionManager()
 
 _APP_BUILD = {
-    "commit": "f55ba10+sina4route",
-    "time": "2026-08-28 21:32",
-    "tag": "Yahoo sleep長(防429)+yf.Ticker.history(repair=True)+新浪財經Route4終極備援",
+    "commit": "be2d117+tormerge4",
+    "time": "2026-08-28 22:08",
+    "tag": "TOR share_base fallback(近120日均量÷0.35%近似) + home_detail SMA/Amp/TOR三表整合成總表",
 }
 try:
     _APP_BUILD["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -2879,6 +2879,55 @@ def get_turnover_share_base(ticker_obj):
     """Preserve the existing API by returning only the resolved share-base value."""
     return get_turnover_share_lookup(ticker_obj).share_base
 
+
+def _resolve_share_base_post(df: pd.DataFrame, symbol: str,
+                             fallback_avg_tor_pct: float = 0.35,
+                             fallback_window: int = 120):
+    """
+    後置補齊 share_base：所有 Route（native/yfinance/stooq/sina）拿到 df 後都應該呼叫。
+    策略：
+      1) 先試 Composite Provider（CSV share_base.csv → YahooShareBaseProvider via Ticker.info）。
+      2) 仍 None → 用 df 最近 N 日 Volume 均值 ÷ (fallback_avg_tor_pct / 100) 反推近似 share_base。
+         例如港股日均約 0.35% 換手率，則 share_base ≈ avg_volume / 0.0035。
+    回傳 (share_base, approx_note)：
+      approx_note = None   → 精確值（Provider 回傳）
+      approx_note = "APPROX_Xpct_windowY" → 近似值，X% 換手率 + Y 日平均成交量反推
+      approx_note = "NO_VOLUME" → 連 Volume 都沒有，TOR 仍不可算
+    """
+    approx_note = None
+    share_base = None
+    try:
+        t_obj = yf.Ticker(symbol)
+        share_base = get_turnover_share_base(t_obj)
+    except Exception:
+        share_base = None
+
+    if share_base is not None and pd.notna(share_base) and float(share_base) > 0:
+        return float(share_base), approx_note
+
+    if df is None or df.empty or "Volume" not in df.columns:
+        return None, "NO_VOLUME"
+
+    try:
+        vol = pd.to_numeric(df["Volume"], errors="coerce")
+        use_n = min(int(fallback_window), len(vol))
+        if use_n < 10:
+            return None, "NO_VOLUME"
+        tail = vol.tail(use_n).replace(0, np.nan).dropna()
+        if len(tail) < 10:
+            return None, "NO_VOLUME"
+        avg_vol = float(tail.mean())
+        if avg_vol <= 0:
+            return None, "NO_VOLUME"
+        denom = max(0.0005, float(fallback_avg_tor_pct) / 100.0)
+        share_base_approx = avg_vol / denom
+        if not np.isfinite(share_base_approx) or share_base_approx <= 0:
+            return None, "NO_VOLUME"
+        approx_note = f"APPROX_{fallback_avg_tor_pct:g}pct_window{fallback_window}"
+        return float(share_base_approx), approx_note
+    except Exception:
+        return None, "NO_VOLUME"
+
 def clamp_date_to_range(value, min_d: date, max_d: date, fallback: date) -> date:
     try:
         parsed = pd.to_datetime(value)
@@ -3283,6 +3332,8 @@ def get_data_v7(symbol, end_date):
             df, share_base = _native_yahoo_chart_download(symbol, range_="5y", interval="1d", timeout=25)
             df = df[df.index <= pd.to_datetime(end_date)]
             if df is not None and len(df) > 5:
+                if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+                    share_base, _ = _resolve_share_base_post(df, symbol)
                 _YF_SESS_MGR.record_success(symbol)
                 _NATIVE_DOWNLOAD_STATS["native_success"] = _NATIVE_DOWNLOAD_STATS.get("native_success", 0) + 1
                 _persist_last_error(symbol, "native", f"OK rows={len(df)}")
@@ -3296,6 +3347,8 @@ def get_data_v7(symbol, end_date):
             df, share_base = _try_yfinance_download(symbol, period="5y", timeout=30)
             df = df[df.index <= pd.to_datetime(end_date)]
             if df is not None and len(df) > 5:
+                if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+                    share_base, _ = _resolve_share_base_post(df, symbol)
                 _YF_SESS_MGR.record_success(symbol)
                 _NATIVE_DOWNLOAD_STATS["yf_success"] = _NATIVE_DOWNLOAD_STATS.get("yf_success", 0) + 1
                 _persist_last_error(symbol, "yfinance", f"OK rows={len(df)}")
@@ -3309,6 +3362,8 @@ def get_data_v7(symbol, end_date):
             df, share_base = _native_stooq_download(symbol, period_years=5, timeout=25)
             df = df[df.index <= pd.to_datetime(end_date)]
             if df is not None and len(df) > 5:
+                if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+                    share_base, _ = _resolve_share_base_post(df, symbol)
                 _YF_SESS_MGR.record_success(symbol)
                 _NATIVE_DOWNLOAD_STATS["stooq_success"] = _NATIVE_DOWNLOAD_STATS.get("stooq_success", 0) + 1
                 _persist_last_error(symbol, "stooq", f"OK rows={len(df)}")
@@ -3322,6 +3377,8 @@ def get_data_v7(symbol, end_date):
             df, share_base = _native_sina_download(symbol, timeout=25)
             df = df[df.index <= pd.to_datetime(end_date)]
             if df is not None and len(df) > 5:
+                if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+                    share_base, _ = _resolve_share_base_post(df, symbol)
                 _YF_SESS_MGR.record_success(symbol)
                 _NATIVE_DOWNLOAD_STATS["sina_success"] = _NATIVE_DOWNLOAD_STATS.get("sina_success", 0) + 1
                 _persist_last_error(symbol, "sina", f"OK rows={len(df)}")
@@ -3414,7 +3471,17 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
         amp_values[f"Amp {p}"] = float(amp) if pd.notna(amp) else float("nan")
 
     tor_values = {f"TOR {p}": float("nan") for p in [0, 7, 14, 28, 57, 106]}
+    tor_approx_note: Optional[str] = None
     work_df, turnover_status, turnover_reason = apply_turnover_rate(work_df, share_base)
+    if turnover_status != TURNOVER_STATUS_CALCULATED and (share_base is None or not (pd.notna(share_base) and float(share_base) > 0)):
+        try:
+            approx_base, approx_note = _resolve_share_base_post(work_df, get_yahoo_ticker(ticker))
+            if approx_base is not None and approx_note and approx_note != "NO_VOLUME":
+                work_df, turnover_status, turnover_reason = apply_turnover_rate(work_df, approx_base)
+                share_base = approx_base
+                tor_approx_note = approx_note
+        except Exception:
+            pass
     if turnover_status == TURNOVER_STATUS_CALCULATED and "Turnover_Rate" in work_df.columns:
         tor_last = work_df["Turnover_Rate"].iloc[-1]
         tor_values["TOR 0"] = float(tor_last) if pd.notna(tor_last) else float("nan")
@@ -3467,6 +3534,7 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
             "tor": tor_values,
             "tor_status": turnover_status,
             "tor_reason": turnover_reason,
+            "tor_approx_note": tor_approx_note,
             "share_base": float(share_base) if share_base is not None else None,
             "amp": amp_values,
             "sma": sma_values,
@@ -3606,38 +3674,6 @@ def render_home_snapshot_detail_page(ticker: str):
         dev_extended_columns if show_extended else []
     )
     dev_history_df = dev_history_df.reindex(columns=visible_dev_columns)
-    tor_df = pd.DataFrame(
-        [{
-            "Date": selected_detail["date"],
-            "TOR 0": selected_detail["tor"].get("TOR 0"),
-            "TOR 7": selected_detail["tor"].get("TOR 7"),
-            "TOR 14": selected_detail["tor"].get("TOR 14"),
-            "TOR 28": selected_detail["tor"].get("TOR 28"),
-            "TOR 57": selected_detail["tor"].get("TOR 57"),
-            "TOR 106": selected_detail["tor"].get("TOR 106"),
-        }]
-    )
-    amp_df = pd.DataFrame(
-        [{
-            "Date": selected_detail["date"],
-            "Amp 0": selected_detail["amp"].get("Amp 0"),
-            "Amp 7": selected_detail["amp"].get("Amp 7"),
-            "Amp 14": selected_detail["amp"].get("Amp 14"),
-            "Amp 28": selected_detail["amp"].get("Amp 28"),
-            "Amp 57": selected_detail["amp"].get("Amp 57"),
-            "Amp 106": selected_detail["amp"].get("Amp 106"),
-        }]
-    )
-    sma_df = pd.DataFrame(
-        [{
-            "Date": selected_detail["date"],
-            "CP": selected_detail["cp"],
-            "SMA 7": selected_detail["sma"].get("SMA 7"),
-            "SMA 14": selected_detail["sma"].get("SMA 14"),
-            "SMA 28": selected_detail["sma"].get("SMA 28"),
-            "SMA 57": selected_detail["sma"].get("SMA 57"),
-        }]
-    )
 
     st.markdown(
         """
@@ -3647,6 +3683,42 @@ def render_home_snapshot_detail_page(ticker: str):
             color: #6c757d;
             margin: -4px 0 4px 0;
         }
+        .merged-summary-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: 'Arial', sans-serif;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+        .merged-summary-table th, .merged-summary-table td {
+            border: 1px solid #dee2e6;
+            padding: 10px 8px;
+            text-align: center;
+            vertical-align: middle;
+            color: #0f172a;
+        }
+        .merged-summary-table td:first-child,
+        .merged-summary-table th:first-child {
+            text-align: left;
+            font-weight: 700;
+            width: 140px;
+            background: #ffffff;
+        }
+        .merged-summary-table tr.section-title th {
+            font-weight: 800;
+            color: #ffffff;
+            letter-spacing: 0.5px;
+        }
+        .merged-summary-table .grp-sma-title { background: #1976d2; }
+        .merged-summary-table .grp-sma-head  { background: #bbdefb; color: #0d47a1; }
+        .merged-summary-table .grp-sma-data  { background: #e3f2fd; }
+        .merged-summary-table .grp-amp-title { background: #f57c00; }
+        .merged-summary-table .grp-amp-head  { background: #ffe0b2; color: #e65100; }
+        .merged-summary-table .grp-amp-data  { background: #fff3e0; }
+        .merged-summary-table .grp-tor-title { background: #388e3c; }
+        .merged-summary-table .grp-tor-head  { background: #c8e6c9; color: #1b5e20; }
+        .merged-summary-table .grp-tor-data  { background: #e8f5e9; }
+        .merged-summary-table .no-val { color: #94a3b8; font-style: italic; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -3676,59 +3748,84 @@ def render_home_snapshot_detail_page(ticker: str):
         height=248,
     )
 
-    st.markdown("### TOR")
-    st.dataframe(
-        _home_green_style(
-            tor_df,
-            {
-                "TOR 0": "{:.2f}%",
-                "TOR 7": "{:.2f}%",
-                "TOR 14": "{:.2f}%",
-                "TOR 28": "{:.2f}%",
-                "TOR 57": "{:.2f}%",
-                "TOR 106": "{:.2f}%",
-            },
-        ),
-        hide_index=True,
-        use_container_width=True,
-    )
+    # --- 合併總表：SMA | Amp | TOR 水平拼接 + 分組色 ---
+    _d = selected_detail["date"]
+    _sma_cols = ["CP", "SMA 7", "SMA 14", "SMA 28", "SMA 57"]
+    _amp_cols = ["Amp 0", "Amp 7", "Amp 14", "Amp 28", "Amp 57", "Amp 106"]
+    _tor_cols = ["TOR 0", "TOR 7", "TOR 14", "TOR 28", "TOR 57", "TOR 106"]
+    _sma_vals = {"CP": selected_detail.get("cp")}
+    for _c in _sma_cols[1:]: _sma_vals[_c] = selected_detail["sma"].get(_c)
+    _amp_vals = {_c: selected_detail["amp"].get(_c) for _c in _amp_cols}
+    _tor_vals = {_c: selected_detail["tor"].get(_c) for _c in _tor_cols}
+
+    def _fmt_num(v):
+        try:
+            if v is None: return '<span class="no-val">None</span>'
+            if pd.isna(v): return '<span class="no-val">None</span>'
+            return f"{float(v):.2f}"
+        except Exception:
+            return '<span class="no-val">None</span>'
+
+    def _fmt_pct(v):
+        try:
+            if v is None: return '<span class="no-val">None</span>'
+            if pd.isna(v): return '<span class="no-val">None</span>'
+            return f"{float(v):.2f}%"
+        except Exception:
+            return '<span class="no-val">None</span>'
+
+    _html = ['<table class="merged-summary-table">']
+    _html.append('<thead>')
+    _html.append('<tr class="section-title">'
+                 '<th rowspan="2">Date</th>'
+                 f'<th class="grp-sma-title" colspan="{len(_sma_cols)}">SMA</th>'
+                 f'<th class="grp-amp-title" colspan="{len(_amp_cols)}">Amp</th>'
+                 f'<th class="grp-tor-title" colspan="{len(_tor_cols)}">TOR</th>'
+                 '</tr>')
+    _html.append('<tr>' +
+                 "".join([f'<th class="grp-sma-head">{c}</th>' for c in _sma_cols]) +
+                 "".join([f'<th class="grp-amp-head">{c}</th>' for c in _amp_cols]) +
+                 "".join([f'<th class="grp-tor-head">{c}</th>' for c in _tor_cols]) +
+                 '</tr>')
+    _html.append('</thead><tbody>')
+    _row_cells = [f"<td>{_d}</td>"]
+    _row_cells += [f'<td class="grp-sma-data">{_fmt_num(_sma_vals[c])}</td>' for c in _sma_cols]
+    _row_cells += [f'<td class="grp-amp-data">{_fmt_pct(_amp_vals[c])}</td>' for c in _amp_cols]
+    _row_cells += [f'<td class="grp-tor-data">{_fmt_pct(_tor_vals[c])}</td>' for c in _tor_cols]
+    _html.append("<tr>" + "".join(_row_cells) + "</tr>")
+    _html.append("</tbody></table>")
+    st.markdown("### 📋 綜合總表（SMA / Amp / TOR）")
+    st.markdown("".join(_html), unsafe_allow_html=True)
+
     if selected_detail.get("tor_status") != TURNOVER_STATUS_CALCULATED:
         st.caption(
             f"TOR unavailable for {ticker}: {selected_detail.get('tor_reason') or 'No valid share base or volume.'}"
         )
-
-    st.markdown("### Amp")
-    st.dataframe(
-        _home_green_style(
-            amp_df,
-            {
-                "Amp 0": "{:.2f}%",
-                "Amp 7": "{:.2f}%",
-                "Amp 14": "{:.2f}%",
-                "Amp 28": "{:.2f}%",
-                "Amp 57": "{:.2f}%",
-                "Amp 106": "{:.2f}%",
-            },
-        ),
-        hide_index=True,
-        use_container_width=True,
-    )
-
-    st.markdown("### SMA")
-    st.dataframe(
-        _home_green_style(
-            sma_df,
-            {
-                "CP": "{:.2f}",
-                "SMA 7": "{:.2f}",
-                "SMA 14": "{:.2f}",
-                "SMA 28": "{:.2f}",
-                "SMA 57": "{:.2f}",
-            },
-        ),
-        hide_index=True,
-        use_container_width=True,
-    )
+    else:
+        approx_note = selected_detail.get("tor_approx_note")
+        if approx_note and approx_note != "NO_VOLUME" and str(approx_note).startswith("APPROX_"):
+            try:
+                parts = str(approx_note).split("_")
+                pct_part = parts[1] if len(parts) > 1 else "0.35pct"
+                win_part = parts[2] if len(parts) > 2 else "window120"
+                pct_disp = pct_part.replace("pct", "%")
+                win_disp = win_part.replace("window", "")
+                st.caption(
+                    f"TOR ≈ 近似值（以近 {win_disp} 日平均成交量 ÷ 平均換手率 {pct_disp} 反推流通股本；"
+                    f"若需精確值，請在 metadata/share_base.csv 手動填入 {ticker} 之 issued_shares）"
+                )
+            except Exception:
+                st.caption("TOR ≈ 近似值（依 Volume / 平均換手率推算；精確值請寫入 metadata/share_base.csv）")
+        else:
+            sb = selected_detail.get("share_base")
+            try:
+                if sb is not None and pd.notna(sb) and float(sb) > 0:
+                    disp = f"{float(sb):,.0f}"
+                else:
+                    disp = "N/A"
+            except Exception:
+                disp = "N/A"
+            st.caption(f"TOR 精確值（share base: {disp}）")
 
 def queue_scroll_to_anchor(anchor_id: str):
     st.session_state.pending_scroll_target = anchor_id
@@ -4785,6 +4882,15 @@ else:
         if f'SMA_{sma2}' not in df.columns: df[f'SMA_{sma2}'] = df['Close'].rolling(sma2).mean()
 
         df, turnover_status, turnover_reason = apply_turnover_rate(df, share_base)
+        if turnover_status != TURNOVER_STATUS_CALCULATED and (share_base is None or not (pd.notna(share_base) and float(share_base) > 0)):
+            try:
+                approx_base, approx_note = _resolve_share_base_post(df, yahoo_ticker)
+                if approx_base is not None and approx_note and approx_note != "NO_VOLUME":
+                    df, turnover_status, turnover_reason = apply_turnover_rate(df, approx_base)
+                    share_base = approx_base
+                    st.session_state[f"tor_approx_{current_code}"] = approx_note
+            except Exception:
+                pass
         has_turnover = turnover_status == TURNOVER_STATUS_CALCULATED
         if has_turnover:
             # 增加 v9.6 的 BS Analysis 計算
