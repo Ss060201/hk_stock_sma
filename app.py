@@ -154,9 +154,9 @@ class _YFSessionManager:
 _YF_SESS_MGR = _YFSessionManager()
 
 _APP_BUILD = {
-    "commit": "be2d117+tormerge4",
-    "time": "2026-08-28 22:08",
-    "tag": "TOR share_base fallback(近120日均量÷0.35%近似) + home_detail SMA/Amp/TOR三表整合成總表",
+    "commit": "3d46a5c+d2table",
+    "time": "2026-08-28 22:24",
+    "tag": "單股頁面D-2綠色Pmax/Sn Dev矩陣(桌面tab_data頂+手機快速信號後)；手機順便加數據列表最近40日",
 }
 try:
     _APP_BUILD["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -3610,6 +3610,261 @@ def _home_green_style(df: pd.DataFrame, fmt_map: Dict[str, str]):
         })
     )
 
+
+def calc_pmax_dev_matrix(df: pd.DataFrame,
+                         pmax_window: int = 106,
+                         s_divisor: int = 24,
+                         s_min_num: int = 3,
+                         s_max_num: int = 9,
+                         avg_window: int = 3,
+                         num_rows: int = 3):
+    """
+    對應圖片 D-2 綠色表格：
+      Pm        = 最近 pmax_window 日 (High+Close 先取再 max) 的最高值 (= Pmax(106))
+      S1..S7    = Pm × k/s_divisor，k = s_min_num..s_max_num
+      Avg3[t]   = close[t-avg_window+1 : t+1] 滾動平均（含 t 當日）
+      Sn[t]     = S1..S7 中與 Avg3[t] 絕對差最小者
+      三元組     = S[n-1], Sn, S[n+1]；邊界 Sn=S1 退 S1/S2/S3；Sn=S7 退 S5/S6/S7
+      Dev(%)    = (Avg3 - S) / S × 100
+      輸出列    = 最近 num_rows 個交易日（由舊到新 → 最後一列=最新）
+    """
+    result = {
+        "ok": False,
+        "reason": "",
+        "pm": None,
+        "pm_window": pmax_window,
+        "s_cols": [],          # ["S1","S2",...,"S7"]
+        "s_values": {},        # {"S1": 17.64, ..., "S7": 52.91}
+        "rows": [],            # 最新 num_rows 列，每列: {date, avg3, sn_idx, tri_idx0..2, dev:{Sx: float or nan}}
+    }
+    if df is None or df.empty:
+        result["reason"] = "df is empty"
+        return result
+    try:
+        work = df.copy()
+        if "Close" not in work.columns:
+            result["reason"] = "missing Close column"
+            return result
+        work["_close"] = pd.to_numeric(work["Close"], errors="coerce")
+        if "High" in work.columns:
+            work["_hi"] = pd.to_numeric(work["High"], errors="coerce")
+            hi_series = work["_hi"]
+        else:
+            hi_series = work["_close"]
+        # Pm = 近 pmax_window 日 (max(close,high) 的最高值)
+        top = min(len(work), pmax_window)
+        if top < 30:
+            result["reason"] = f"僅 {len(work)} 列，不足計算 Pmax({pmax_window}) 所需數據"
+            return result
+        recent = work.tail(top)
+        combined = pd.concat([recent["_close"].replace(0, np.nan),
+                              hi_series.tail(top).replace(0, np.nan)], axis=1)
+        combined_max = combined.max(axis=1, skipna=True).dropna()
+        if combined_max.empty:
+            result["reason"] = "無法取得最高價"
+            return result
+        Pm = float(combined_max.max())
+        if not np.isfinite(Pm) or Pm <= 0:
+            result["reason"] = f"Pm={Pm} 非合理正數"
+            return result
+        result["pm"] = Pm
+        s_cols = []
+        s_vals = {}
+        for idx, k in enumerate(range(s_min_num, s_max_num + 1)):
+            name = f"S{idx + 1}"
+            s_cols.append(name)
+            s_vals[name] = float(Pm * k / s_divisor)
+        result["s_cols"] = s_cols
+        result["s_values"] = s_vals
+        S_values_ordered = [s_vals[name] for name in s_cols]
+        N_S = len(s_cols)  # 7
+
+        if len(work) < avg_window:
+            result["reason"] = f"列數 {len(work)} 小於 Avg 視窗 {avg_window}"
+            return result
+
+        work["_avg3"] = work["_close"].rolling(window=avg_window, min_periods=avg_window).mean()
+
+        # 為每列計算 Sn 與三元組 Dev(%)
+        tri_cols_map = {}    # date -> tri_idx_list [n-1, n, n+1]
+        dev_all_dicts = []   # list of dict 同 df 長度，每個 key=Sx value=float or nan
+        sn_idx_list = []
+        avg3_list = []
+        dates = pd.to_datetime(work.index)
+
+        for t in range(len(work)):
+            avg3 = work["_avg3"].iloc[t]
+            avg3_list.append(avg3)
+            if pd.isna(avg3):
+                sn_idx_list.append(None)
+                dev_all_dicts.append({})
+                continue
+            # 找 Sn：絕對差最小
+            best_idx = 0
+            best_abs = float("inf")
+            for i in range(N_S):
+                d = abs(float(avg3) - S_values_ordered[i])
+                if d < best_abs:
+                    best_abs = d
+                    best_idx = i
+            sn_idx_list.append(best_idx)
+            # 三元組邊界處理
+            if best_idx == 0:          # Sn = S1
+                tri = [0, 1, 2]
+            elif best_idx == N_S - 1:  # Sn = S7
+                tri = [N_S - 3, N_S - 2, N_S - 1]
+            else:
+                tri = [best_idx - 1, best_idx, best_idx + 1]
+            tri_cols_map[t] = tri
+            # Dev = (Avg3 - S) / S * 100
+            d_dict = {}
+            for j in tri:
+                S_j = S_values_ordered[j]
+                if S_j <= 0 or not np.isfinite(S_j):
+                    d_dict[s_cols[j]] = float("nan")
+                else:
+                    d_dict[s_cols[j]] = (float(avg3) - S_j) / S_j * 100.0
+            dev_all_dicts.append(d_dict)
+
+        # 取出最近 num_rows 列（由舊到新；最後一列=今天）
+        total = len(work)
+        pick_start = max(0, total - num_rows)
+        rows_out = []
+        for t in range(pick_start, total):
+            date_str = dates[t].strftime("%Y-%m-%d") if pd.notna(dates[t]) else ""
+            avg3 = avg3_list[t]
+            sn_idx = sn_idx_list[t]
+            tri = tri_cols_map.get(t)
+            row = {
+                "date": date_str,
+                "avg3": float(avg3) if (avg3 is not None and pd.notna(avg3)) else None,
+                "sn_idx": sn_idx,
+                "tri_idx": list(tri) if tri is not None else None,
+                "dev": dev_all_dicts[t],
+            }
+            rows_out.append(row)
+        result["rows"] = rows_out
+        result["ok"] = True
+        return result
+    except Exception as exc:
+        result["ok"] = False
+        result["reason"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+        return result
+
+
+def render_pmax_dev_table(matrix, prefix: str = ""):
+    """把 calc_pmax_dev_matrix 的結果渲染成圖中 D-2 綠色風格表格（原生 HTML，顏色樣式與 A3D977 接近）"""
+    if matrix is None:
+        st.info("無 Pmax Dev 矩陣數據。")
+        return
+    if not matrix.get("ok"):
+        st.info(f"Pmax Dev 矩陣未產生：{matrix.get('reason') or ''}")
+        return
+    s_cols = list(matrix.get("s_cols") or [])
+    s_vals = matrix.get("s_values") or {}
+    rows = list(matrix.get("rows") or [])
+    Pm = matrix.get("pm")
+    if not s_cols or not rows or Pm is None:
+        st.info("Pmax Dev 矩陣：缺少必要欄位。")
+        return
+    # CSS：綠色基底，參考原圖
+    css = f"""
+    <style>
+    .{prefix}pm-dev-wrap {{ margin: 4px 0 10px 0; }}
+    table.{prefix}pm-dev {{
+        width: 100%;
+        border-collapse: collapse;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 14px;
+        color: #0f172a;
+    }}
+    table.{prefix}pm-dev th, table.{prefix}pm-dev td {{
+        border: 1px solid #6cbf4b;
+        padding: 8px 10px;
+        text-align: center;
+        vertical-align: middle;
+        background: #a3d977;
+    }}
+    table.{prefix}pm-dev th {{
+        background: #7fbf5a;
+        font-weight: 800;
+        text-align: left;
+    }}
+    table.{prefix}pm-dev td.pm-date-cell {{
+        background: #7fbf5a;
+        font-weight: 800;
+        text-align: left;
+        white-space: nowrap;
+    }}
+    table.{prefix}pm-dev td.tri-cell {{
+        background: #b8e290;
+    }}
+    table.{prefix}pm-dev td.empty-cell {{
+        background: #ffffff;
+        color: #94a3b8;
+        border-color: #cbd5e1;
+    }}
+    table.{prefix}pm-dev .small-note {{
+        font-size: 11px;
+        color: #475569;
+        margin: 2px 0 6px 0;
+    }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+    parts = []
+    # 小節資訊：Pm / S 候選值（一行說明）
+    s_show = "、".join([f"{n}={float(s_vals.get(n, 0)):.2f}" for n in s_cols])
+    parts.append(f'<div class="{prefix}pm-dev-wrap">')
+    parts.append(f'<div class="{prefix}small-note">Pm=Pmax({matrix.get("pm_window") or 106})={float(Pm):.2f}；候選 {s_show}；三元組=Sn 前1/Sn/Sn 後1（S1/S7 時 fallback）。</div>')
+    parts.append(f'<table class="{prefix}pm-dev">')
+    # 表頭：Pm/日期合併格 + S1..S7
+    parts.append("<thead><tr>")
+    parts.append(f'<th rowspan="2">Date / Avg3</th>')
+    for n in s_cols:
+        sv = s_vals.get(n, 0)
+        parts.append(f"<th>{n}={float(sv):.2f}</th>")
+    parts.append("</tr>")
+    parts.append("</thead>")
+    parts.append("<tbody>")
+    for r in rows:
+        # 第一列：date + tri 標題 (Dev S(n-1)/Dev Sn/Dev S(n+1))
+        tri = r.get("tri_idx") or []
+        dev_dict = r.get("dev") or {}
+        date_str = str(r.get("date") or "")
+        avg3 = r.get("avg3")
+        avg3_s = f"{float(avg3):.2f}" if (avg3 is not None and pd.notna(avg3)) else "N/A"
+        parts.append("<tr>")
+        parts.append(f'<td class="pm-date-cell">{date_str}<br><span style="font-weight:500;font-size:12px">Avg3={avg3_s}</span></td>')
+        if tri:
+            labels = ["Dev S(n−1)", "Dev Sn", "Dev S(n+1)"]
+        else:
+            labels = []
+        for j in range(len(s_cols)):
+            if j in tri and tri and labels:
+                pos = tri.index(j)
+                label = labels[pos] if pos < len(labels) else ""
+                parts.append(f'<td class="tri-cell" style="font-weight:700">{label}</td>')
+            else:
+                parts.append('<td class="empty-cell"></td>')
+        parts.append("</tr>")
+        # 第二列：Dev(%) 數值（只有三元組有值；其它空白）
+        parts.append("<tr>")
+        parts.append(f'<td class="pm-date-cell">Dev(%)</td>')
+        for j, name in enumerate(s_cols):
+            if tri and j in tri and name in dev_dict:
+                v = dev_dict.get(name)
+                if v is None or (isinstance(v, float) and not np.isfinite(v)) or pd.isna(v):
+                    parts.append('<td class="tri-cell">-</td>')
+                else:
+                    color = "#166534" if float(v) >= 0 else "#991b1b"
+                    parts.append(f'<td class="tri-cell" style="color:{color};font-weight:700">{float(v):+.2f}%</td>')
+            else:
+                parts.append('<td class="empty-cell">—</td>')
+        parts.append("</tr>")
+    parts.append("</tbody></table></div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
+
 def render_home_snapshot_detail_page(ticker: str):
     st.title(f"📌 {ticker} 統計數據")
     top_cols = st.columns([1, 1.2, 2.2])
@@ -5091,6 +5346,17 @@ else:
             st.write("---")
             tab_data, tab_backtest = st.tabs(["📋 數據列表", "🧪 歷史回測"])
             with tab_data:
+                # ---- 新增：D-2 綠色 Pmax/Sn Dev 矩陣（對應圖1單股頁面「數據列表」上方區塊）
+                try:
+                    pmax_dev_matrix = calc_pmax_dev_matrix(df, pmax_window=106, s_divisor=24,
+                                                            s_min_num=3, s_max_num=9,
+                                                            avg_window=3, num_rows=3)
+                    st.markdown("##### 🟩 Pmax / Sn 偏差矩陣（D-2）")
+                    render_pmax_dev_table(pmax_dev_matrix, prefix=f"d2desk_{current_code}_")
+                except Exception as exc_d2:
+                    st.info(f"Pmax Dev 矩陣暫時無法計算：{type(exc_d2).__name__}: {str(exc_d2)[:120]}")
+                st.write("")
+
                 display_df = df.copy().tail(60).reset_index()
                 date_col = display_df.columns[0]
                 display_df["Date"] = pd.to_datetime(display_df[date_col]).dt.strftime("%Y-%m-%d")
