@@ -154,9 +154,9 @@ class _YFSessionManager:
 _YF_SESS_MGR = _YFSessionManager()
 
 _APP_BUILD = {
-    "commit": "3d46a5c+d2table",
-    "time": "2026-08-28 22:24",
-    "tag": "單股頁面D-2綠色Pmax/Sn Dev矩陣(桌面tab_data頂+手機快速信號後)；手機順便加數據列表最近40日",
+    "commit": "a7f9e22+p6index6approved",
+    "time": "2026-08-29 23:19",
+    "tag": "批准版APP-20260829-001：Pmax(106) 20固定Index硬編碼 + Dev0~5向歷史t-k偏移 + 8/11紅框3.5197自動校準；桌面flex row/手機垂直堆疊",
 }
 try:
     _APP_BUILD["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -3865,6 +3865,331 @@ def render_pmax_dev_table(matrix, prefix: str = ""):
     parts.append("</tbody></table></div>")
     st.markdown("".join(parts), unsafe_allow_html=True)
 
+
+PMAX_20_FIXED_INDICES: list = [
+    0.625, 0.583, 0.542, 0.500, 0.458, 0.417, 0.396, 0.375, 0.354, 0.333,
+    0.313, 0.292, 0.271, 0.250, 0.229, 0.208, 0.188, 0.167, 0.146, 0.125,
+]
+
+CAL_TARGET_RED_VALUE: float = 3.5197
+
+
+def calc_pmax_index6_matrix(df: pd.DataFrame,
+                            pmax_window: int = 106,
+                            avg_window: int = 3,
+                            dev_offsets: list = None,
+                            recent_rows: int = 12):
+    """
+    Approved APP-20260829-001-PMAX6DEV M1 + M2.
+
+    M1 (Dev 偏移方向 強制向歷史):
+      Devk[t] = (Close[t] - Avg3[t - k]) / Avg3[t - k] * 100%
+      k = 0,1,2,3,4,5 (預設 dev_offsets = [0,1,2,3,4,5])
+      若 t - k < 0 → NaN
+
+    M2 (20 Index 硬編碼): 使用 PMAX_20_FIXED_INDICES，不得用 linspace 近似。
+
+    Output:
+      {"ok": bool, "reason": str,
+       "pm": float, "pm_window": int,
+       "index_rows": [{"idx": i, "index": v, "pm_x_index": Pm*v}, ... 20 rows],
+       "time_rows": [{"date": str, "close": float, "tur": float|nan, "amp": float|nan,
+                      "avg3_t": float|nan,
+                      "dev": {0: float|nan, 1: ..., 5: ...}}, ... recent_rows rows],
+       "cal_match": {"date": str|None, "k": int|None, "value": float|None, "abs_err": float|None}
+                       (自動找出 Devk 最接近 CAL_TARGET_RED_VALUE=3.5197 的格，用於 8/11 紅框校準)}
+    """
+    dev_offsets = dev_offsets if dev_offsets is not None else [0, 1, 2, 3, 4, 5]
+    res = {
+        "ok": False,
+        "reason": "",
+        "pm": None,
+        "pm_window": pmax_window,
+        "index_rows": [],
+        "time_rows": [],
+        "dev_offsets": list(dev_offsets),
+        "cal_match": {"date": None, "k": None, "value": None, "abs_err": None},
+    }
+    if df is None or df.empty:
+        res["reason"] = "df empty"
+        return res
+    try:
+        work = df.copy()
+        cols_req = ["Close"]
+        missing = [c for c in cols_req if c not in work.columns]
+        if missing:
+            res["reason"] = f"missing columns: {missing}"
+            return res
+        work["_close"] = pd.to_numeric(work["Close"], errors="coerce")
+        if "High" in work.columns:
+            work["_hi"] = pd.to_numeric(work["High"], errors="coerce")
+            hi_series = work["_hi"]
+        else:
+            hi_series = work["_close"]
+        if "Turnover_Rate" in work.columns:
+            work["_tur"] = pd.to_numeric(work["Turnover_Rate"], errors="coerce")
+        else:
+            work["_tur"] = pd.Series([np.nan] * len(work), index=work.index)
+        if "AMP" in work.columns:
+            work["_amp"] = pd.to_numeric(work["AMP"], errors="coerce")
+        elif "High" in work.columns and "Low" in work.columns and "Close" in work.columns:
+            prev_close = work["_close"].shift(1).replace(0, np.nan)
+            hi = pd.to_numeric(work["High"], errors="coerce")
+            lo = pd.to_numeric(work["Low"], errors="coerce")
+            work["_amp"] = (hi - lo) / prev_close * 100.0
+        else:
+            work["_amp"] = pd.Series([np.nan] * len(work), index=work.index)
+
+        top = min(len(work), pmax_window)
+        if top < 30:
+            res["reason"] = f"僅 {len(work)} 列，不足 Pmax({pmax_window}) 需要的最低長度 30"
+            return res
+        recent_pmax = work.tail(top)
+        combined = pd.concat([
+            recent_pmax["_close"].replace(0, np.nan),
+            hi_series.tail(top).replace(0, np.nan),
+        ], axis=1)
+        daily_max = combined.max(axis=1, skipna=True).dropna()
+        if daily_max.empty:
+            res["reason"] = "無法計算 Pmax (全部 NaN)"
+            return res
+        Pm = float(daily_max.max())
+        if not np.isfinite(Pm) or Pm <= 0:
+            res["reason"] = f"Pm={Pm} 非合理正數"
+            return res
+        res["pm"] = Pm
+
+        # M2 硬編碼 20 Index 矩陣
+        idx_rows = []
+        for i, v in enumerate(PMAX_20_FIXED_INDICES):
+            idx_rows.append({"idx": i, "index": float(v), "pm_x_index": float(Pm * float(v))})
+        res["index_rows"] = idx_rows
+
+        # P_Avg3 向前 3 日 (min_periods=3)
+        work["_avg3"] = work["_close"].rolling(window=avg_window, min_periods=avg_window).mean()
+        dates = pd.to_datetime(work.index)
+        T = len(work)
+        # 選最近 recent_rows 列 (由舊到新，最後一列=最新)
+        pick_start = max(0, T - recent_rows)
+        t_rows = []
+        best_match = {"abs_err": float("inf")}
+        for t in range(pick_start, T):
+            date_s = dates[t].strftime("%Y-%m-%d") if pd.notna(dates[t]) else ""
+            close_v = work["_close"].iloc[t]
+            tur_v = work["_tur"].iloc[t]
+            amp_v = work["_amp"].iloc[t]
+            avg3_t = work["_avg3"].iloc[t]
+            dev_dict = {}
+            for k in dev_offsets:
+                ref_t = t - int(k)
+                if ref_t < 0:
+                    dev_dict[int(k)] = float("nan")
+                    continue
+                avg3_ref = work["_avg3"].iloc[ref_t]
+                if avg3_ref is None or pd.isna(avg3_ref) or float(avg3_ref) == 0 or not np.isfinite(float(avg3_ref)):
+                    dev_dict[int(k)] = float("nan")
+                    continue
+                if close_v is None or pd.isna(close_v) or not np.isfinite(float(close_v)):
+                    dev_dict[int(k)] = float("nan")
+                    continue
+                dev_dict[int(k)] = (float(close_v) - float(avg3_ref)) / float(avg3_ref) * 100.0
+            # 自動匹配 3.5197 紅框 (用於驗證 Dev 偏移方向)
+            for k, dv in dev_dict.items():
+                if dv is None or (isinstance(dv, float) and not np.isfinite(dv)) or pd.isna(dv):
+                    continue
+                err = abs(float(dv) - CAL_TARGET_RED_VALUE)
+                if err < best_match["abs_err"]:
+                    best_match = {
+                        "date": date_s,
+                        "k": int(k),
+                        "value": float(dv),
+                        "abs_err": float(err),
+                    }
+            t_rows.append({
+                "date": date_s,
+                "close": float(close_v) if (close_v is not None and pd.notna(close_v)) else None,
+                "tur": (float(tur_v) if (tur_v is not None and pd.notna(tur_v) and np.isfinite(float(tur_v))) else None),
+                "amp": (float(amp_v) if (amp_v is not None and pd.notna(amp_v) and np.isfinite(float(amp_v))) else None),
+                "avg3_t": float(avg3_t) if (avg3_t is not None and pd.notna(avg3_t) and np.isfinite(float(avg3_t))) else None,
+                "dev": dev_dict,
+            })
+        res["time_rows"] = t_rows
+        if best_match.get("date") is not None:
+            res["cal_match"] = best_match
+        res["ok"] = True
+        return res
+    except Exception as exc:
+        res["ok"] = False
+        res["reason"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        return res
+
+
+def render_pmax_index6_panel(matrix, prefix: str = "p6d_"):
+    """桌面 render：flex row 30% 左（20 Index 格點）70% 右（Dev0~5 12 日時序 + 紅框自動校準）"""
+    if matrix is None:
+        st.info("Pmax 20×6 矩陣：未產生數據")
+        return
+    if not matrix.get("ok"):
+        st.info(f"Pmax 20×6 矩陣未產生：{matrix.get('reason') or ''}")
+        return
+    Pm = matrix.get("pm")
+    idx_rows = list(matrix.get("index_rows") or [])
+    t_rows = list(matrix.get("time_rows") or [])
+    offsets = list(matrix.get("dev_offsets") or [0, 1, 2, 3, 4, 5])
+    cal_match = matrix.get("cal_match") or {}
+    cal_date = cal_match.get("date")
+    cal_k = cal_match.get("k")
+    if not idx_rows or not t_rows or Pm is None:
+        st.info("Pmax 20×6 矩陣：缺少必要欄位")
+        return
+    css = f"""
+    <style>
+    .{prefix}wrap {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 4px 0 10px 0;
+        align-items: flex-start;
+    }}
+    .{prefix}left {{
+        flex: 0 0 30%;
+        min-width: 260px;
+    }}
+    .{prefix}right {{
+        flex: 1 1 66%;
+        min-width: 560px;
+        overflow-x: auto;
+    }}
+    @media (max-width: 959px) {{
+        .{prefix}left  {{ flex: 1 1 100%; min-width: 0; }}
+        .{prefix}right {{ flex: 1 1 100%; min-width: 0; }}
+    }}
+    table.{prefix}tbl {{
+        width: 100%;
+        border-collapse: collapse;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 13px;
+        color: #0f172a;
+    }}
+    table.{prefix}tbl th, table.{prefix}tbl td {{
+        border: 1px solid #6cbf4b;
+        padding: 6px 8px;
+        text-align: right;
+        background: #a3d977;
+        vertical-align: middle;
+    }}
+    table.{prefix}tbl th {{
+        background: #7fbf5a;
+        font-weight: 800;
+        text-align: left;
+    }}
+    table.{prefix}tbl td.date-cell,
+    table.{prefix}tbl td.base-cell {{
+        background: #7fbf5a;
+        font-weight: 700;
+        text-align: left;
+        white-space: nowrap;
+    }}
+    table.{prefix}tbl td.empty {{
+        background: #ffffff;
+        color: #94a3b8;
+        border-color: #cbd5e1;
+        text-align: center;
+    }}
+    table.{prefix}tbl td.dev-pos {{ color: #166534; font-weight: 700; }}
+    table.{prefix}tbl td.dev-neg {{ color: #991b1b; font-weight: 700; }}
+    table.{prefix}tbl td.cal-red-box {{
+        border: 2.5px solid #dc2626 !important;
+        box-shadow: inset 0 0 0 1px #fca5a5;
+        background: #fee2e2;
+    }}
+    .{prefix}note {{
+        font-size: 11px;
+        color: #475569;
+        margin: 2px 0 6px 0;
+    }}
+    .{prefix}title {{
+        font-size: 14px;
+        font-weight: 800;
+        margin: 0 0 4px 0;
+        color: #0f172a;
+    }}
+    .{prefix}sticky-last {{
+        position: sticky;
+        bottom: 0;
+    }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+    parts = []
+    parts.append(f'<div class="{prefix}wrap">')
+    # 左側 20 格點
+    parts.append(f'<div class="{prefix}left">')
+    parts.append(f'<div class="{prefix}title">🟩 20 固定格點 (Pmax × Index)</div>')
+    parts.append(f'<div class="{prefix}note">Pmax(106)={float(Pm):.2f}；Index 硬編碼 20 階 (M2 約束)</div>')
+    parts.append(f'<table class="{prefix}tbl">')
+    parts.append("<thead><tr><th>#</th><th>Index</th><th>Pm×Index</th></tr></thead><tbody>")
+    for r in idx_rows:
+        parts.append(
+            f"<tr><td class='base-cell'>{int(r['idx'])+1}</td>"
+            f"<td>{float(r['index']):.3f}</td>"
+            f"<td>{float(r['pm_x_index']):.2f}</td></tr>"
+        )
+    parts.append("</tbody></table></div>")
+    # 右側 12 日時序 Dev0~5
+    parts.append(f'<div class="{prefix}right">')
+    parts.append(f'<div class="{prefix}title">🟦 最近 {len(t_rows)} 日 · 6 個時間視角 Dev(%)</div>')
+    mdate = cal_match.get("date")
+    mk = cal_match.get("k")
+    mval = cal_match.get("value")
+    merr = cal_match.get("abs_err")
+    if mdate is not None and mk is not None and mval is not None and merr is not None and float(merr) < 0.5:
+        parts.append(f'<div class="{prefix}note">Devk[t]=(Close[t]-Avg3[t−k])/Avg3[t−k]·100%（M1 向歷史偏移 k；禁止未來函數）｜🎯 紅框自動校準：{str(mdate)} Dev{mk}={float(mval):+.4f}%（目標 {CAL_TARGET_RED_VALUE}，誤差 {float(merr):.4f}）</div>')
+    else:
+        parts.append(f'<div class="{prefix}note">Devk[t]=(Close[t]-Avg3[t−k])/Avg3[t−k]·100%（M1 向歷史偏移 k）｜🎯 未命中校準點 {CAL_TARGET_RED_VALUE}（若有 8/11 數據會自動畫紅框）</div>')
+    parts.append(f'<table class="{prefix}tbl">')
+    head_row = ["<th>Date</th><th>Close</th><th>TUR</th><th>Amp(%)</th>"]
+    for k in offsets:
+        head_row.append(f"<th>Dev{k}</th>")
+    parts.append(f"<thead><tr>{''.join(head_row)}</tr></thead><tbody>")
+    for r in t_rows:
+        ds = r.get("date") or ""
+        is_cal_date = (cal_date is not None and ds == cal_date)
+        dev = r.get("dev") or {}
+        cells = [
+            f"<td class='date-cell'>{ds}</td>",
+            f"<td>{_fmt(r.get('close'), 2)}</td>",
+            f"<td>{_fmt(r.get('tur'), 4)}</td>",
+            f"<td>{_fmt(r.get('amp'), 2)}</td>",
+        ]
+        for k in offsets:
+            v = dev.get(int(k))
+            if v is None or (isinstance(v, float) and not np.isfinite(v)) or pd.isna(v):
+                cells.append("<td class='empty'>—</td>")
+                continue
+            cls = "dev-pos" if float(v) >= 0 else "dev-neg"
+            extra_cls = ""
+            if is_cal_date and cal_k is not None and int(k) == int(cal_k):
+                extra_cls = " cal-red-box"
+            cells.append(f"<td class='{cls}{extra_cls}'>{float(v):+.2f}%</td>")
+        parts.append(f"<tr>{''.join(cells)}</tr>")
+    parts.append("</tbody></table></div>")
+    parts.append("</div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
+
+
+def _fmt(v, decimals: int = 2):
+    if v is None:
+        return "-"
+    try:
+        x = float(v)
+        if not np.isfinite(x):
+            return "-"
+        return f"{x:.{decimals}f}"
+    except Exception:
+        return "-"
+
+
 def render_home_snapshot_detail_page(ticker: str):
     st.title(f"📌 {ticker} 統計數據")
     top_cols = st.columns([1, 1.2, 2.2])
@@ -5346,17 +5671,28 @@ else:
             st.write("---")
             tab_data, tab_backtest = st.tabs(["📋 數據列表", "🧪 歷史回測"])
             with tab_data:
-                # ---- 新增：D-2 綠色 Pmax/Sn Dev 矩陣（對應圖1單股頁面「數據列表」上方區塊）
+                # ---- L4 第 1 塊（批准 APP-20260829-001-PMAX6DEV）：Pmax(106) 20 固定格點 × Dev0~5 六欄 12 日時序雙層並排
                 try:
-                    pmax_dev_matrix = calc_pmax_dev_matrix(df, pmax_window=106, s_divisor=24,
-                                                            s_min_num=3, s_max_num=9,
-                                                            avg_window=3, num_rows=3)
-                    st.markdown("##### 🟩 Pmax / Sn 偏差矩陣（D-2）")
-                    render_pmax_dev_table(pmax_dev_matrix, prefix=f"d2desk_{current_code}_")
-                except Exception as exc_d2:
-                    st.info(f"Pmax Dev 矩陣暫時無法計算：{type(exc_d2).__name__}: {str(exc_d2)[:120]}")
+                    pm6_matrix = calc_pmax_index6_matrix(df, pmax_window=106, avg_window=3,
+                                                          dev_offsets=[0,1,2,3,4,5], recent_rows=12)
+                    st.markdown("##### 🟩 Pmax 20 固定格點 × Dev0~5 六視角（D-2 · 批准版）")
+                    render_pmax_index6_panel(pm6_matrix, prefix=f"p6desk_{current_code.replace('.','_')}_")
+                except Exception as exc_p6:
+                    st.info(f"Pmax 20×6 矩陣暫時無法計算：{type(exc_p6).__name__}: {str(exc_p6)[:160]}")
                 st.write("")
 
+                # ---- L4 第 2 塊：舊版 Sn 三元組 Dev 矩陣（可摺疊，避免資訊過載）
+                with st.expander("🟩 Pmax / Sn 三元組偏差矩陣（舊版，可選查看）", expanded=False):
+                    try:
+                        pmax_dev_matrix = calc_pmax_dev_matrix(df, pmax_window=106, s_divisor=24,
+                                                                s_min_num=3, s_max_num=9,
+                                                                avg_window=3, num_rows=3)
+                        render_pmax_dev_table(pmax_dev_matrix, prefix=f"d2desk_old_{current_code}_")
+                    except Exception as exc_d2:
+                        st.info(f"Sn 三元組 Dev 矩陣暫時無法計算：{type(exc_d2).__name__}: {str(exc_d2)[:120]}")
+                st.write("")
+
+                # ---- L4 第 3 塊：原始數據列表（最近 60 日）
                 display_df = df.copy().tail(60).reset_index()
                 date_col = display_df.columns[0]
                 display_df["Date"] = pd.to_datetime(display_df[date_col]).dt.strftime("%Y-%m-%d")
