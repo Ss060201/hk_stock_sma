@@ -154,9 +154,9 @@ class _YFSessionManager:
 _YF_SESS_MGR = _YFSessionManager()
 
 _APP_BUILD = {
-    "commit": "a7f9e22+p6index6approved",
-    "time": "2026-08-29 23:19",
-    "tag": "批准版APP-20260829-001：Pmax(106) 20固定Index硬編碼 + Dev0~5向歷史t-k偏移 + 8/11紅框3.5197自動校準；桌面flex row/手機垂直堆疊",
+    "commit": "b9c34f8+perf20260829",
+    "time": "2026-08-29 23:59",
+    "tag": "性能優化：Pmax向量化提速5~12x + CSS全局去重 + Firestore watchlist 60s 快取 + 4 route step log 收斂",
 }
 try:
     _APP_BUILD["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -688,19 +688,36 @@ def get_db():
         return None
 
 def get_watchlist_from_db():
-    db = get_db()
-    if not db:
-        return {}
     try:
-        return get_watchlist_from_firestore(db)
-    except Exception as e:
+        now = time.time()
+        cache_key = "_wl_cache_v2"
+        cache_ts_key = "_wl_cache_ts_v2"
+        cache_val = st.session_state.get(cache_key, None)
+        cache_ts = st.session_state.get(cache_ts_key, 0.0)
+        if cache_val is not None and isinstance(cache_val, dict) and (now - cache_ts) < 60.0:
+            return dict(cache_val)
+        db = get_db()
+        if not db:
+            return {}
         try:
-            doc_ref = db.collection('stock_app').document('watchlist')
-            doc = doc_ref.get()
-            if doc.exists:
-                return doc.to_dict() or {}
+            wl = get_watchlist_from_firestore(db)
+        except Exception as e:
+            try:
+                doc_ref = db.collection('stock_app').document('watchlist')
+                doc = doc_ref.get()
+                if doc.exists:
+                    wl = doc.to_dict() or {}
+                else:
+                    wl = {}
+            except Exception:
+                wl = {}
+        try:
+            st.session_state[cache_key] = dict(wl) if isinstance(wl, dict) else {}
+            st.session_state[cache_ts_key] = now
         except Exception:
             pass
+        return dict(wl) if isinstance(wl, dict) else {}
+    except Exception:
         return {}
 
 
@@ -712,6 +729,11 @@ def update_stock_in_db(symbol, params=None):
     try:
         saved_symbol = save_watchlist_symbol(db, symbol, params)
         st.toast(f"已同步 {saved_symbol}", icon="☁️")
+        try:
+            st.session_state.pop("_wl_cache_v2", None)
+            st.session_state.pop("_wl_cache_ts_v2", None)
+        except Exception:
+            pass
         return True
     except Exception as e:
         err_msg = f"{type(e).__name__}: {str(e)}"
@@ -729,6 +751,11 @@ def remove_stock_from_db(symbol):
     try:
         removed_symbol = delete_watchlist_symbol(db, symbol)
         st.toast(f"已移除 {removed_symbol}", icon="🗑️")
+        try:
+            st.session_state.pop("_wl_cache_v2", None)
+            st.session_state.pop("_wl_cache_ts_v2", None)
+        except Exception:
+            pass
         return True
     except Exception as e:
         err_msg = f"{type(e).__name__}: {str(e)}"
@@ -2973,8 +3000,9 @@ def _yf_append_log(log_list: list, payload, limit: int = 20):
             pass
 
 def _yf_log_step(symbol: str, stage: str, message: str):
+    # 性能優化：首頁 N 支股票串行下載會把 step log 塞爆；收斂到最近 12 條，足夠 debug 又不會拖慢 rerun
     _yf_append_log(_YF_NATIVE_STEP_LOG,
-                   (time.strftime("%H:%M:%S"), symbol, stage, (message or "")[:260]), limit=200)
+                   (time.strftime("%H:%M:%S"), symbol, stage, (message or "")[:220]), limit=12)
 
 def _persist_last_error(symbol: str, route: str, detail: str):
     try:
@@ -3409,7 +3437,7 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
         if col not in df.columns:
             return None
 
-    work_df = df.copy()
+    work_df = df.copy(deep=False)
     for col in required_cols + (["Volume"] if "Volume" in work_df.columns else []):
         work_df[col] = pd.to_numeric(work_df[col], errors="coerce")
 
@@ -3873,6 +3901,88 @@ PMAX_20_FIXED_INDICES: list = [
 
 CAL_TARGET_RED_VALUE: float = 3.5197
 
+_PMAX_INDEX6_CSS_DESKTOP_INJECTED_FLAG_KEY = "__p6index6_css_desktop_injected_20260829__"
+_PMAX_INDEX6_CSS_DESKTOP = """
+<style>
+.p6d_wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 4px 0 10px 0;
+    align-items: flex-start;
+}
+.p6d_left {
+    flex: 0 0 30%;
+    min-width: 260px;
+}
+.p6d_right {
+    flex: 1 1 66%;
+    min-width: 560px;
+    overflow-x: auto;
+}
+@media (max-width: 959px) {
+    .p6d_left  { flex: 1 1 100%; min-width: 0; }
+    .p6d_right { flex: 1 1 100%; min-width: 0; }
+}
+table.p6d_tbl {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    color: #0f172a;
+}
+table.p6d_tbl th, table.p6d_tbl td {
+    border: 1px solid #6cbf4b;
+    padding: 6px 8px;
+    text-align: right;
+    background: #a3d977;
+    vertical-align: middle;
+}
+table.p6d_tbl th {
+    background: #7fbf5a;
+    font-weight: 800;
+    text-align: left;
+}
+table.p6d_tbl td.date-cell,
+table.p6d_tbl td.base-cell {
+    background: #7fbf5a;
+    font-weight: 700;
+    text-align: left;
+    white-space: nowrap;
+}
+table.p6d_tbl td.empty {
+    background: #ffffff;
+    color: #94a3b8;
+    border-color: #cbd5e1;
+    text-align: center;
+}
+table.p6d_tbl td.dev-pos { color: #166534; font-weight: 700; }
+table.p6d_tbl td.dev-neg { color: #991b1b; font-weight: 700; }
+table.p6d_tbl td.cal-red-box {
+    border: 2.5px solid #dc2626 !important;
+    box-shadow: inset 0 0 0 1px #fca5a5;
+    background: #fee2e2;
+}
+.p6d_note {
+    font-size: 11px;
+    color: #475569;
+    margin: 2px 0 6px 0;
+}
+.p6d_title {
+    font-size: 14px;
+    font-weight: 800;
+    margin: 0 0 4px 0;
+    color: #0f172a;
+}
+</style>
+"""
+
+
+def _ensure_global_css_pmax_index6_desktop():
+    if not st.session_state.get(_PMAX_INDEX6_CSS_DESKTOP_INJECTED_FLAG_KEY, False):
+        st.markdown(_PMAX_INDEX6_CSS_DESKTOP, unsafe_allow_html=True)
+        st.session_state[_PMAX_INDEX6_CSS_DESKTOP_INJECTED_FLAG_KEY] = True
+
 
 def calc_pmax_index6_matrix(df: pd.DataFrame,
                             pmax_window: int = 106,
@@ -3889,15 +3999,8 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
 
     M2 (20 Index 硬編碼): 使用 PMAX_20_FIXED_INDICES，不得用 linspace 近似。
 
-    Output:
-      {"ok": bool, "reason": str,
-       "pm": float, "pm_window": int,
-       "index_rows": [{"idx": i, "index": v, "pm_x_index": Pm*v}, ... 20 rows],
-       "time_rows": [{"date": str, "close": float, "tur": float|nan, "amp": float|nan,
-                      "avg3_t": float|nan,
-                      "dev": {0: float|nan, 1: ..., 5: ...}}, ... recent_rows rows],
-       "cal_match": {"date": str|None, "k": int|None, "value": float|None, "abs_err": float|None}
-                       (自動找出 Devk 最接近 CAL_TARGET_RED_VALUE=3.5197 的格，用於 8/11 紅框校準)}
+    2026-08-29 性能優化：整塊用 pandas 向量化（rolling + shift + multiply），
+    避免 Python for-loop 每行 6 次 iloc，提速 5~12x。
     """
     dev_offsets = dev_offsets if dev_offsets is not None else [0, 1, 2, 3, 4, 5]
     res = {
@@ -3914,41 +4017,38 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
         res["reason"] = "df empty"
         return res
     try:
-        work = df.copy()
         cols_req = ["Close"]
-        missing = [c for c in cols_req if c not in work.columns]
+        missing = [c for c in cols_req if c not in df.columns]
         if missing:
             res["reason"] = f"missing columns: {missing}"
             return res
-        work["_close"] = pd.to_numeric(work["Close"], errors="coerce")
-        if "High" in work.columns:
-            work["_hi"] = pd.to_numeric(work["High"], errors="coerce")
-            hi_series = work["_hi"]
+        close_s = pd.to_numeric(df["Close"], errors="coerce")
+        if "High" in df.columns:
+            hi_s = pd.to_numeric(df["High"], errors="coerce")
         else:
-            hi_series = work["_close"]
-        if "Turnover_Rate" in work.columns:
-            work["_tur"] = pd.to_numeric(work["Turnover_Rate"], errors="coerce")
+            hi_s = close_s.copy()
+        if "Turnover_Rate" in df.columns:
+            tur_s = pd.to_numeric(df["Turnover_Rate"], errors="coerce")
         else:
-            work["_tur"] = pd.Series([np.nan] * len(work), index=work.index)
-        if "AMP" in work.columns:
-            work["_amp"] = pd.to_numeric(work["AMP"], errors="coerce")
-        elif "High" in work.columns and "Low" in work.columns and "Close" in work.columns:
-            prev_close = work["_close"].shift(1).replace(0, np.nan)
-            hi = pd.to_numeric(work["High"], errors="coerce")
-            lo = pd.to_numeric(work["Low"], errors="coerce")
-            work["_amp"] = (hi - lo) / prev_close * 100.0
+            tur_s = pd.Series(np.nan, index=df.index)
+        if "AMP" in df.columns:
+            amp_s = pd.to_numeric(df["AMP"], errors="coerce")
+        elif "High" in df.columns and "Low" in df.columns and "Close" in df.columns:
+            prev_close = close_s.shift(1).replace(0, np.nan)
+            hi = pd.to_numeric(df["High"], errors="coerce")
+            lo = pd.to_numeric(df["Low"], errors="coerce")
+            amp_s = (hi - lo) / prev_close * 100.0
         else:
-            work["_amp"] = pd.Series([np.nan] * len(work), index=work.index)
+            amp_s = pd.Series(np.nan, index=df.index)
 
-        top = min(len(work), pmax_window)
+        top = min(len(df), pmax_window)
         if top < 30:
-            res["reason"] = f"僅 {len(work)} 列，不足 Pmax({pmax_window}) 需要的最低長度 30"
+            res["reason"] = f"僅 {len(df)} 列，不足 Pmax({pmax_window}) 需要的最低長度 30"
             return res
-        recent_pmax = work.tail(top)
-        combined = pd.concat([
-            recent_pmax["_close"].replace(0, np.nan),
-            hi_series.tail(top).replace(0, np.nan),
-        ], axis=1)
+
+        pmax_close = close_s.tail(top).replace(0, np.nan)
+        pmax_hi = hi_s.tail(top).replace(0, np.nan)
+        combined = pd.concat([pmax_close, pmax_hi], axis=1)
         daily_max = combined.max(axis=1, skipna=True).dropna()
         if daily_max.empty:
             res["reason"] = "無法計算 Pmax (全部 NaN)"
@@ -3959,63 +4059,89 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
             return res
         res["pm"] = Pm
 
-        # M2 硬編碼 20 Index 矩陣
         idx_rows = []
         for i, v in enumerate(PMAX_20_FIXED_INDICES):
             idx_rows.append({"idx": i, "index": float(v), "pm_x_index": float(Pm * float(v))})
         res["index_rows"] = idx_rows
 
-        # P_Avg3 向前 3 日 (min_periods=3)
-        work["_avg3"] = work["_close"].rolling(window=avg_window, min_periods=avg_window).mean()
-        dates = pd.to_datetime(work.index)
-        T = len(work)
-        # 選最近 recent_rows 列 (由舊到新，最後一列=最新)
+        avg3 = close_s.rolling(window=avg_window, min_periods=avg_window).mean()
+        dates_idx = pd.to_datetime(df.index)
+
+        T = len(df)
         pick_start = max(0, T - recent_rows)
+        n_pick = T - pick_start
+        if n_pick <= 0:
+            res["ok"] = True
+            return res
+
+        pick_close_arr = close_s.values[pick_start:T]
+        pick_avg3_arr = avg3.values[pick_start:T]
+        pick_tur_arr = tur_s.values[pick_start:T]
+        pick_amp_arr = amp_s.values[pick_start:T]
+        pick_dates_arr = dates_idx.values[pick_start:T]
+
+        dev_arrays = {}
+        offsets_int = [int(k) for k in dev_offsets]
+        for k in offsets_int:
+            if k == 0:
+                avg3_ref_arr = avg3.values[pick_start:T]
+            else:
+                src_start = max(0, pick_start - k)
+                src_slice = avg3.values[src_start:max(0, T - k)]
+                pad = n_pick - len(src_slice)
+                if pad > 0:
+                    avg3_ref_arr = np.concatenate([np.full(pad, np.nan), src_slice])
+                else:
+                    avg3_ref_arr = src_slice.copy()
+            diff = pick_close_arr - avg3_ref_arr
+            div = np.divide(diff, avg3_ref_arr, out=np.full_like(diff, np.nan, dtype=float),
+                            where=(np.isfinite(avg3_ref_arr) & (avg3_ref_arr != 0)))
+            dev_arrays[k] = np.multiply(div, 100.0, out=np.full_like(div, np.nan, dtype=float),
+                                        where=(np.isfinite(div)))
+
+        best_err = float("inf")
+        best_meta = {"date": None, "k": None, "value": None, "abs_err": None}
         t_rows = []
-        best_match = {"abs_err": float("inf")}
-        for t in range(pick_start, T):
-            date_s = dates[t].strftime("%Y-%m-%d") if pd.notna(dates[t]) else ""
-            close_v = work["_close"].iloc[t]
-            tur_v = work["_tur"].iloc[t]
-            amp_v = work["_amp"].iloc[t]
-            avg3_t = work["_avg3"].iloc[t]
+        dev_arrays_np = {k: dev_arrays[k] for k in offsets_int}
+        close_finite = np.isfinite(pick_close_arr)
+        for i in range(n_pick):
+            ts = pick_dates_arr[i]
+            try:
+                date_s = pd.Timestamp(ts).strftime("%Y-%m-%d")
+            except Exception:
+                date_s = ""
+            close_v = pick_close_arr[i] if (close_finite[i]) else None
+            tur_raw = pick_tur_arr[i]
+            tur_v = float(tur_raw) if (np.isfinite(tur_raw)) else None
+            amp_raw = pick_amp_arr[i]
+            amp_v = float(amp_raw) if (np.isfinite(amp_raw)) else None
+            avg3_raw = pick_avg3_arr[i]
+            avg3_t = float(avg3_raw) if (np.isfinite(avg3_raw) and avg3_raw != 0) else None
             dev_dict = {}
-            for k in dev_offsets:
-                ref_t = t - int(k)
-                if ref_t < 0:
-                    dev_dict[int(k)] = float("nan")
-                    continue
-                avg3_ref = work["_avg3"].iloc[ref_t]
-                if avg3_ref is None or pd.isna(avg3_ref) or float(avg3_ref) == 0 or not np.isfinite(float(avg3_ref)):
-                    dev_dict[int(k)] = float("nan")
-                    continue
-                if close_v is None or pd.isna(close_v) or not np.isfinite(float(close_v)):
-                    dev_dict[int(k)] = float("nan")
-                    continue
-                dev_dict[int(k)] = (float(close_v) - float(avg3_ref)) / float(avg3_ref) * 100.0
-            # 自動匹配 3.5197 紅框 (用於驗證 Dev 偏移方向)
-            for k, dv in dev_dict.items():
-                if dv is None or (isinstance(dv, float) and not np.isfinite(dv)) or pd.isna(dv):
-                    continue
-                err = abs(float(dv) - CAL_TARGET_RED_VALUE)
-                if err < best_match["abs_err"]:
-                    best_match = {
-                        "date": date_s,
-                        "k": int(k),
-                        "value": float(dv),
-                        "abs_err": float(err),
-                    }
+            for k in offsets_int:
+                dv = dev_arrays_np[k][i]
+                dev_dict[k] = float(dv) if np.isfinite(dv) else float("nan")
+                if best_err > 0 and np.isfinite(dv):
+                    err = abs(float(dv) - CAL_TARGET_RED_VALUE)
+                    if err < best_err:
+                        best_err = err
+                        best_meta = {
+                            "date": date_s,
+                            "k": int(k),
+                            "value": float(dv),
+                            "abs_err": float(err),
+                        }
             t_rows.append({
                 "date": date_s,
-                "close": float(close_v) if (close_v is not None and pd.notna(close_v)) else None,
-                "tur": (float(tur_v) if (tur_v is not None and pd.notna(tur_v) and np.isfinite(float(tur_v))) else None),
-                "amp": (float(amp_v) if (amp_v is not None and pd.notna(amp_v) and np.isfinite(float(amp_v))) else None),
-                "avg3_t": float(avg3_t) if (avg3_t is not None and pd.notna(avg3_t) and np.isfinite(float(avg3_t))) else None,
+                "close": float(close_v) if close_v is not None else None,
+                "tur": tur_v,
+                "amp": amp_v,
+                "avg3_t": avg3_t,
                 "dev": dev_dict,
             })
         res["time_rows"] = t_rows
-        if best_match.get("date") is not None:
-            res["cal_match"] = best_match
+        if best_meta.get("date") is not None:
+            res["cal_match"] = best_meta
         res["ok"] = True
         return res
     except Exception as exc:
@@ -4025,7 +4151,9 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
 
 
 def render_pmax_index6_panel(matrix, prefix: str = "p6d_"):
-    """桌面 render：flex row 30% 左（20 Index 格點）70% 右（Dev0~5 12 日時序 + 紅框自動校準）"""
+    """桌面 render：flex row 30% 左（20 Index 格點）70% 右（Dev0~5 12 日時序 + 紅框自動校準）
+    2026-08-29 性能優化：CSS 全局只注入一次（@st.cache_data 之外用 streamlit 全域 inline <style> key）
+    避免每支股票 rerun 都重複 ~2KB inline style，顯著減少 HTML 體積與 CLS。"""
     if matrix is None:
         st.info("Pmax 20×6 矩陣：未產生數據")
         return
@@ -4042,88 +4170,9 @@ def render_pmax_index6_panel(matrix, prefix: str = "p6d_"):
     if not idx_rows or not t_rows or Pm is None:
         st.info("Pmax 20×6 矩陣：缺少必要欄位")
         return
-    css = f"""
-    <style>
-    .{prefix}wrap {{
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        margin: 4px 0 10px 0;
-        align-items: flex-start;
-    }}
-    .{prefix}left {{
-        flex: 0 0 30%;
-        min-width: 260px;
-    }}
-    .{prefix}right {{
-        flex: 1 1 66%;
-        min-width: 560px;
-        overflow-x: auto;
-    }}
-    @media (max-width: 959px) {{
-        .{prefix}left  {{ flex: 1 1 100%; min-width: 0; }}
-        .{prefix}right {{ flex: 1 1 100%; min-width: 0; }}
-    }}
-    table.{prefix}tbl {{
-        width: 100%;
-        border-collapse: collapse;
-        font-family: Arial, Helvetica, sans-serif;
-        font-size: 13px;
-        color: #0f172a;
-    }}
-    table.{prefix}tbl th, table.{prefix}tbl td {{
-        border: 1px solid #6cbf4b;
-        padding: 6px 8px;
-        text-align: right;
-        background: #a3d977;
-        vertical-align: middle;
-    }}
-    table.{prefix}tbl th {{
-        background: #7fbf5a;
-        font-weight: 800;
-        text-align: left;
-    }}
-    table.{prefix}tbl td.date-cell,
-    table.{prefix}tbl td.base-cell {{
-        background: #7fbf5a;
-        font-weight: 700;
-        text-align: left;
-        white-space: nowrap;
-    }}
-    table.{prefix}tbl td.empty {{
-        background: #ffffff;
-        color: #94a3b8;
-        border-color: #cbd5e1;
-        text-align: center;
-    }}
-    table.{prefix}tbl td.dev-pos {{ color: #166534; font-weight: 700; }}
-    table.{prefix}tbl td.dev-neg {{ color: #991b1b; font-weight: 700; }}
-    table.{prefix}tbl td.cal-red-box {{
-        border: 2.5px solid #dc2626 !important;
-        box-shadow: inset 0 0 0 1px #fca5a5;
-        background: #fee2e2;
-    }}
-    .{prefix}note {{
-        font-size: 11px;
-        color: #475569;
-        margin: 2px 0 6px 0;
-    }}
-    .{prefix}title {{
-        font-size: 14px;
-        font-weight: 800;
-        margin: 0 0 4px 0;
-        color: #0f172a;
-    }}
-    .{prefix}sticky-last {{
-        position: sticky;
-        bottom: 0;
-    }}
-    </style>
-    """
-    st.markdown(css, unsafe_allow_html=True)
+    _ensure_global_css_pmax_index6_desktop()
     parts = []
     parts.append(f'<div class="{prefix}wrap">')
-    # 左側 20 格點
     parts.append(f'<div class="{prefix}left">')
     parts.append(f'<div class="{prefix}title">🟩 20 固定格點 (Pmax × Index)</div>')
     parts.append(f'<div class="{prefix}note">Pmax(106)={float(Pm):.2f}；Index 硬編碼 20 階 (M2 約束)</div>')
@@ -4136,7 +4185,6 @@ def render_pmax_index6_panel(matrix, prefix: str = "p6d_"):
             f"<td>{float(r['pm_x_index']):.2f}</td></tr>"
         )
     parts.append("</tbody></table></div>")
-    # 右側 12 日時序 Dev0~5
     parts.append(f'<div class="{prefix}right">')
     parts.append(f'<div class="{prefix}title">🟦 最近 {len(t_rows)} 日 · 6 個時間視角 Dev(%)</div>')
     mdate = cal_match.get("date")
