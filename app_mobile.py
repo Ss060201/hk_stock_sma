@@ -153,9 +153,9 @@ class _YFSessionManager_M:
 _YF_SESS_MGR_M = _YFSessionManager_M()
 
 _APP_BUILD_M = {
-    "commit": "b9c34f8+perf20260829",
-    "time": "2026-08-29 23:59",
-    "tag": "性能優化：Pmax向量化提速5~12x + CSS全局去重 + Firestore watchlist 60s 快取 + 4 route step log 收斂",
+    "commit": "c3d7719+cot2blocksUD",
+    "time": "2026-09-02 21:40",
+    "tag": "COT 綠區A(5TI) + 綠區B(U/D COTu/COTd) 兩塊新增；手機20格點永久展開；右側YYMMDD/CP/Amp格式校準",
 }
 try:
     _APP_BUILD_M["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -901,6 +901,212 @@ def _fmt_m(v, decimals: int = 2):
         return "-"
 
 
+COT_5_FIXED_TI_M: list = [7, 14, 27, 57, 106]
+
+_COT_MOBILE_CSS_FLAG_KEY = "__cot_mobile_css_injected_20260902__"
+_COT_MOBILE_CSS = """
+<style>
+.cotm_wrap { width: 100%; margin: 4px 0 8px 0; display: block; }
+.cotm_block { margin-bottom: 8px; }
+.cotm_title { font-size: 12px; font-weight: 800; margin: 0 0 3px 0; color: #0f172a; }
+.cotm_note { font-size: 10px; color: #475569; margin: 1px 0 3px 0; }
+table.cotm_tbl { width: 100%; border-collapse: collapse; font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #0f172a; }
+table.cotm_tbl th, table.cotm_tbl td { border: 1px solid #6cbf4b; padding: 5px 4px; text-align: right; background: #a3d977; vertical-align: middle; }
+table.cotm_tbl th { background: #7fbf5a; font-weight: 700; text-align: left; white-space: nowrap; }
+table.cotm_tbl td.cotm_label { background: #7fbf5a; font-weight: 700; text-align: left; white-space: nowrap; }
+table.cotm_tbl td.cotm_empty { background: #ffffff; color: #94a3b8; border-color: #cbd5e1; text-align: center; }
+table.cotm_tbl td.cotm_u { color: #166534; font-weight: 800; background: #bbf7d0; }
+table.cotm_tbl td.cotm_d { color: #991b1b; font-weight: 800; background: #fecaca; }
+table.cotm_tbl td.cotm_majority_u { color: #166534; font-weight: 900; background: #86efac; text-align: center; font-size: 12px; }
+table.cotm_tbl td.cotm_majority_d { color: #991b1b; font-weight: 900; background: #f87171; text-align: center; font-size: 12px; }
+.cotm_pos { color: #166534; font-weight: 700; }
+.cotm_neg { color: #991b1b; font-weight: 700; }
+</style>
+"""
+
+
+def _ensure_global_css_cot_mobile():
+    if not st.session_state.get(_COT_MOBILE_CSS_FLAG_KEY, False):
+        st.markdown(_COT_MOBILE_CSS, unsafe_allow_html=True)
+        st.session_state[_COT_MOBILE_CSS_FLAG_KEY] = True
+
+
+def _rate_m(v, decimals=3):
+    try:
+        x = float(v)
+        if not np.isfinite(x):
+            return "—"
+        return f"{x * 100.0:.{decimals}f}%"
+    except Exception:
+        return "—"
+
+
+def _direction_class_m(x):
+    try:
+        v = float(x)
+        return "cotm_pos" if v >= 0 else "cotm_neg"
+    except Exception:
+        return "cotm_empty"
+
+
+def calc_cot_ti5_vector_m(df: pd.DataFrame, ti_list: list = None):
+    ti_list = list(ti_list) if ti_list is not None else list(COT_5_FIXED_TI_M)
+    res = {
+        "ok": False,
+        "reason": "",
+        "ti_list": list(ti_list),
+        "last_date": None,
+        "last_close": None,
+        "cot_a_row": {},
+        "ud_per_ti": {},
+        "cot_b_row": {},
+        "ud_majority": "",
+    }
+    if df is None or df.empty:
+        res["reason"] = "df empty"
+        return res
+    try:
+        if "Close" not in df.columns:
+            res["reason"] = "missing Close column"
+            return res
+        close_s = pd.to_numeric(df["Close"], errors="coerce")
+        N = len(close_s)
+        if N < 2:
+            res["reason"] = "N < 2"
+            return res
+        n = N - 1
+        pn_val = close_s.iloc[n]
+        if not np.isfinite(pn_val) or pn_val is None:
+            res["reason"] = "pn not finite"
+            return res
+        pn = float(pn_val)
+        try:
+            ts = close_s.index[n]
+            res["last_date"] = pd.Timestamp(ts).strftime("%Y-%m-%d")
+        except Exception:
+            res["last_date"] = None
+        res["last_close"] = pn
+        close_arr = close_s.to_numpy(dtype=float, copy=False)
+        cot_a: dict = {}
+        ud_per: dict = {}
+        cot_b: dict = {}
+        u_cnt = 0
+        d_cnt = 0
+        for ti in ti_list:
+            ti_i = int(ti)
+            if ti_i <= 0 or n - ti_i < 0:
+                cot_a[ti] = float("nan")
+                ud_per[ti] = ""
+                cot_b[ti] = float("nan")
+                continue
+            base = float(close_arr[n - ti_i])
+            w = close_arr[(n - ti_i):(n + 1)]
+            w_f = w[np.isfinite(w)]
+            if w_f.size == 0 or not np.isfinite(base) or base <= 0:
+                cot_a[ti] = float("nan")
+                ud_per[ti] = ""
+                cot_b[ti] = float("nan")
+                continue
+            w_min = float(np.min(w_f))
+            w_max = float(np.max(w_f))
+            diff_a = pn - base
+            cot_a[ti] = (diff_a / base) / float(ti_i) if base > 0 else float("nan")
+            if pn > base:
+                direction = "U"
+                u_cnt += 1
+                cot_b[ti] = ((pn - w_min) / w_min) / float(ti_i) if w_min > 0 else float("nan")
+            elif pn < base:
+                direction = "D"
+                d_cnt += 1
+                cot_b[ti] = ((pn - w_max) / w_max) / float(ti_i) if w_max > 0 else float("nan")
+            else:
+                direction = ""
+                cot_b[ti] = float("nan")
+            ud_per[ti] = direction
+        res["cot_a_row"] = cot_a
+        res["ud_per_ti"] = ud_per
+        res["cot_b_row"] = cot_b
+        if u_cnt > d_cnt:
+            res["ud_majority"] = "U"
+        elif d_cnt > u_cnt:
+            res["ud_majority"] = "D"
+        else:
+            res["ud_majority"] = ""
+        res["ok"] = True
+        return res
+    except Exception as exc:
+        res["ok"] = False
+        res["reason"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        return res
+
+
+def render_cot_2blocks_m(cot_matrix, prefix: str = "cotm_"):
+    if cot_matrix is None:
+        st.info("COT：未產生數據")
+        return
+    if not cot_matrix.get("ok"):
+        st.info(f"COT 未產生：{cot_matrix.get('reason') or ''}")
+        return
+    ti_list = list(cot_matrix.get("ti_list") or COT_5_FIXED_TI_M)
+    short_labels = {7: "C7", 14: "C14", 27: "C27", 57: "C57", 106: "C106"}
+    cot_a = cot_matrix.get("cot_a_row") or {}
+    ud_per = cot_matrix.get("ud_per_ti") or {}
+    cot_b = cot_matrix.get("cot_b_row") or {}
+    ud_maj = str(cot_matrix.get("ud_majority") or "")
+    last_dt = cot_matrix.get("last_date")
+    last_cp = cot_matrix.get("last_close")
+    _ensure_global_css_cot_mobile()
+    parts = []
+    parts.append(f'<div class="{prefix}wrap">')
+    parts.append(f'<div class="{prefix}block">')
+    parts.append(f'<div class="{prefix}title">🟩 COT 每日化速率（TI {str(ti_list)}）</div>')
+    if last_dt is not None and last_cp is not None:
+        parts.append(f'<div class="{prefix}note">Pn CP={_fmt_m(last_cp,1)}｜((Pn−(Pn−TI))/(Pn−TI))/TI（%/日，3 小數）</div>')
+    parts.append(f'<table class="{prefix}tbl">')
+    hdr_a = ["<th>指標</th>"] + [f"<th>{short_labels.get(ti, f'C{ti}')}</th>" for ti in ti_list]
+    parts.append(f"<thead><tr>{''.join(hdr_a)}</tr></thead><tbody>")
+    row_a = [f'<td class="{prefix}label">COT</td>']
+    for ti in ti_list:
+        v = cot_a.get(ti)
+        if v is None or (isinstance(v, float) and not np.isfinite(v)) or pd.isna(v):
+            row_a.append(f'<td class="{prefix}empty">—</td>')
+        else:
+            cls = _direction_class_m(v)
+            row_a.append(f'<td class="{cls}">{_rate_m(v, 3)}</td>')
+    parts.append(f"<tr>{''.join(row_a)}</tr>")
+    parts.append("</tbody></table></div>")
+    parts.append(f'<div class="{prefix}block">')
+    parts.append(f'<div class="{prefix}title">🟩 趨勢點擇 U/D（U=窗口min；D=窗口max）</div>')
+    parts.append(f'<div class="{prefix}note">U/D 格 = 5 TI 多數決</div>')
+    parts.append(f'<table class="{prefix}tbl">')
+    hdr_b = ["<th>U/D</th>"] + [f"<th>{short_labels.get(ti, f'C{ti}')}</th>" for ti in ti_list]
+    parts.append(f"<thead><tr>{''.join(hdr_b)}</tr></thead><tbody>")
+    if ud_maj == "U":
+        maj_cell = f'<td class="{prefix}majority_u">U</td>'
+    elif ud_maj == "D":
+        maj_cell = f'<td class="{prefix}majority_d">D</td>'
+    else:
+        maj_cell = f'<td class="{prefix}empty">—</td>'
+    row_b = [maj_cell]
+    for ti in ti_list:
+        d = str(ud_per.get(ti) or "")
+        v = cot_b.get(ti)
+        if v is None or (isinstance(v, float) and not np.isfinite(v)) or pd.isna(v):
+            row_b.append(f'<td class="{prefix}empty">—</td>')
+        else:
+            if d == "U":
+                cls = f"{prefix}u"
+            elif d == "D":
+                cls = f"{prefix}d"
+            else:
+                cls = _direction_class_m(v)
+            row_b.append(f'<td class="{cls}">{_rate_m(v, 3)}</td>')
+    parts.append(f"<tr>{''.join(row_b)}</tr>")
+    parts.append("</tbody></table></div>")
+    parts.append("</div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
+
+
 def render_pmax_index6_panel_m(matrix, prefix: str = "p6m_"):
     """手機版：垂直堆疊。時序 6 Dev 在上；20 格點在下包 st.expander 預設折疊。
     2026-08-29 性能優化：CSS 全局只注入一次（st.session_state flag），
@@ -963,7 +1169,7 @@ def render_pmax_index6_panel_m(matrix, prefix: str = "p6m_"):
     parts.append("</tbody></table>")
     st.markdown("".join(parts), unsafe_allow_html=True)
     st.write("")
-    # 第二區：20 格點（手機版包 expander 預設折疊；格點 HTML 先組裝再輸出）
+    # 第二區：20 格點（手機版 2026-09-02 永久展開（圖1紅字要求：擴展顯示20行數據）；格點 HTML 先組裝再輸出
     p2 = []
     p2.append(f'<div class="{prefix}title">Index × Pm</div>')
     p2.append(f'<table class="{prefix}tbl">')
@@ -974,7 +1180,7 @@ def render_pmax_index6_panel_m(matrix, prefix: str = "p6m_"):
                   f"<td>{float(r['pm_x_index']):.2f}</td></tr>")
     p2.append("</tbody></table>")
     grid_html = "".join(p2)
-    with st.expander(f"🟩 20 固定格點 (Pmax(106)={float(Pm):.2f}) — 展開查看", expanded=False):
+    with st.expander(f"🟩 20 固定格點 (Pmax(106)={float(Pm):.2f}) — 永久展開 20 行", expanded=True):
         st.markdown(grid_html, unsafe_allow_html=True)
 
 
@@ -1967,6 +2173,15 @@ else:
             st.info(f"Pmax 20×6 矩陣暫時無法計算：{type(exc_p6).__name__}: {str(exc_p6)[:160]}")
         st.write("")
 
+        # ---- L4 第 1-b 塊（2026-09-02 COT 綠區 A + 綠區 B：5 TI 每日化速率 + U/D 趨勢點擇多數決；手機版縮寫 C7/C14/.../C106）
+        try:
+            cot5m = calc_cot_ti5_vector_m(df, ti_list=list(COT_5_FIXED_TI_M))
+            st.markdown("##### 🟩 COT 每日化速率 × U/D 點擇（TI={7,14,27,57,106}）")
+            render_cot_2blocks_m(cot5m, prefix=f"cotm_{current_code.replace('.','_')}_")
+        except Exception as exc_cot:
+            st.info(f"COT 5 TI 矩陣暫時無法計算：{type(exc_cot).__name__}: {str(exc_cot)[:160]}")
+        st.write("")
+
         # ---- L4 第 2 塊：舊 Sn 三元組（手機版包折疊）
         with st.expander("🟩 Sn 三元組偏差矩陣（舊版）", expanded=False):
             try:
@@ -1978,23 +2193,23 @@ else:
                 st.info(f"Sn 三元組無法計算：{type(exc_d2).__name__}: {str(exc_d2)[:120]}")
         st.write("")
 
-        # ---- L4 第 3 塊：最近 40 日數據列表
+        # ---- L4 第 3 塊：最近 40 日數據列表（2026-09-02 格式校準：YYMMDD；Close→CP；TUR3；Amp2）
         try:
             tail_df = df.tail(40).copy().reset_index()
             if len(tail_df) > 0:
                 date_col = tail_df.columns[0]
-                tail_df["Date"] = pd.to_datetime(tail_df[date_col]).dt.strftime("%Y-%m-%d")
+                tail_df["Date"] = pd.to_datetime(tail_df[date_col]).dt.strftime("%y%m%d")
                 cols = ["Date"]
                 rename_map = {"Date": "Date"}
                 if "Close" in tail_df.columns:
                     cols.append("Close")
-                    rename_map["Close"] = "Close price"
+                    rename_map["Close"] = "CP"
                 if "Turnover_Rate" in tail_df.columns:
                     cols.append("Turnover_Rate")
                     rename_map["Turnover_Rate"] = "TUR"
                 if "AMP" in tail_df.columns:
                     cols.append("AMP")
-                    rename_map["AMP"] = "Amplitude"
+                    rename_map["AMP"] = "Amp"
                 elif "High" in tail_df.columns and "Low" in tail_df.columns:
                     high = pd.to_numeric(tail_df["High"], errors="coerce")
                     low = pd.to_numeric(tail_df["Low"], errors="coerce")
@@ -2003,10 +2218,14 @@ else:
                         amp_col = ((high - low) / prev_close.replace(0, np.nan) * 100)
                         tail_df["AMP"] = amp_col
                         cols.append("AMP")
-                        rename_map["AMP"] = "Amplitude"
+                        rename_map["AMP"] = "Amp"
                 show_cols_t = [c for c in cols if c in tail_df.columns]
                 if show_cols_t:
                     show_df = tail_df[show_cols_t].rename(columns=rename_map)
+                    if "TUR" in show_df.columns:
+                        show_df["TUR"] = pd.to_numeric(show_df["TUR"], errors="coerce").round(3)
+                    if "Amp" in show_df.columns:
+                        show_df["Amp"] = pd.to_numeric(show_df["Amp"], errors="coerce").round(2)
                     st.markdown("##### 📋 數據列表（最近 40 日）")
                     st.dataframe(show_df, use_container_width=True, hide_index=True, height=240)
         except Exception as exc_t:

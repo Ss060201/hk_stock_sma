@@ -154,9 +154,9 @@ class _YFSessionManager:
 _YF_SESS_MGR = _YFSessionManager()
 
 _APP_BUILD = {
-    "commit": "b9c34f8+perf20260829",
-    "time": "2026-08-29 23:59",
-    "tag": "性能優化：Pmax向量化提速5~12x + CSS全局去重 + Firestore watchlist 60s 快取 + 4 route step log 收斂",
+    "commit": "c3d7719+cot2blocksUD",
+    "time": "2026-09-02 21:40",
+    "tag": "COT 綠區A(5TI) + 綠區B(U/D COTu/COTd) 兩塊新增；手機20格點永久展開；右側YYMMDD/CP/Amp格式校準",
 }
 try:
     _APP_BUILD["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -4238,6 +4238,228 @@ def _fmt(v, decimals: int = 2):
         return "-"
 
 
+COT_5_FIXED_TI: list = [7, 14, 27, 57, 106]
+
+_COT_DESKTOP_CSS_FLAG_KEY = "__cot_desktop_css_injected_20260902__"
+_COT_DESKTOP_CSS = """
+<style>
+.cotd_wrap { width: 100%; margin: 6px 0 10px 0; display: block; }
+.cotd_block { margin-bottom: 10px; }
+.cotd_title { font-size: 14px; font-weight: 800; margin: 0 0 5px 0; color: #0f172a; }
+.cotd_note { font-size: 11px; color: #475569; margin: 2px 0 5px 0; }
+table.cotd_tbl { width: 100%; border-collapse: collapse; font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #0f172a; }
+table.cotd_tbl th, table.cotd_tbl td { border: 1px solid #6cbf4b; padding: 6px 6px; text-align: right; background: #a3d977; vertical-align: middle; }
+table.cotd_tbl th { background: #7fbf5a; font-weight: 700; text-align: left; white-space: nowrap; }
+table.cotd_tbl td.cotd_label { background: #7fbf5a; font-weight: 700; text-align: left; white-space: nowrap; }
+table.cotd_tbl td.cotd_empty { background: #ffffff; color: #94a3b8; border-color: #cbd5e1; text-align: center; }
+table.cotd_tbl td.cotd_u { color: #166534; font-weight: 800; background: #bbf7d0; }
+table.cotd_tbl td.cotd_d { color: #991b1b; font-weight: 800; background: #fecaca; }
+table.cotd_tbl td.cotd_majority_u { color: #166534; font-weight: 900; background: #86efac; text-align: center; font-size: 14px; }
+table.cotd_tbl td.cotd_majority_d { color: #991b1b; font-weight: 900; background: #f87171; text-align: center; font-size: 14px; }
+.cotd_pos { color: #166534; font-weight: 700; }
+.cotd_neg { color: #991b1b; font-weight: 700; }
+</style>
+"""
+
+
+def _ensure_global_css_cot_desktop():
+    if not st.session_state.get(_COT_DESKTOP_CSS_FLAG_KEY, False):
+        st.markdown(_COT_DESKTOP_CSS, unsafe_allow_html=True)
+        st.session_state[_COT_DESKTOP_CSS_FLAG_KEY] = True
+
+
+def _rate(v, decimals=3):
+    try:
+        x = float(v)
+        if not np.isfinite(x):
+            return "—"
+        return f"{x * 100.0:.{decimals}f}%"
+    except Exception:
+        return "—"
+
+
+def _direction_class(x):
+    try:
+        v = float(x)
+        return "cotd_pos" if v >= 0 else "cotd_neg"
+    except Exception:
+        return "cotd_empty"
+
+
+def calc_cot_ti5_vector(df: pd.DataFrame, ti_list: list = None):
+    ti_list = list(ti_list) if ti_list is not None else list(COT_5_FIXED_TI)
+    res = {
+        "ok": False,
+        "reason": "",
+        "ti_list": list(ti_list),
+        "last_date": None,
+        "last_close": None,
+        "cot_a_row": {},
+        "ud_per_ti": {},
+        "cot_b_row": {},
+        "ud_majority": "",
+    }
+    if df is None or df.empty:
+        res["reason"] = "df empty"
+        return res
+    try:
+        if "Close" not in df.columns:
+            res["reason"] = "missing Close column"
+            return res
+        work = df.copy(deep=False)
+        close_s = pd.to_numeric(work["Close"], errors="coerce")
+        N = len(close_s)
+        if N < 2:
+            res["reason"] = "N < 2"
+            return res
+        n = N - 1
+        pn_val = close_s.iloc[n]
+        if not np.isfinite(pn_val) or pn_val is None:
+            res["reason"] = "pn not finite"
+            return res
+        pn = float(pn_val)
+        try:
+            ts = close_s.index[n]
+            res["last_date"] = pd.Timestamp(ts).strftime("%Y-%m-%d")
+        except Exception:
+            res["last_date"] = None
+        res["last_close"] = pn
+        close_arr = close_s.to_numpy(dtype=float, copy=False)
+        cot_a: dict = {}
+        ud_per: dict = {}
+        cot_b: dict = {}
+        u_cnt = 0
+        d_cnt = 0
+        for ti in ti_list:
+            ti_i = int(ti)
+            if ti_i <= 0:
+                cot_a[ti] = float("nan")
+                ud_per[ti] = ""
+                cot_b[ti] = float("nan")
+                continue
+            if n - ti_i < 0:
+                cot_a[ti] = float("nan")
+                ud_per[ti] = ""
+                cot_b[ti] = float("nan")
+                continue
+            base = float(close_arr[n - ti_i])
+            win_start = n - ti_i
+            win_end = n + 1
+            w = close_arr[win_start:win_end]
+            w_f = w[np.isfinite(w)]
+            if w_f.size == 0 or not np.isfinite(base) or base <= 0:
+                cot_a[ti] = float("nan")
+                ud_per[ti] = ""
+                cot_b[ti] = float("nan")
+                continue
+            w_min = float(np.min(w_f))
+            w_max = float(np.max(w_f))
+            diff_a = pn - base
+            if base <= 0:
+                cot_a[ti] = float("nan")
+            else:
+                cot_a[ti] = (diff_a / base) / float(ti_i)
+            if pn > base:
+                direction = "U"
+                u_cnt += 1
+                if w_min <= 0:
+                    cot_b[ti] = float("nan")
+                else:
+                    cot_b[ti] = ((pn - w_min) / w_min) / float(ti_i)
+            elif pn < base:
+                direction = "D"
+                d_cnt += 1
+                if w_max <= 0:
+                    cot_b[ti] = float("nan")
+                else:
+                    cot_b[ti] = ((pn - w_max) / w_max) / float(ti_i)
+            else:
+                direction = ""
+                cot_b[ti] = float("nan")
+            ud_per[ti] = direction
+        res["cot_a_row"] = cot_a
+        res["ud_per_ti"] = ud_per
+        res["cot_b_row"] = cot_b
+        if u_cnt > d_cnt:
+            res["ud_majority"] = "U"
+        elif d_cnt > u_cnt:
+            res["ud_majority"] = "D"
+        else:
+            res["ud_majority"] = ""
+        res["ok"] = True
+        return res
+    except Exception as exc:
+        res["ok"] = False
+        res["reason"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        return res
+
+
+def render_cot_2blocks(cot_matrix, prefix: str = "cotd_"):
+    if cot_matrix is None:
+        st.info("COT 矩陣：未產生數據")
+        return
+    if not cot_matrix.get("ok"):
+        st.info(f"COT 矩陣未產生：{cot_matrix.get('reason') or ''}")
+        return
+    ti_list = list(cot_matrix.get("ti_list") or COT_5_FIXED_TI)
+    cot_a = cot_matrix.get("cot_a_row") or {}
+    ud_per = cot_matrix.get("ud_per_ti") or {}
+    cot_b = cot_matrix.get("cot_b_row") or {}
+    ud_maj = str(cot_matrix.get("ud_majority") or "")
+    last_dt = cot_matrix.get("last_date")
+    last_cp = cot_matrix.get("last_close")
+    _ensure_global_css_cot_desktop()
+    parts = []
+    parts.append(f'<div class="{prefix}wrap">')
+    parts.append(f'<div class="{prefix}block">')
+    parts.append(f'<div class="{prefix}title">🟩 COT · 每日化股價變化速率（TI∈{str(ti_list)}）</div>')
+    if last_dt is not None and last_cp is not None:
+        parts.append(f'<div class="{prefix}note">Pn（{last_dt} Close/CP）={_fmt(last_cp, 2)}；COT=((Pn−(Pn−TI))/(Pn−TI))/TI（每日化，單位%/日，3 位小數）</div>')
+    parts.append(f'<table class="{prefix}tbl">')
+    hdr_a = ["<th>指標</th>"] + [f"<th>COT {ti}</th>" for ti in ti_list]
+    parts.append(f"<thead><tr>{''.join(hdr_a)}</tr></thead><tbody>")
+    row_a = [f'<td class="{prefix}label">COT（每日化%）</td>']
+    for ti in ti_list:
+        v = cot_a.get(ti)
+        if v is None or (isinstance(v, float) and not np.isfinite(v)) or pd.isna(v):
+            row_a.append(f'<td class="{prefix}empty">—</td>')
+        else:
+            cls = _direction_class(v)
+            row_a.append(f'<td class="{cls}">{_rate(v, 3)}</td>')
+    parts.append(f"<tr>{''.join(row_a)}</tr>")
+    parts.append("</tbody></table></div>")
+    parts.append(f'<div class="{prefix}block">')
+    parts.append(f'<div class="{prefix}title">🟩 上升 / 下降趨勢點擇（U 用窗口 min；D 用窗口 max）</div>')
+    parts.append(f'<div class="{prefix}note">U=Pn>(Pn−TI)→COTu；D=Pn<(Pn−TI)→COTd；U/D 格=5 TI 多數決</div>')
+    parts.append(f'<table class="{prefix}tbl">')
+    hdr_b = ["<th>U/D</th>"] + [f"<th>COT {ti}</th>" for ti in ti_list]
+    parts.append(f"<thead><tr>{''.join(hdr_b)}</tr></thead><tbody>")
+    if ud_maj == "U":
+        maj_cell = f'<td class="{prefix}majority_u">U</td>'
+    elif ud_maj == "D":
+        maj_cell = f'<td class="{prefix}majority_d">D</td>'
+    else:
+        maj_cell = f'<td class="{prefix}empty">—</td>'
+    row_b = [maj_cell]
+    for ti in ti_list:
+        d = str(ud_per.get(ti) or "")
+        v = cot_b.get(ti)
+        if v is None or (isinstance(v, float) and not np.isfinite(v)) or pd.isna(v):
+            row_b.append(f'<td class="{prefix}empty">—</td>')
+        else:
+            if d == "U":
+                cls = f"{prefix}u"
+            elif d == "D":
+                cls = f"{prefix}d"
+            else:
+                cls = _direction_class(v)
+            row_b.append(f'<td class="{cls}">{_rate(v, 3)}</td>')
+    parts.append(f"<tr>{''.join(row_b)}</tr>")
+    parts.append("</tbody></table></div>")
+    parts.append("</div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
+
+
 def render_home_snapshot_detail_page(ticker: str):
     st.title(f"📌 {ticker} 統計數據")
     top_cols = st.columns([1, 1.2, 2.2])
@@ -5729,6 +5951,15 @@ else:
                     st.info(f"Pmax 20×6 矩陣暫時無法計算：{type(exc_p6).__name__}: {str(exc_p6)[:160]}")
                 st.write("")
 
+                # ---- L4 第 1-b 塊（2026-09-02 COT 綠區 A + 綠區 B：5 TI 每日化速率 + U/D 趨勢點擇多數決）
+                try:
+                    cot5 = calc_cot_ti5_vector(df, ti_list=list(COT_5_FIXED_TI))
+                    st.markdown("##### 🟩 COT 每日化股價變化速率 × 趨勢 U/D 點擇（5 TI={7,14,27,57,106}）")
+                    render_cot_2blocks(cot5, prefix=f"cotdesk_{current_code.replace('.','_')}_")
+                except Exception as exc_cot:
+                    st.info(f"COT 5 TI 矩陣暫時無法計算：{type(exc_cot).__name__}: {str(exc_cot)[:160]}")
+                st.write("")
+
                 # ---- L4 第 2 塊：舊版 Sn 三元組 Dev 矩陣（可摺疊，避免資訊過載）
                 with st.expander("🟩 Pmax / Sn 三元組偏差矩陣（舊版，可選查看）", expanded=False):
                     try:
@@ -5740,21 +5971,25 @@ else:
                         st.info(f"Sn 三元組 Dev 矩陣暫時無法計算：{type(exc_d2).__name__}: {str(exc_d2)[:120]}")
                 st.write("")
 
-                # ---- L4 第 3 塊：原始數據列表（最近 60 日）
+                # ---- L4 第 3 塊：原始數據列表（最近 60 日；2026-09-02 格式校準：YYMMDD；Close→CP；TUR3小數；Amp→Amp 2小數）
                 display_df = df.copy().tail(60).reset_index()
                 date_col = display_df.columns[0]
-                display_df["Date"] = pd.to_datetime(display_df[date_col]).dt.strftime("%Y-%m-%d")
+                display_df["Date"] = pd.to_datetime(display_df[date_col]).dt.strftime("%y%m%d")
                 if date_col != "Date":
                     display_df = display_df.drop(columns=[date_col])
 
                 rename_map = {
-                    "Close": "Close price",
+                    "Close": "CP",
                     "Turnover_Rate": "TUR",
-                    "AMP": "Amplitude",
+                    "AMP": "Amp",
                 }
                 show_cols = [c for c in ["Date", "Close", "Turnover_Rate", "AMP"] if c in display_df.columns]
                 if show_cols:
                     display_df = display_df[show_cols].rename(columns=rename_map)
+                    if "TUR" in display_df.columns:
+                        display_df["TUR"] = pd.to_numeric(display_df["TUR"], errors="coerce").round(3)
+                    if "Amp" in display_df.columns:
+                        display_df["Amp"] = pd.to_numeric(display_df["Amp"], errors="coerce").round(2)
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
                 else:
                     st.info("無可顯示欄位。")
