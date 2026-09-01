@@ -1,6 +1,8 @@
 """
-COT 綠區 A + B（5 TI={7,14,27,57,106}）單元測試（6 TC，完全獨立：不 import streamlit）。
+COT 綠區 A + B（5 TI={7,14,27,57,106}）單元測試（7 TC，完全獨立：不 import streamlit）。
 對應桌面 calc_cot_ti5_vector / 手機 calc_cot_ti5_vector_m（兩端邏輯完全一致，此處用複製的純 calc 函式測試）。
+
+2026-09-02 修復 bug：pn 取最後一個「有限值」而非單純 iloc[-1]（對 Yahoo 末列 NaN/0 的常態）。
 """
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ COT_5_FIXED_TI = [7, 14, 27, 57, 106]
 
 
 def calc_cot_ti5_vector_test(df: pd.DataFrame, ti_list: Optional[List[int]] = None) -> Dict[str, Any]:
-    """tests 內複製版（不 import app_mobile/app.py，避免 streamlit 初始化 crash），與產品程式碼邏輯完全一致。"""
+    """tests 內複製版（不 import app_mobile/app.py，避免 streamlit 初始化 crash），與產品程式碼邏輯完全一致（2026-09-02 fixed last-finite 版）。"""
     ti_list = list(ti_list) if ti_list is not None else list(COT_5_FIXED_TI)
     res: Dict[str, Any] = {
         "ok": False,
@@ -28,6 +30,7 @@ def calc_cot_ti5_vector_test(df: pd.DataFrame, ti_list: Optional[List[int]] = No
         "ud_per_ti": {},
         "cot_b_row": {},
         "ud_majority": "",
+        "trailing_nan_skipped": 0,
     }
     if df is None or df.empty:
         res["reason"] = "df empty"
@@ -36,16 +39,20 @@ def calc_cot_ti5_vector_test(df: pd.DataFrame, ti_list: Optional[List[int]] = No
         if "Close" not in df.columns:
             res["reason"] = "missing Close column"
             return res
-        close_s = pd.to_numeric(df["Close"], errors="coerce")
+        close_s = pd.to_numeric(df["Close"], errors="coerce").replace(0, np.nan)
         N = len(close_s)
         if N < 2:
             res["reason"] = "N < 2"
             return res
-        n = N - 1
-        pn_val = close_s.iloc[n]
-        if (not np.isfinite(pn_val)) or pn_val is None:
-            res["reason"] = "pn not finite"
+        valid_arr_finite = np.isfinite(close_s.to_numpy(dtype=float, copy=False))
+        valid_positions = np.flatnonzero(valid_arr_finite)
+        if valid_positions.size == 0:
+            res["reason"] = "no valid Close (all rows NaN/0)"
             return res
+        n = int(valid_positions[-1])
+        skipped = (N - 1) - n
+        res["trailing_nan_skipped"] = int(skipped)
+        pn_val = float(close_s.iloc[n])
         pn = float(pn_val)
         try:
             ts = close_s.index[n]
@@ -61,15 +68,26 @@ def calc_cot_ti5_vector_test(df: pd.DataFrame, ti_list: Optional[List[int]] = No
         d_cnt = 0
         for ti in ti_list:
             ti_i = int(ti)
-            if ti_i <= 0 or n - ti_i < 0:
+            if ti_i <= 0:
                 cot_a[ti] = float("nan")
                 ud_per[ti] = ""
                 cot_b[ti] = float("nan")
                 continue
-            base = float(close_arr[n - ti_i])
-            w = close_arr[(n - ti_i):(n + 1)]
+            src = n - ti_i
+            if src < 0:
+                cot_a[ti] = float("nan")
+                ud_per[ti] = ""
+                cot_b[ti] = float("nan")
+                continue
+            base = float(close_arr[src])
+            if (not np.isfinite(base)) or base <= 0:
+                cot_a[ti] = float("nan")
+                ud_per[ti] = ""
+                cot_b[ti] = float("nan")
+                continue
+            w = close_arr[src:(n + 1)]
             w_f = w[np.isfinite(w)]
-            if w_f.size == 0 or (not np.isfinite(base)) or base <= 0:
+            if w_f.size == 0:
                 cot_a[ti] = float("nan")
                 ud_per[ti] = ""
                 cot_b[ti] = float("nan")
@@ -77,15 +95,15 @@ def calc_cot_ti5_vector_test(df: pd.DataFrame, ti_list: Optional[List[int]] = No
             w_min = float(np.min(w_f))
             w_max = float(np.max(w_f))
             diff_a = pn - base
-            cot_a[ti] = (diff_a / base) / float(ti_i) if base > 0 else float("nan")
+            cot_a[ti] = (diff_a / base) / float(ti_i)
             if pn > base:
                 direction = "U"
                 u_cnt += 1
-                cot_b[ti] = ((pn - w_min) / w_min) / float(ti_i) if w_min > 0 else float("nan")
+                cot_b[ti] = (((pn - w_min) / w_min) / float(ti_i)) if (np.isfinite(w_min) and w_min > 0) else float("nan")
             elif pn < base:
                 direction = "D"
                 d_cnt += 1
-                cot_b[ti] = ((pn - w_max) / w_max) / float(ti_i) if w_max > 0 else float("nan")
+                cot_b[ti] = (((pn - w_max) / w_max) / float(ti_i)) if (np.isfinite(w_max) and w_max > 0) else float("nan")
             else:
                 direction = ""
                 cot_b[ti] = float("nan")
@@ -118,7 +136,7 @@ def _is_nan(x: Any) -> bool:
 
 def _make_synthetic_df(n_days: int, last_date_str: str = "2026-08-11", daily_growth_pct: Optional[float] = None,
                        pattern: str = "linear", base_close: float = 100.0, seed: int = 42,
-                       zero_base_pos: Optional[int] = None) -> pd.DataFrame:
+                       zero_base_pos: Optional[int] = None, trailing_nan_count: int = 0) -> pd.DataFrame:
     """Build deterministic bdate-range df with Close (no OHLCV needed) for COT calcs."""
     rng = np.random.default_rng(seed)
     last_dt = pd.Timestamp(last_date_str)
@@ -141,18 +159,20 @@ def _make_synthetic_df(n_days: int, last_date_str: str = "2026-08-11", daily_gro
     if zero_base_pos is not None:
         zero_idx = int(zero_base_pos) % n_days
         closes[zero_idx] = 0.0
+    if trailing_nan_count and trailing_nan_count > 0:
+        n_trail = min(int(trailing_nan_count), n_days)
+        for i in range(1, n_trail + 1):
+            closes[-i] = np.nan
     df = pd.DataFrame({"Close": closes.astype(float)}, index=dates)
     df.index.name = "Date"
     return df
 
 
-# ========================= 6 TC =========================
+# ========================= 7 TC =========================
 
 def tc1_basic_cot7_matches_handcalc() -> bool:
     """TC1 基礎 COT7：每日漲 2% 7 天 → 手算 COT(7) = 2.000%/日 精確到 3 位小數。"""
     df = _make_synthetic_df(n_days=8, daily_growth_pct=2.0, pattern="linear", base_close=100.0, seed=1)
-    # After 7 days up: Close[0]=100, Close[7]=100*(1.02)^7 ≈ 114.86856676
-    # Expected: ((P7 - P0)/P0) / 7 = ((1.02^7 - 1) / 7) = hand value.
     r = calc_cot_ti5_vector_test(df, ti_list=[7])
     if not r.get("ok"):
         print("TC1 FAIL: not ok", r.get("reason"))
@@ -171,7 +191,7 @@ def tc1_basic_cot7_matches_handcalc() -> bool:
     return ok
 
 
-def tc2_u_trend_cotu7_matches() -> bool:
+def tc2_u_trend_cotu14_matches() -> bool:
     """TC2 U 上升：每日 2% 線性漲 14 天 → TI=14；窗口 min = Close[0]（最低點）→ COTu(14) = 手算 ((P14-P0)/P0)/14"""
     df = _make_synthetic_df(n_days=15, daily_growth_pct=2.0, pattern="linear", base_close=100.0, seed=2)
     r = calc_cot_ti5_vector_test(df, ti_list=[14])
@@ -189,7 +209,6 @@ def tc2_u_trend_cotu7_matches() -> bool:
     v_pct = float(v_raw) * 100.0
     P0 = float(df["Close"].iloc[0])
     P14 = float(df["Close"].iloc[14])
-    # For strictly monotonic up: window min = P0. So COTu = COT same formula here.
     hand = ((P14 - P0) / P0) / 14.0 * 100.0
     ok = abs(v_pct - hand) < 5e-4
     if not ok:
@@ -218,7 +237,6 @@ def tc3_d_trend_cotd14_matches() -> bool:
     v_pct = float(v_raw) * 100.0
     P0 = float(df["Close"].iloc[0])
     P14 = float(df["Close"].iloc[14])
-    # Monotonic down: window max = P0 → COTd == COT formula here (and negative)
     hand = ((P14 - P0) / P0) / 14.0 * 100.0
     if abs(v_pct - hand) >= 5e-4:
         print(f"TC3 FAIL: got={v_pct:.6f}% hand={hand:.6f}% diff={abs(v_pct-hand):.6e}")
@@ -250,17 +268,15 @@ def tc4_boundary_nan_short_df() -> bool:
 
 
 def tc5_div0_guard_em_dash() -> bool:
-    """TC5 除 0 guard：窗口 min/base 有 0 → U/D/COTb 全部 NaN（不出現 Inf）。"""
+    """TC5 除 0 guard：窗口 base 有 0 → U/D/COTb 全部 NaN（不出現 Inf）。"""
     n = 20
     df = _make_synthetic_df(n_days=n, pattern="linear", daily_growth_pct=1.0, base_close=80.0, seed=5)
-    # Force zero exactly at pos (n - 1 - 7) = pos 12 = base of TI=7, causing base <= 0.
     close_arr = df["Close"].to_numpy(dtype=float, copy=True)
     zero_idx = (n - 1) - 7
     close_arr[zero_idx] = 0.0
     df["Close"] = close_arr
     r = calc_cot_ti5_vector_test(df, ti_list=[7])
     if not r.get("ok"):
-        # df is ok because we return ok unless exception; but base <= 0: cot_a & cot_b should be nan guard
         print("TC5 FAIL: overall not ok", r.get("reason"))
         return False
     if (not _is_nan(r["cot_a_row"].get(7))) or (not _is_nan(r["cot_b_row"].get(7))):
@@ -276,9 +292,6 @@ def tc6_ud_majority_tie_d() -> bool:
     """TC6 U/D 多數決：50 日波浪 df，指定 ti_list=[7,14,27,50] 4 個；強制前 2 U 後 2 D → 平手 → ""；改成 3 D 1 U → majority D。"""
     df = _make_synthetic_df(n_days=60, pattern="wave", base_close=150.0, seed=42)
     r = calc_cot_ti5_vector_test(df, ti_list=[7, 14, 27, 50])
-    # Base case: we don't know wave output, so FORCE directions via override.
-    # We'll instead manually count by applying the U/D rule and compare ud_per_ti + majority
-    # with expected. If ties we test empty string.
     if not r.get("ok"):
         print("TC6 FAIL: not ok", r.get("reason"))
         return False
@@ -292,9 +305,6 @@ def tc6_ud_majority_tie_d() -> bool:
             f"got='{r['ud_majority']}'"
         )
         return False
-    # Force scenario: override and hand-run a synthetic ud count 3D 1U → expect D majority.
-    # (Do not touch product code; just verify counting logic in calc.)
-    # Second scenario: 2U-3D with 5 TI = [7,14,27,50,59]
     r2 = calc_cot_ti5_vector_test(df, ti_list=[7, 14, 27, 50, 59])
     if not r2.get("ok"):
         print("TC6 FAIL r2: not ok", r2.get("reason"))
@@ -311,13 +321,62 @@ def tc6_ud_majority_tie_d() -> bool:
     return True
 
 
+def tc7_trailing_nan_last_row_fixed() -> bool:
+    """TC7（本次新增 → 修復截圖 bug）：末 2 列 Close = NaN，但倒數第 3 列 = 100、倒數第 10 列 = 90。
+    預期：n = 最後一個有限值位置，skipped=2；last_date=倒數第 3 列日期；COT(7)=((100-90)/90)/7 與手算一致；ud 為 U（因為 100>90）。"""
+    n_days = 20
+    df = _make_synthetic_df(n_days=n_days, pattern="linear", daily_growth_pct=0.0, base_close=90.0, seed=7, trailing_nan_count=0)
+    closes = df["Close"].to_numpy(dtype=float, copy=True)
+    for i in range(len(closes)):
+        if i < len(closes) - 3:
+            closes[i] = 90.0
+        elif i == len(closes) - 3:
+            closes[i] = 100.0
+        else:
+            closes[i] = np.nan
+    df["Close"] = closes
+    # Sanity
+    assert pd.isna(closes[-1])
+    assert pd.isna(closes[-2])
+    assert float(closes[-3]) == 100.0
+    r = calc_cot_ti5_vector_test(df, ti_list=[7, 14])
+    if not r.get("ok"):
+        print("TC7 FAIL: not ok", r.get("reason"))
+        return False
+    if int(r.get("trailing_nan_skipped", 0)) != 2:
+        print(f"TC7 FAIL: skipped should be 2, got={r.get('trailing_nan_skipped')}")
+        return False
+    expected_date = pd.Timestamp(df.index[-3]).strftime("%Y-%m-%d")
+    if r.get("last_date") != expected_date:
+        print(f"TC7 FAIL: last_date expected='{expected_date}', got='{r.get('last_date')}'")
+        return False
+    if abs(float(r.get("last_close", 0.0)) - 100.0) >= 1e-7:
+        print(f"TC7 FAIL: last_close expected=100.0, got={r.get('last_close')}")
+        return False
+    # COT 7: base = closes[n-7] = closes[10] (n=17, n-7=10) → 90
+    v_raw = r["cot_a_row"].get(7)
+    if _is_nan(v_raw):
+        print("TC7 FAIL: cot7 NaN")
+        return False
+    v_pct = float(v_raw) * 100.0
+    hand = ((100.0 - 90.0) / 90.0) / 7.0 * 100.0
+    if abs(v_pct - hand) >= 5e-4:
+        print(f"TC7 FAIL: got={v_pct:.6f}% hand={hand:.6f}%")
+        return False
+    if r["ud_per_ti"].get(7, "") != "U":
+        print(f"TC7 FAIL: per_ti[7] should be U, got='{r['ud_per_ti'].get(7)}'")
+        return False
+    return True
+
+
 ALL_TCS = [
     ("TC1 基礎 COT7 線性漲手算對齊", tc1_basic_cot7_matches_handcalc),
-    ("TC2 U 上升 COTu(14) 窗口 min 對齊", tc2_u_trend_cotu7_matches),
+    ("TC2 U 上升 COTu(14) 窗口 min 對齊", tc2_u_trend_cotu14_matches),
     ("TC3 D 下降 COTd(14) 負值 + 多數決 D", tc3_d_trend_cotd14_matches),
     ("TC4 df 短 50 列 → 27/57/106 NaN 邊界", tc4_boundary_nan_short_df),
     ("TC5 base 零點 → 除 0 guard NaN", tc5_div0_guard_em_dash),
     ("TC6 U/D 多數決平手 & 5 TI 不一致", tc6_ud_majority_tie_d),
+    ("TC7 末列 NaN → 取倒數最後有限值 Pn 對齊（截圖 bug 重現）", tc7_trailing_nan_last_row_fixed),
 ]
 
 

@@ -4298,6 +4298,7 @@ def calc_cot_ti5_vector(df: pd.DataFrame, ti_list: list = None):
         "ud_per_ti": {},
         "cot_b_row": {},
         "ud_majority": "",
+        "trailing_nan_skipped": 0,
     }
     if df is None or df.empty:
         res["reason"] = "df empty"
@@ -4307,16 +4308,20 @@ def calc_cot_ti5_vector(df: pd.DataFrame, ti_list: list = None):
             res["reason"] = "missing Close column"
             return res
         work = df.copy(deep=False)
-        close_s = pd.to_numeric(work["Close"], errors="coerce")
+        close_s = pd.to_numeric(work["Close"], errors="coerce").replace(0, np.nan)
         N = len(close_s)
         if N < 2:
             res["reason"] = "N < 2"
             return res
-        n = N - 1
-        pn_val = close_s.iloc[n]
-        if not np.isfinite(pn_val) or pn_val is None:
-            res["reason"] = "pn not finite"
+        valid_arr_finite = np.isfinite(close_s.to_numpy(dtype=float, copy=False))
+        valid_positions = np.flatnonzero(valid_arr_finite)
+        if valid_positions.size == 0:
+            res["reason"] = "no valid Close (all rows NaN/0)"
             return res
+        n = int(valid_positions[-1])
+        skipped = (N - 1) - n
+        res["trailing_nan_skipped"] = int(skipped)
+        pn_val = float(close_s.iloc[n])
         pn = float(pn_val)
         try:
             ts = close_s.index[n]
@@ -4337,17 +4342,21 @@ def calc_cot_ti5_vector(df: pd.DataFrame, ti_list: list = None):
                 ud_per[ti] = ""
                 cot_b[ti] = float("nan")
                 continue
-            if n - ti_i < 0:
+            src = n - ti_i
+            if src < 0:
                 cot_a[ti] = float("nan")
                 ud_per[ti] = ""
                 cot_b[ti] = float("nan")
                 continue
-            base = float(close_arr[n - ti_i])
-            win_start = n - ti_i
-            win_end = n + 1
-            w = close_arr[win_start:win_end]
+            base = float(close_arr[src])
+            if not np.isfinite(base) or base <= 0:
+                cot_a[ti] = float("nan")
+                ud_per[ti] = ""
+                cot_b[ti] = float("nan")
+                continue
+            w = close_arr[src:(n + 1)]
             w_f = w[np.isfinite(w)]
-            if w_f.size == 0 or not np.isfinite(base) or base <= 0:
+            if w_f.size == 0:
                 cot_a[ti] = float("nan")
                 ud_per[ti] = ""
                 cot_b[ti] = float("nan")
@@ -4355,24 +4364,15 @@ def calc_cot_ti5_vector(df: pd.DataFrame, ti_list: list = None):
             w_min = float(np.min(w_f))
             w_max = float(np.max(w_f))
             diff_a = pn - base
-            if base <= 0:
-                cot_a[ti] = float("nan")
-            else:
-                cot_a[ti] = (diff_a / base) / float(ti_i)
+            cot_a[ti] = (diff_a / base) / float(ti_i)
             if pn > base:
                 direction = "U"
                 u_cnt += 1
-                if w_min <= 0:
-                    cot_b[ti] = float("nan")
-                else:
-                    cot_b[ti] = ((pn - w_min) / w_min) / float(ti_i)
+                cot_b[ti] = ((pn - w_min) / w_min) / float(ti_i) if (np.isfinite(w_min) and w_min > 0) else float("nan")
             elif pn < base:
                 direction = "D"
                 d_cnt += 1
-                if w_max <= 0:
-                    cot_b[ti] = float("nan")
-                else:
-                    cot_b[ti] = ((pn - w_max) / w_max) / float(ti_i)
+                cot_b[ti] = ((pn - w_max) / w_max) / float(ti_i) if (np.isfinite(w_max) and w_max > 0) else float("nan")
             else:
                 direction = ""
                 cot_b[ti] = float("nan")
