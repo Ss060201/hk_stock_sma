@@ -35,6 +35,33 @@ from watchlist_storage import (
     save_watchlist_symbol,
 )
 
+# --- Optional async SQLite cache layer (graceful degrade if module missing) ---
+_CACHE_LAYER_OK = False
+_get_cached_ohlcv = None
+_request_async_fetch = None
+_upsert_ohlcv = None
+_get_queue_depth = None
+_get_all_cache_stats = None
+_ensure_cache_schema = None
+try:
+    from cache_layer import (
+        ensure_schema as _ensure_cache_schema,
+        get_all_stats as _get_all_cache_stats,
+        get_cached_ohlcv as _get_cached_ohlcv,
+        get_queue_depth as _get_queue_depth,
+        request_async_fetch as _request_async_fetch,
+        upsert_ohlcv as _upsert_ohlcv,
+    )
+    try:
+        _ensure_cache_schema(None)
+        _CACHE_LAYER_OK = True
+    except Exception as _exc_cache_init:
+        LOGGER.warning("SQLite cache layer init failed (will use live fetch only): %s", _exc_cache_init)
+        _CACHE_LAYER_OK = False
+except Exception as _exc_cache_import:
+    LOGGER.info("cache_layer module not found (daemon may not be installed): %s", _exc_cache_import)
+    _CACHE_LAYER_OK = False
+
 # --- 1. 系統初始化 ---
 st.set_page_config(page_title="港股 SMA 矩陣", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
 
@@ -154,9 +181,9 @@ class _YFSessionManager:
 _YF_SESS_MGR = _YFSessionManager()
 
 _APP_BUILD = {
-    "commit": "c3d7719+cot2blocksUD",
-    "time": "2026-09-02 21:40",
-    "tag": "COT 綠區A(5TI) + 綠區B(U/D COTu/COTd) 兩塊新增；手機20格點永久展開；右側YYMMDD/CP/Amp格式校準",
+    "commit": "d2ab411+daemonCache2",
+    "time": "2026-09-02 22:30",
+    "tag": "新增 SQLite 永續快取 + 背景守護程序 (data_fetcher_daemon.py)；首頁/單股 get_data_v7 優先讀快取，miss 則後台補採集 + 前台同步回填；節流延遲節奏嚴格保留；Build 雙端鏡像；監控指標(hit/miss/429)",
 }
 try:
     _APP_BUILD["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -3348,11 +3375,31 @@ def _native_sina_download(symbol: str, timeout: int = 25):
 
 @st.cache_data(ttl=900)
 def get_data_v7(symbol, end_date):
+    sym_upper = str(symbol).strip().upper()
+
+    # Step A: prefer SQLite persistent cache (daemon pre-fetched). max_age=10min = within trading session.
+    if _CACHE_LAYER_OK and _get_cached_ohlcv is not None:
+        try:
+            df_cache, sb_cache, cache_status = _get_cached_ohlcv(sym_upper, end_date=end_date, max_age_sec=10*60, bump_stats=True)
+            if df_cache is not None and len(df_cache) > 10 and (cache_status in ("HIT", "STALE")):
+                return df_cache, sb_cache
+            if cache_status == "MISS" and _request_async_fetch is not None:
+                # MISS: enqueue for daemon so NEXT user hits cache. Also will fall back to live download below for THIS user.
+                try:
+                    _request_async_fetch(sym_upper)
+                except Exception:
+                    pass
+        except Exception as _exc_cache_read:
+            LOGGER.warning("cache read failed for %s (fallback to live): %s", sym_upper, _exc_cache_read)
+
+    # Step B: live download fallback (original route stack 1..4 with retries). Preserved for 1st-user request when daemon is slow.
     last_err = None
 
     if _YF_SESS_MGR.should_skip(symbol):
         return None, None
 
+    result_df, result_share_base = None, None
+    source_route_guess: Optional[str] = None
     for attempt in range(3):
         # --- Route 1: 優先走原生 requests（不需要 crumb，最穩定） ---
         _NATIVE_DOWNLOAD_STATS["native_attempts"] = _NATIVE_DOWNLOAD_STATS.get("native_attempts", 0) + 1
@@ -3365,7 +3412,9 @@ def get_data_v7(symbol, end_date):
                 _YF_SESS_MGR.record_success(symbol)
                 _NATIVE_DOWNLOAD_STATS["native_success"] = _NATIVE_DOWNLOAD_STATS.get("native_success", 0) + 1
                 _persist_last_error(symbol, "native", f"OK rows={len(df)}")
-                return df, share_base
+                result_df, result_share_base = df, share_base
+                source_route_guess = "native"
+                break
         except Exception as exc_native:
             last_err = exc_native
 
@@ -3380,7 +3429,9 @@ def get_data_v7(symbol, end_date):
                 _YF_SESS_MGR.record_success(symbol)
                 _NATIVE_DOWNLOAD_STATS["yf_success"] = _NATIVE_DOWNLOAD_STATS.get("yf_success", 0) + 1
                 _persist_last_error(symbol, "yfinance", f"OK rows={len(df)}")
-                return df, share_base
+                result_df, result_share_base = df, share_base
+                source_route_guess = "yfinance"
+                break
         except Exception as exc_yf:
             last_err = exc_yf
 
@@ -3395,7 +3446,9 @@ def get_data_v7(symbol, end_date):
                 _YF_SESS_MGR.record_success(symbol)
                 _NATIVE_DOWNLOAD_STATS["stooq_success"] = _NATIVE_DOWNLOAD_STATS.get("stooq_success", 0) + 1
                 _persist_last_error(symbol, "stooq", f"OK rows={len(df)}")
-                return df, share_base
+                result_df, result_share_base = df, share_base
+                source_route_guess = "stooq"
+                break
         except Exception as exc_stooq:
             last_err = exc_stooq
 
@@ -3410,7 +3463,9 @@ def get_data_v7(symbol, end_date):
                 _YF_SESS_MGR.record_success(symbol)
                 _NATIVE_DOWNLOAD_STATS["sina_success"] = _NATIVE_DOWNLOAD_STATS.get("sina_success", 0) + 1
                 _persist_last_error(symbol, "sina", f"OK rows={len(df)}")
-                return df, share_base
+                result_df, result_share_base = df, share_base
+                source_route_guess = "sina"
+                break
         except Exception as exc_sina:
             last_err = exc_sina
 
@@ -3424,9 +3479,20 @@ def get_data_v7(symbol, end_date):
             continue
         LOGGER.warning("Failed to load data for %s (attempt %s): %s", symbol, attempt+1, last_err)
         break
-    _YF_SESS_MGR.record_failure(symbol, cooldown_sec=180)
-    _persist_last_error(symbol, "final", f"ALL 3 attempts failed | last={type(last_err).__name__}: {str(last_err)[:160]}")
-    return None, None
+
+    # Step C: if live download SUCCESS → populate SQLite cache now so next user/request will HIT immediately.
+    if result_df is not None and len(result_df) > 10 and _CACHE_LAYER_OK and _upsert_ohlcv is not None:
+        try:
+            _upsert_ohlcv(sym_upper, result_df, share_base=result_share_base, source=(source_route_guess or "live"))
+        except Exception as _exc_cache_write:
+            LOGGER.warning("cache write failed for %s: %s", sym_upper, _exc_cache_write)
+
+    if result_df is None and last_err is not None:
+        _YF_SESS_MGR.record_failure(symbol, cooldown_sec=180)
+        _persist_last_error(symbol, "final", f"ALL 3 attempts failed | last={type(last_err).__name__}: {str(last_err)[:160]}")
+        return None, None
+
+    return result_df, result_share_base
 
 def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) -> Optional[Dict[str, Any]]:
     if df is None or df.empty or len(df) < 2:

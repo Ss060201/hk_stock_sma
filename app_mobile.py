@@ -24,6 +24,32 @@ from watchlist_storage import (
     save_watchlist_symbol,
 )
 
+# --- Optional async SQLite cache layer (graceful degrade if module missing) ---
+_CACHE_LAYER_OK_M = False
+_get_cached_ohlcv_m = None
+_request_async_fetch_m = None
+_upsert_ohlcv_m = None
+_get_queue_depth_m = None
+_get_all_cache_stats_m = None
+_ensure_cache_schema_m = None
+try:
+    from cache_layer import (
+        ensure_schema as _ensure_cache_schema_m,
+        get_all_stats as _get_all_cache_stats_m,
+        get_cached_ohlcv as _get_cached_ohlcv_m,
+        get_queue_depth as _get_queue_depth_m,
+        request_async_fetch as _request_async_fetch_m,
+        upsert_ohlcv as _upsert_ohlcv_m,
+    )
+    try:
+        _ensure_cache_schema_m(None)
+        _CACHE_LAYER_OK_M = True
+    except Exception as _exc_cache_init_m:
+        import logging as _logging_m
+        _logging_m.getLogger(__name__).warning("SQLite cache init failed (mobile): %s", _exc_cache_init_m)
+except Exception:
+    _CACHE_LAYER_OK_M = False
+
 # ===== [改动1] 导入移动端优化工具 =====
 from mobile_optimizer import (
     setup_page, 
@@ -153,9 +179,9 @@ class _YFSessionManager_M:
 _YF_SESS_MGR_M = _YFSessionManager_M()
 
 _APP_BUILD_M = {
-    "commit": "c3d7719+cot2blocksUD",
-    "time": "2026-09-02 21:40",
-    "tag": "COT 綠區A(5TI) + 綠區B(U/D COTu/COTd) 兩塊新增；手機20格點永久展開；右側YYMMDD/CP/Amp格式校準",
+    "commit": "d2ab411+daemonCache2",
+    "time": "2026-09-02 22:30",
+    "tag": "手機版：SQLite 永續快取 + 背景守護程序協同；get_data_v7 優先快取 + 補採集；節流延遲保留；監控指標；Build 鏡像桌面",
 }
 try:
     _APP_BUILD_M["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -1850,9 +1876,28 @@ else:
 
     @st.cache_data(ttl=900)
     def get_data_v7(symbol, end_date):
+        sym_upper_m = str(symbol).strip().upper()
+
+        # Step A: prefer SQLite persistent cache (daemon pre-fetched). max_age=10min.
+        if _CACHE_LAYER_OK_M and _get_cached_ohlcv_m is not None:
+            try:
+                df_cache_m, sb_cache_m, cs_m = _get_cached_ohlcv_m(sym_upper_m, end_date=end_date, max_age_sec=10*60, bump_stats=True)
+                if df_cache_m is not None and len(df_cache_m) > 10 and (cs_m in ("HIT", "STALE")):
+                    return df_cache_m, sb_cache_m
+                if cs_m == "MISS" and _request_async_fetch_m is not None:
+                    try:
+                        _request_async_fetch_m(sym_upper_m)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         last_err = None
         if _YF_SESS_MGR_M.should_skip(symbol):
             return None, None
+
+        result_df_m, result_sb_m = None, None
+        source_route_m: Optional[str] = None
         for attempt in range(3):
             # --- Route 1: 原生 requests 優先 ---
             _NATIVE_DL_STATS_M["native_attempts"] = _NATIVE_DL_STATS_M.get("native_attempts", 0) + 1
@@ -1865,7 +1910,8 @@ else:
                     _YF_SESS_MGR_M.record_success(symbol)
                     _NATIVE_DL_STATS_M["native_success"] = _NATIVE_DL_STATS_M.get("native_success", 0) + 1
                     _persist_lerr_m(symbol, "native", f"OK rows={len(df)}")
-                    return df, share_base
+                    result_df_m, result_sb_m, source_route_m = df, share_base, "native"
+                    break
             except Exception as e_n:
                 last_err = e_n
             # --- Route 2: 原生失敗才 fallback yfinance ---
@@ -1879,7 +1925,8 @@ else:
                     _YF_SESS_MGR_M.record_success(symbol)
                     _NATIVE_DL_STATS_M["yf_success"] = _NATIVE_DL_STATS_M.get("yf_success", 0) + 1
                     _persist_lerr_m(symbol, "yfinance", f"OK rows={len(df)}")
-                    return df, share_base
+                    result_df_m, result_sb_m, source_route_m = df, share_base, "yfinance"
+                    break
             except Exception as e_yf:
                 last_err = e_yf
 
@@ -1894,7 +1941,8 @@ else:
                     _YF_SESS_MGR_M.record_success(symbol)
                     _NATIVE_DL_STATS_M["stooq_success"] = _NATIVE_DL_STATS_M.get("stooq_success", 0) + 1
                     _persist_lerr_m(symbol, "stooq", f"OK rows={len(df)}")
-                    return df, share_base
+                    result_df_m, result_sb_m, source_route_m = df, share_base, "stooq"
+                    break
             except Exception as e_sq:
                 last_err = e_sq
 
@@ -1909,7 +1957,8 @@ else:
                     _YF_SESS_MGR_M.record_success(symbol)
                     _NATIVE_DL_STATS_M["sina_success"] = _NATIVE_DL_STATS_M.get("sina_success", 0) + 1
                     _persist_lerr_m(symbol, "sina", f"OK rows={len(df)}")
-                    return df, share_base
+                    result_df_m, result_sb_m, source_route_m = df, share_base, "sina"
+                    break
             except Exception as e_si:
                 last_err = e_si
 
@@ -1922,9 +1971,19 @@ else:
                 _time_mod.sleep(backoff_m)
                 continue
             break
-        _YF_SESS_MGR_M.record_failure(symbol, cooldown_sec=180)
-        _persist_lerr_m(symbol, "final", f"ALL 3 attempts failed | last={type(last_err).__name__}: {str(last_err)[:160]}")
-        return None, None
+
+        if result_df_m is not None and len(result_df_m) > 10 and _CACHE_LAYER_OK_M and _upsert_ohlcv_m is not None:
+            try:
+                _upsert_ohlcv_m(sym_upper_m, result_df_m, share_base=result_sb_m, source=(source_route_m or "live_mobile"))
+            except Exception:
+                pass
+
+        if result_df_m is None and last_err is not None:
+            _YF_SESS_MGR_M.record_failure(symbol, cooldown_sec=180)
+            _persist_lerr_m(symbol, "final", f"ALL 3 attempts failed | last={type(last_err).__name__}: {str(last_err)[:160]}")
+            return None, None
+
+        return result_df_m, result_sb_m
 
     df, share_base = get_data_v7(yahoo_ticker, st.session_state.ref_date)
     
