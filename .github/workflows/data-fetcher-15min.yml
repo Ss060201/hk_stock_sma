@@ -70,23 +70,21 @@ jobs:
       - name: Check if prior v5 artifact exists (skip restore if none, avoid annotation error)
         id: check-artifact
         shell: bash
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set +e
           set +o pipefail
-          set -x
           ART="$ARTIFACT_NAME"
-          # I1: Always write SAFE DEFAULT outputs first so later steps never see empty/undefined.
+          # J1: ALWAYS write SAFE DEFAULTS FIRST so even if the shell exits mid-way,
+          #     next step reads restore_enabled=false (will skip restore CLEANLY, no annotation).
           echo "prior_count=0" >> "$GITHUB_OUTPUT"
           echo "restore_enabled=false" >> "$GITHUB_OUTPUT"
 
           echo "Checking prior artifact name=$ART for repo=${GITHUB_REPOSITORY} ..."
           COUNT="0"
           RAW=""
-          # I1 bash syntax FIX: URL closes double-quote AFTER per_page=1, then gh api own --jq flag follows OUTSIDE URL string.
-          #     Previous bug: "--jq '.total_count" was wrongly inside the URL "..." quotes, causing unmatched quote / bash exit 2.
+          # Bash syntax FIX: URL "" closes AFTER per_page=1, then gh api --jq follows OUTSIDE URL quotes.
           RAW=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${ART}&per_page=1" --jq '.total_count' 2>/dev/null)
           RC_RAW=$?
           if [[ $RC_RAW -eq 0 && -n "${RAW}" && "${RAW}" =~ ^[0-9]+$ ]]; then
@@ -96,7 +94,7 @@ jobs:
             COUNT="0"
           fi
           echo "Prior artifact count (name=$ART): COUNT=$COUNT (raw gh api='$RAW')"
-          # I1: Overwrite default with actual count only AFTER validation.
+          # Overwrite defaults AFTER validation succeeds.
           echo "prior_count=$COUNT" >> "$GITHUB_OUTPUT"
           if [[ "$COUNT" -gt 0 ]]; then
             echo "restore_enabled=true"  >> "$GITHUB_OUTPUT"
@@ -106,8 +104,13 @@ jobs:
             echo "ℹ️  No prior v5 artifact found OR gh api failed (normal on first run). Skipping restore COMPLETELY to avoid annotation errors."
           fi
 
-      - name: Restore previous ohlcv_cache.sqlite (only if prior v5 artifact count > 0)
-        if: always() && steps.check-artifact.outputs.restore_enabled == 'true'
+      - name: Restore previous ohlcv_cache.sqlite (ONLY when prior v5 artifact was actually found)
+        # J1 critical: DO NOT USE always() here. Default if: success() && <cond> means:
+        #   * if check-artifact step succeeded: restore_enabled is true → run restore
+        #   * if check-artifact step failed: GITHUB_OUTPUT still has restore_enabled=false
+        #       written in the first lines, BUT default if: success() skips the step anyway →
+        #       NO RESTORE EXECUTED → NO "Artifact not found" annotation error.
+        if: steps.check-artifact.outputs.restore_enabled == 'true'
         id: restore-cache-artifact
         uses: actions/download-artifact@v4
         with:
