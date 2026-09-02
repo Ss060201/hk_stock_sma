@@ -151,24 +151,45 @@ def _process_one_symbol(state: DaemonState, symbol: str, max_retry: int = 1) -> 
             upsert_ohlcv(sym, df, share_base=share_base, source=(source_route or "stack"))
             mark_fetch_done(sym)
             ok = True
-            rows_out = int(len(df))
-            close_series = pd.to_numeric(df["Close"], errors="coerce").replace(0, np.nan).dropna()
-            if len(close_series):
-                last_close_out = float(close_series.iloc[-1])
+            # F3: re-read from cache metadata to guarantee last_valid_close / last_trade_date are populated correctly
             try:
-                last_trade_date_out = str(pd.to_datetime(df.index[-1]).date())
+                df_refresh, _sb_refresh, _status_refresh = get_cached_ohlcv(sym, max_age_sec=0, bump_stats=False)
+                rows_out = int(len(df_refresh)) if df_refresh is not None else int(len(df))
+                close_s = pd.to_numeric(df_refresh["Close"], errors="coerce").replace(0, np.nan).dropna() if df_refresh is not None else pd.Series(dtype=float)
+                if len(close_s):
+                    last_close_out = float(close_s.iloc[-1])
+                elif len(df):
+                    close_fb = pd.to_numeric(df["Close"], errors="coerce").replace(0, np.nan).dropna()
+                    if len(close_fb):
+                        last_close_out = float(close_fb.iloc[-1])
+                try:
+                    target_df = df_refresh if df_refresh is not None and len(df_refresh) else df
+                    if target_df is not None and len(target_df):
+                        last_trade_date_out = str(pd.to_datetime(target_df.index[-1]).date())
+                except Exception:
+                    last_trade_date_out = None
             except Exception:
-                last_trade_date_out = None
+                rows_out = int(len(df))
+                close_fb = pd.to_numeric(df["Close"], errors="coerce").replace(0, np.nan).dropna()
+                if len(close_fb):
+                    last_close_out = float(close_fb.iloc[-1])
+                try:
+                    last_trade_date_out = str(pd.to_datetime(df.index[-1]).date())
+                except Exception:
+                    last_trade_date_out = None
             with state._lock:
                 state.total_processed += 1
                 state.total_ok += 1
-            LOGGER.info("[%s] OK rows=%d close=%.2f source=%s share_base=%.2f",
-                        sym, len(df),
-                        float(last_close_out or 0.0),
+            LOGGER.info("[%s] OK rows=%s close=%s source=%s share_base=%s ltd=%s",
+                        sym,
+                        rows_out,
+                        ("%.2f" % float(last_close_out)) if last_close_out is not None else "None",
                         source_route or "?",
-                        float(share_base) if share_base is not None else 0.0)
+                        f"{float(share_base):.2f}" if share_base is not None else "None",
+                        last_trade_date_out or "None")
     except Exception as exc:
         error_msg = f"{type(exc).__name__}: {str(exc)[:300]}"
+        LOGGER.exception("[%s] Exception during fetch pipeline.", sym)
     # Fall through = failure path.
     if not ok:
         if error_msg is None:
@@ -441,70 +462,92 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="Immediately enqueue specific ticker(s) (repeatable).")
     args = parser.parse_args(argv or sys.argv[1:])
 
-    # Side-effect: ensure cache schema exists ASAP.
-    from cache_layer import ensure_schema, request_async_fetch
-    ensure_schema(None)
-
     state = DaemonState()
-    _install_signal_handlers(state)
-
-    # Side-effect import pandas for the log line in _process_one_symbol (avoid global import).
-    global pd
-    import pandas as pd  # noqa: F401 (used in closure)
-
-    LOGGER.info("Daemon starting. cache_db=%s refresh_interval=%.1fmin fetch_interval=%.1f~%.1fs",
-                __import__("cache_layer").get_cache_db_path(None),
-                _REFRESH_INTERVAL_MIN, _FETCH_INTERVAL_MIN, _FETCH_INTERVAL_MAX)
-
-    if args.symbol:
-        for raw in args.symbol:
-            try:
-                from data_ingest_stack import get_yahoo_ticker
-                sym = str(get_yahoo_ticker(raw)).strip().upper()
-                res = request_async_fetch(sym)
-                LOGGER.info("Immediate enqueue %s -> %s", sym, res)
-            except Exception as exc:
-                LOGGER.warning("Failed to enqueue symbol %s: %s", raw, exc)
-
-    threads: List[threading.Thread] = []
     rc = 0
     is_once_mode = bool(args.once)
-    if not is_once_mode:
-        threads.append(threading.Thread(target=queue_worker_thread, args=(state,), name="queue-worker", daemon=True))
-        threads.append(threading.Thread(target=scheduled_refresh_thread, args=(state,), name="scheduler", daemon=True))
-        threads.append(threading.Thread(target=ip_risk_monitor_thread, args=(state,), name="risk-monitor", daemon=True))
-        for t in threads:
-            t.start()
 
-        # Block main thread on stop_event.
-        try:
-            while not state.stop_event.is_set():
-                time.sleep(2.0)
-        except KeyboardInterrupt:
-            LOGGER.info("KeyboardInterrupt received.")
-            state.stop_event.set()
+    try:
+        # Side-effect: ensure cache schema exists ASAP.
+        from cache_layer import ensure_schema, request_async_fetch
+        ensure_schema(None)
 
-        for t in threads:
-            LOGGER.info("Joining thread %s...", t.name)
-            t.join(timeout=15.0)
-    else:
-        # Bootstrap single run.
-        LOGGER.info("--once mode: running single refresh + queue drain.")
-        scheduled_refresh_thread_once(state)
-        LOGGER.info("--once bootstrap finished. ok=%d fail=%d", state.total_ok, state.total_fail)
-        if state.total_fail > 0 and state.total_ok == 0:
-            rc = 1
-            LOGGER.warning("--once exit code -> 1 (all targets failed or no cache seeded).")
-        elif state.total_fail > 0:
-            rc = 0
-            LOGGER.info("--once partial success, warn-level only (rc stays 0 so artifact uploads): ok=%d fail=%d",
-                        state.total_ok, state.total_fail)
+        _install_signal_handlers(state)
+
+        # Side-effect import pandas for the log line in _process_one_symbol (avoid global import).
+        global pd
+        import pandas as pd  # noqa: F401 (used in closure)
+
+        LOGGER.info("Daemon starting. cache_db=%s refresh_interval=%.1fmin fetch_interval=%.1f~%.1fs",
+                    __import__("cache_layer").get_cache_db_path(None),
+                    _REFRESH_INTERVAL_MIN, _FETCH_INTERVAL_MIN, _FETCH_INTERVAL_MAX)
+
+        if args.symbol:
+            for raw in args.symbol:
+                try:
+                    from data_ingest_stack import get_yahoo_ticker
+                    sym = str(get_yahoo_ticker(raw)).strip().upper()
+                    res = request_async_fetch(sym)
+                    LOGGER.info("Immediate enqueue %s -> %s", sym, res)
+                except Exception as exc:
+                    LOGGER.warning("Failed to enqueue symbol %s: %s", raw, exc)
+
+        threads: List[threading.Thread] = []
+        if not is_once_mode:
+            threads.append(threading.Thread(target=queue_worker_thread, args=(state,), name="queue-worker", daemon=True))
+            threads.append(threading.Thread(target=scheduled_refresh_thread, args=(state,), name="scheduler", daemon=True))
+            threads.append(threading.Thread(target=ip_risk_monitor_thread, args=(state,), name="risk-monitor", daemon=True))
+            for t in threads:
+                t.start()
+
+            # Block main thread on stop_event.
+            try:
+                while not state.stop_event.is_set():
+                    time.sleep(2.0)
+            except KeyboardInterrupt:
+                LOGGER.info("KeyboardInterrupt received.")
+                state.stop_event.set()
+
+            for t in threads:
+                LOGGER.info("Joining thread %s...", t.name)
+                t.join(timeout=15.0)
         else:
-            rc = 0
+            # Bootstrap single run.
+            LOGGER.info("--once mode: running single refresh + queue drain.")
+            scheduled_refresh_thread_once(state)
+            LOGGER.info("--once bootstrap finished. ok=%d fail=%d", state.total_ok, state.total_fail)
+            if state.total_fail > 0 and state.total_ok == 0:
+                rc = 1
+                LOGGER.warning("--once exit code -> 1 (all targets failed or no cache seeded).")
+            elif state.total_fail > 0:
+                rc = 0
+                LOGGER.info("--once partial success, warn-level only (rc stays 0 so artifact uploads): ok=%d fail=%d",
+                            state.total_ok, state.total_fail)
+            else:
+                rc = 0
 
-    _write_github_step_summary(state, is_once_mode)
-    LOGGER.info("Daemon exit. Final stats: processed=%d ok=%d fail=%d",
-                state.total_processed, state.total_ok, state.total_fail)
+        LOGGER.info("Daemon main finished. Final stats: processed=%d ok=%d fail=%d",
+                    state.total_processed, state.total_ok, state.total_fail)
+    except Exception as exc:  # noqa: BLE001 — top-level safety net
+        rc = 1
+        LOGGER.exception("Fatal exception in main(). rc forced to 1.")
+        # Preserve per-symbol failure summary at top of GHA summary for quick debug.
+        try:
+            state.per_symbol_results["__FATAL__"] = {
+                "ok": False,
+                "error_msg": f"FATAL {type(exc).__name__}: {str(exc)[:400]}",
+                "source": None, "rows": None, "last_close": None, "last_trade_date": None,
+                "ts": _ts_now(),
+            }
+        except Exception:
+            pass
+
+    # Always best-effort write summary (even on fatal exception) so we have debug info.
+    try:
+        _write_github_step_summary(state, is_once_mode)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("summary write skipped: %s", exc)
+    LOGGER.info("Daemon exit. rc=%d Final stats: processed=%d ok=%d fail=%d",
+                rc, state.total_processed, state.total_ok, state.total_fail)
     return rc
 
 
