@@ -13,9 +13,12 @@ import logging
 import os
 import time
 import random
+import shutil
+import tempfile
+import zipfile
 from pathlib import Path
 from io import BytesIO
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from tempfile import gettempdir
 from streamlit.errors import StreamlitSecretNotFoundError
 from providers import (
@@ -43,6 +46,212 @@ _upsert_ohlcv = None
 _get_queue_depth = None
 _get_all_cache_stats = None
 _ensure_cache_schema = None
+_get_cache_db_path = None
+_list_cached_symbols = None
+_get_stat = None
+_set_stat = None
+
+_ARTIFACT_SYNC_OK = False
+_ARTIFACT_LAST_SYNC_TS = ""
+_ARTIFACT_CACHED_N = 0
+_ARTIFACT_LAST_ERROR = ""
+
+_GH_OWNER = "Ss060201"
+_GH_REPO = "hk_stock_sma"
+_GH_ARTIFACT_NAME = "ohlcv-cache-artifact-v5"
+_A1_SYNC_TTL_SEC = 9 * 60
+_A1_MIN_VALID_CACHED = 5
+
+
+def _a1_read_gh_token() -> Optional[str]:
+    for k in ("GH_PAT", "GITHUB_TOKEN"):
+        v = os.environ.get(k)
+        if v and str(v).strip():
+            return str(v).strip()
+    try:
+        for k in ("GH_PAT", "GITHUB_TOKEN"):
+            try:
+                v = st.secrets.get(k) if hasattr(st, "secrets") else None
+            except StreamlitSecretNotFoundError:
+                v = None
+            if v and str(v).strip():
+                return str(v).strip()
+    except Exception:
+        pass
+    return None
+
+
+def _a1_fetch_latest_artifact_impl(gh_token: str) -> Tuple[bool, str, int, str]:
+    log = logging.getLogger(__name__)
+    headers = {
+        "Authorization": f"Bearer {gh_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "hk-stock-sma-a1-sync/1.0",
+    }
+    tmp_dir = tempfile.mkdtemp(prefix="a1_artifact_")
+    try:
+        list_url = (
+            f"https://api.github.com/repos/{_GH_OWNER}/{_GH_REPO}/actions/artifacts"
+            f"?name={requests.utils.quote(_GH_ARTIFACT_NAME)}&per_page=1"
+        )
+        r1 = requests.get(list_url, headers=headers, timeout=30, allow_redirects=True)
+        if r1.status_code != 200:
+            return False, "", 0, f"artifact_list HTTP {r1.status_code}"
+        try:
+            j1 = r1.json()
+        except Exception:
+            return False, "", 0, "artifact_list json parse failed"
+        arts = j1.get("artifacts") or []
+        if not arts:
+            return False, "", 0, f"no artifact named {_GH_ARTIFACT_NAME}"
+        dl_url = arts[0].get("archive_download_url")
+        if not dl_url:
+            return False, "", 0, "missing archive_download_url"
+        r2 = requests.get(dl_url, headers=headers, timeout=120, allow_redirects=True, stream=True)
+        if r2.status_code != 200:
+            return False, "", 0, f"artifact_download HTTP {r2.status_code}"
+        zip_path = os.path.join(tmp_dir, "a1_artifact.zip")
+        with open(zip_path, "wb") as fz:
+            for chunk in r2.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    fz.write(chunk)
+        if os.path.getsize(zip_path) < 20 * 1024:
+            return False, "", 0, "artifact zip too small (<20KB)"
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                names = zf.namelist()
+                target = None
+                for n in names:
+                    base = os.path.basename(n)
+                    if base == "ohlcv_cache.sqlite" and not n.endswith("/"):
+                        target = n
+                        break
+                if target is None:
+                    return False, "", 0, "zip missing ohlcv_cache.sqlite"
+                zf.extract(target, tmp_dir)
+                tmp_db_path = os.path.join(tmp_dir, target)
+        except zipfile.BadZipFile:
+            return False, "", 0, "bad zip file"
+        except Exception as e:
+            return False, "", 0, f"zip extract error: {type(e).__name__}"
+        if os.path.getsize(tmp_db_path) < 50 * 1024:
+            return False, "", 0, "sqlite too small (<50KB)"
+        try:
+            if _ensure_cache_schema is not None:
+                _ensure_cache_schema(tmp_db_path)
+        except Exception as e:
+            return False, "", 0, f"ensure_schema error: {type(e).__name__}"
+        valid_n = 0
+        try:
+            if _list_cached_symbols is not None:
+                rows = _list_cached_symbols(db_path=tmp_db_path, limit=500)
+                for r in rows:
+                    if (r.get("rows") or 0) >= 100 and r.get("last_valid_close") is not None and r.get("last_trade_date"):
+                        valid_n += 1
+        except Exception:
+            valid_n = 0
+        if valid_n < _A1_MIN_VALID_CACHED:
+            return False, "", valid_n, f"valid cached below threshold ({valid_n} < {_A1_MIN_VALID_CACHED})"
+        final_db_path = _get_cache_db_path() if _get_cache_db_path is not None else None
+        if not final_db_path:
+            return False, "", valid_n, "get_cache_db_path not available"
+        try:
+            os.makedirs(os.path.dirname(final_db_path), exist_ok=True)
+        except Exception:
+            pass
+        try:
+            if os.path.exists(final_db_path):
+                try:
+                    mt = os.path.getmtime(final_db_path)
+                    if time.time() - mt < _A1_SYNC_TTL_SEC:
+                        return True, datetime.now().strftime("%Y-%m-%d %H:%M"), valid_n, "existing_db_fresh"
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            os.replace(tmp_db_path, final_db_path)
+        except Exception:
+            try:
+                shutil.copy2(tmp_db_path, final_db_path)
+            except Exception as e2:
+                return False, "", valid_n, f"db replace error: {type(e2).__name__}"
+        ts_now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        try:
+            if _set_stat is not None:
+                _set_stat("a1_last_sync_ts", ts_now, db_path=final_db_path)
+                _set_stat("a1_last_valid_n", valid_n, db_path=final_db_path)
+        except Exception:
+            pass
+        return True, ts_now, valid_n, ""
+    except Exception as e:
+        return False, "", 0, f"unexpected: {type(e).__name__}"
+    finally:
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _a1_sync_artifact_v5() -> bool:
+    global _ARTIFACT_SYNC_OK, _ARTIFACT_LAST_SYNC_TS, _ARTIFACT_CACHED_N, _ARTIFACT_LAST_ERROR
+    log = logging.getLogger(__name__)
+    token = _a1_read_gh_token()
+    if not token:
+        _ARTIFACT_LAST_ERROR = "GH_PAT/GITHUB_TOKEN not set"
+        _ARTIFACT_SYNC_OK = False
+        return False
+    if _get_stat is not None:
+        try:
+            dbp = _get_cache_db_path() if _get_cache_db_path is not None else None
+            cached_ts = None
+            if dbp and os.path.exists(dbp):
+                try:
+                    cached_ts = _get_stat("a1_last_sync_ts", None, db_path=dbp)
+                except Exception:
+                    cached_ts = None
+            if cached_ts:
+                try:
+                    dt = datetime.strptime(str(cached_ts), "%Y-%m-%d %H:%M")
+                    age = (datetime.now() - dt).total_seconds()
+                    if age < _A1_SYNC_TTL_SEC:
+                        try:
+                            valid_n = _get_stat("a1_last_valid_n", 0, db_path=dbp) or 0
+                        except Exception:
+                            valid_n = 0
+                        if valid_n >= _A1_MIN_VALID_CACHED:
+                            _ARTIFACT_SYNC_OK = True
+                            _ARTIFACT_LAST_SYNC_TS = str(cached_ts)
+                            _ARTIFACT_CACHED_N = int(valid_n)
+                            _ARTIFACT_LAST_ERROR = ""
+                            return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    try:
+        ok, ts, vn, err = _a1_fetch_latest_artifact_cached(token)
+    except Exception as e:
+        ok, ts, vn, err = False, "", 0, f"cached_call: {type(e).__name__}"
+    _ARTIFACT_SYNC_OK = bool(ok)
+    if ok:
+        _ARTIFACT_LAST_SYNC_TS = ts or datetime.now().strftime("%Y-%m-%d %H:%M")
+        _ARTIFACT_CACHED_N = int(vn)
+        _ARTIFACT_LAST_ERROR = ""
+    else:
+        _ARTIFACT_LAST_SYNC_TS = ts or ""
+        _ARTIFACT_CACHED_N = int(vn)
+        _ARTIFACT_LAST_ERROR = err or "unknown error"
+        log.warning("A1 artifact sync failed: %s", _ARTIFACT_LAST_ERROR)
+    return bool(ok)
+
+
+@st.cache_resource(ttl=_A1_SYNC_TTL_SEC, show_spinner=False)
+def _a1_fetch_latest_artifact_cached(gh_token: str):
+    return _a1_fetch_latest_artifact_impl(gh_token)
+
+
 try:
     from cache_layer import (
         ensure_schema as _ensure_cache_schema,
@@ -51,7 +260,16 @@ try:
         get_queue_depth as _get_queue_depth,
         request_async_fetch as _request_async_fetch,
         upsert_ohlcv as _upsert_ohlcv,
+        get_cache_db_path as _get_cache_db_path,
+        list_cached_symbols as _list_cached_symbols,
+        get_stat as _get_stat,
+        set_stat as _set_stat,
     )
+    try:
+        _a1_sync_artifact_v5()
+    except Exception as _exc_a1:
+        _ARTIFACT_SYNC_OK = False
+        _ARTIFACT_LAST_ERROR = f"a1_sync_exception: {type(_exc_a1).__name__}"
     try:
         _ensure_cache_schema(None)
         _CACHE_LAYER_OK = True
@@ -5283,6 +5501,44 @@ with st.sidebar:
     st.divider()
     st.session_state.sma1 = int(st.number_input("SMA 1", value=int(st.session_state.get("sma1", 20)), key="sidebar_sma1"))
     st.session_state.sma2 = int(st.number_input("SMA 2", value=int(st.session_state.get("sma2", 50)), key="sidebar_sma2"))
+
+    st.divider()
+    try:
+        _a1_token = _a1_read_gh_token()
+        if not _a1_token:
+            _a1_status_html = """
+            <details>
+              <summary style="cursor:pointer;color:#6b7280;">⚪ A1: 未設定 GH_PAT (skip)</summary>
+              <div style="margin-top:8px;font-size:12px;color:#6b7280;">
+                Cloud 端請至 Streamlit Secrets 設定 <code>GH_PAT</code>；
+                本機請設定環境變數。未設定時自動退回舊 live Yahoo 模式。
+              </div>
+            </details>
+            """
+        elif _ARTIFACT_SYNC_OK:
+            _a1_status_html = f"""
+            <details>
+              <summary style="cursor:pointer;color:#16a34a;">🟢 A1 Synced @ {_ARTIFACT_LAST_SYNC_TS or 'N/A'}</summary>
+              <div style="margin-top:8px;font-size:12px;color:#374151;">
+                cached = {_ARTIFACT_CACHED_N} 支 | mode = cache-hit (L2 SQLite)
+                <br>TTL = 9 min | artifact = <code>{_GH_ARTIFACT_NAME}</code>
+              </div>
+            </details>
+            """
+        else:
+            _err = _ARTIFACT_LAST_ERROR or "unknown error"
+            _a1_status_html = f"""
+            <details>
+              <summary style="cursor:pointer;color:#ca8a04;">🟡 A1 sync failed | fallback live mode</summary>
+              <div style="margin-top:8px;font-size:12px;color:#6b7280;">
+                reason = {_err}
+                <br>下次首頁 reload 會自動重試（TTL 9 min）
+              </div>
+            </details>
+            """
+        st.markdown(_a1_status_html, unsafe_allow_html=True)
+    except Exception:
+        pass
 
 # --- 7. 主程式邏輯 ---
 

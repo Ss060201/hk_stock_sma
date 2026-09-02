@@ -9,13 +9,18 @@ import requests
 import firebase_admin
 from firebase_admin import credentials, firestore
 import json
+import logging
 import os
 import time as _time_mod
 import random as _rand_mod
+import shutil
+import tempfile
+import zipfile
 from pathlib import Path
 from tempfile import gettempdir
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from firebase_admin.exceptions import FirebaseError
+from streamlit.errors import StreamlitSecretNotFoundError
 from providers import CSVShareBaseProvider, CompositeShareBaseProvider, YahooShareBaseProvider
 from turnover_utils import TURNOVER_STATUS_CALCULATED, apply_turnover_rate
 from watchlist_storage import (
@@ -32,6 +37,212 @@ _upsert_ohlcv_m = None
 _get_queue_depth_m = None
 _get_all_cache_stats_m = None
 _ensure_cache_schema_m = None
+_get_cache_db_path_m = None
+_list_cached_symbols_m = None
+_get_stat_m = None
+_set_stat_m = None
+
+_ARTIFACT_SYNC_OK_M = False
+_ARTIFACT_LAST_SYNC_TS_M = ""
+_ARTIFACT_CACHED_N_M = 0
+_ARTIFACT_LAST_ERROR_M = ""
+
+_GH_OWNER_M = "Ss060201"
+_GH_REPO_M = "hk_stock_sma"
+_GH_ARTIFACT_NAME_M = "ohlcv-cache-artifact-v5"
+_A1_SYNC_TTL_SEC_M = 9 * 60
+_A1_MIN_VALID_CACHED_M = 5
+
+
+def _a1_read_gh_token_m() -> Optional[str]:
+    for k in ("GH_PAT", "GITHUB_TOKEN"):
+        v = os.environ.get(k)
+        if v and str(v).strip():
+            return str(v).strip()
+    try:
+        for k in ("GH_PAT", "GITHUB_TOKEN"):
+            try:
+                v = st.secrets.get(k) if hasattr(st, "secrets") else None
+            except StreamlitSecretNotFoundError:
+                v = None
+            if v and str(v).strip():
+                return str(v).strip()
+    except Exception:
+        pass
+    return None
+
+
+def _a1_fetch_latest_artifact_impl_m(gh_token: str) -> Tuple[bool, str, int, str]:
+    log = logging.getLogger(__name__)
+    headers = {
+        "Authorization": f"Bearer {gh_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "hk-stock-sma-a1-sync/1.0-mobile",
+    }
+    tmp_dir = tempfile.mkdtemp(prefix="a1m_artifact_")
+    try:
+        list_url = (
+            f"https://api.github.com/repos/{_GH_OWNER_M}/{_GH_REPO_M}/actions/artifacts"
+            f"?name={requests.utils.quote(_GH_ARTIFACT_NAME_M)}&per_page=1"
+        )
+        r1 = requests.get(list_url, headers=headers, timeout=30, allow_redirects=True)
+        if r1.status_code != 200:
+            return False, "", 0, f"artifact_list HTTP {r1.status_code}"
+        try:
+            j1 = r1.json()
+        except Exception:
+            return False, "", 0, "artifact_list json parse failed"
+        arts = j1.get("artifacts") or []
+        if not arts:
+            return False, "", 0, f"no artifact named {_GH_ARTIFACT_NAME_M}"
+        dl_url = arts[0].get("archive_download_url")
+        if not dl_url:
+            return False, "", 0, "missing archive_download_url"
+        r2 = requests.get(dl_url, headers=headers, timeout=120, allow_redirects=True, stream=True)
+        if r2.status_code != 200:
+            return False, "", 0, f"artifact_download HTTP {r2.status_code}"
+        zip_path = os.path.join(tmp_dir, "a1m_artifact.zip")
+        with open(zip_path, "wb") as fz:
+            for chunk in r2.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    fz.write(chunk)
+        if os.path.getsize(zip_path) < 20 * 1024:
+            return False, "", 0, "artifact zip too small (<20KB)"
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                names = zf.namelist()
+                target = None
+                for n in names:
+                    base = os.path.basename(n)
+                    if base == "ohlcv_cache.sqlite" and not n.endswith("/"):
+                        target = n
+                        break
+                if target is None:
+                    return False, "", 0, "zip missing ohlcv_cache.sqlite"
+                zf.extract(target, tmp_dir)
+                tmp_db_path = os.path.join(tmp_dir, target)
+        except zipfile.BadZipFile:
+            return False, "", 0, "bad zip file"
+        except Exception as e:
+            return False, "", 0, f"zip extract error: {type(e).__name__}"
+        if os.path.getsize(tmp_db_path) < 50 * 1024:
+            return False, "", 0, "sqlite too small (<50KB)"
+        try:
+            if _ensure_cache_schema_m is not None:
+                _ensure_cache_schema_m(tmp_db_path)
+        except Exception as e:
+            return False, "", 0, f"ensure_schema error: {type(e).__name__}"
+        valid_n = 0
+        try:
+            if _list_cached_symbols_m is not None:
+                rows = _list_cached_symbols_m(db_path=tmp_db_path, limit=500)
+                for r in rows:
+                    if (r.get("rows") or 0) >= 100 and r.get("last_valid_close") is not None and r.get("last_trade_date"):
+                        valid_n += 1
+        except Exception:
+            valid_n = 0
+        if valid_n < _A1_MIN_VALID_CACHED_M:
+            return False, "", valid_n, f"valid cached below threshold ({valid_n} < {_A1_MIN_VALID_CACHED_M})"
+        final_db_path = _get_cache_db_path_m() if _get_cache_db_path_m is not None else None
+        if not final_db_path:
+            return False, "", valid_n, "get_cache_db_path not available"
+        try:
+            os.makedirs(os.path.dirname(final_db_path), exist_ok=True)
+        except Exception:
+            pass
+        try:
+            if os.path.exists(final_db_path):
+                try:
+                    mt = os.path.getmtime(final_db_path)
+                    if _time_mod.time() - mt < _A1_SYNC_TTL_SEC_M:
+                        return True, datetime.now().strftime("%Y-%m-%d %H:%M"), valid_n, "existing_db_fresh"
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            os.replace(tmp_db_path, final_db_path)
+        except Exception:
+            try:
+                shutil.copy2(tmp_db_path, final_db_path)
+            except Exception as e2:
+                return False, "", valid_n, f"db replace error: {type(e2).__name__}"
+        ts_now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        try:
+            if _set_stat_m is not None:
+                _set_stat_m("a1_last_sync_ts", ts_now, db_path=final_db_path)
+                _set_stat_m("a1_last_valid_n", valid_n, db_path=final_db_path)
+        except Exception:
+            pass
+        return True, ts_now, valid_n, ""
+    except Exception as e:
+        return False, "", 0, f"unexpected: {type(e).__name__}"
+    finally:
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _a1_sync_artifact_v5_m() -> bool:
+    global _ARTIFACT_SYNC_OK_M, _ARTIFACT_LAST_SYNC_TS_M, _ARTIFACT_CACHED_N_M, _ARTIFACT_LAST_ERROR_M
+    log = logging.getLogger(__name__)
+    token = _a1_read_gh_token_m()
+    if not token:
+        _ARTIFACT_LAST_ERROR_M = "GH_PAT/GITHUB_TOKEN not set"
+        _ARTIFACT_SYNC_OK_M = False
+        return False
+    if _get_stat_m is not None:
+        try:
+            dbp = _get_cache_db_path_m() if _get_cache_db_path_m is not None else None
+            cached_ts = None
+            if dbp and os.path.exists(dbp):
+                try:
+                    cached_ts = _get_stat_m("a1_last_sync_ts", None, db_path=dbp)
+                except Exception:
+                    cached_ts = None
+            if cached_ts:
+                try:
+                    dt = datetime.strptime(str(cached_ts), "%Y-%m-%d %H:%M")
+                    age = (datetime.now() - dt).total_seconds()
+                    if age < _A1_SYNC_TTL_SEC_M:
+                        try:
+                            valid_n = _get_stat_m("a1_last_valid_n", 0, db_path=dbp) or 0
+                        except Exception:
+                            valid_n = 0
+                        if valid_n >= _A1_MIN_VALID_CACHED_M:
+                            _ARTIFACT_SYNC_OK_M = True
+                            _ARTIFACT_LAST_SYNC_TS_M = str(cached_ts)
+                            _ARTIFACT_CACHED_N_M = int(valid_n)
+                            _ARTIFACT_LAST_ERROR_M = ""
+                            return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    try:
+        ok, ts, vn, err = _a1_fetch_latest_artifact_cached_m(token)
+    except Exception as e:
+        ok, ts, vn, err = False, "", 0, f"cached_call: {type(e).__name__}"
+    _ARTIFACT_SYNC_OK_M = bool(ok)
+    if ok:
+        _ARTIFACT_LAST_SYNC_TS_M = ts or datetime.now().strftime("%Y-%m-%d %H:%M")
+        _ARTIFACT_CACHED_N_M = int(vn)
+        _ARTIFACT_LAST_ERROR_M = ""
+    else:
+        _ARTIFACT_LAST_SYNC_TS_M = ts or ""
+        _ARTIFACT_CACHED_N_M = int(vn)
+        _ARTIFACT_LAST_ERROR_M = err or "unknown error"
+        log.warning("A1 artifact sync failed (mobile): %s", _ARTIFACT_LAST_ERROR_M)
+    return bool(ok)
+
+
+@st.cache_resource(ttl=_A1_SYNC_TTL_SEC_M, show_spinner=False)
+def _a1_fetch_latest_artifact_cached_m(gh_token: str):
+    return _a1_fetch_latest_artifact_impl_m(gh_token)
+
+
 try:
     from cache_layer import (
         ensure_schema as _ensure_cache_schema_m,
@@ -40,7 +251,16 @@ try:
         get_queue_depth as _get_queue_depth_m,
         request_async_fetch as _request_async_fetch_m,
         upsert_ohlcv as _upsert_ohlcv_m,
+        get_cache_db_path as _get_cache_db_path_m,
+        list_cached_symbols as _list_cached_symbols_m,
+        get_stat as _get_stat_m,
+        set_stat as _set_stat_m,
     )
+    try:
+        _a1_sync_artifact_v5_m()
+    except Exception as _exc_a1_m:
+        _ARTIFACT_SYNC_OK_M = False
+        _ARTIFACT_LAST_ERROR_M = f"a1_sync_exception: {type(_exc_a1_m).__name__}"
     try:
         _ensure_cache_schema_m(None)
         _CACHE_LAYER_OK_M = True
@@ -1337,6 +1557,44 @@ if not is_mobile:
         st.divider()
         sma1 = st.number_input("SMA 1", value=20)
         sma2 = st.number_input("SMA 2", value=50)
+
+        st.divider()
+        try:
+            _a1_token_m = _a1_read_gh_token_m()
+            if not _a1_token_m:
+                _a1_html_m = """
+                <details>
+                  <summary style="cursor:pointer;color:#6b7280;">⚪ A1: 未設定 GH_PAT (skip)</summary>
+                  <div style="margin-top:8px;font-size:12px;color:#6b7280;">
+                    Cloud 端請至 Streamlit Secrets 設定 <code>GH_PAT</code>；
+                    本機請設定環境變數。未設定時自動退回舊 live Yahoo 模式。
+                  </div>
+                </details>
+                """
+            elif _ARTIFACT_SYNC_OK_M:
+                _a1_html_m = f"""
+                <details>
+                  <summary style="cursor:pointer;color:#16a34a;">🟢 A1 Synced @ {_ARTIFACT_LAST_SYNC_TS_M or 'N/A'}</summary>
+                  <div style="margin-top:8px;font-size:12px;color:#374151;">
+                    cached = {_ARTIFACT_CACHED_N_M} 支 | mode = cache-hit (L2 SQLite)
+                    <br>TTL = 9 min | artifact = <code>{_GH_ARTIFACT_NAME_M}</code>
+                  </div>
+                </details>
+                """
+            else:
+                _err_m = _ARTIFACT_LAST_ERROR_M or "unknown error"
+                _a1_html_m = f"""
+                <details>
+                  <summary style="cursor:pointer;color:#ca8a04;">🟡 A1 sync failed | fallback live mode</summary>
+                  <div style="margin-top:8px;font-size:12px;color:#6b7280;">
+                    reason = {_err_m}
+                    <br>下次首頁 reload 會自動重試（TTL 9 min）
+                  </div>
+                </details>
+                """
+            st.markdown(_a1_html_m, unsafe_allow_html=True)
+        except Exception:
+            pass
 else:
     # ===== [改动4] 手机端顶部导航 =====
     if not st.session_state.current_view:
@@ -2305,8 +2563,6 @@ else:
                     st.dataframe(show_df, use_container_width=True, hide_index=True, height=240)
         except Exception as exc_t:
             st.info(f"數據列表暫時無法顯示：{type(exc_t).__name__}: {str(exc_t)[:120]}")
-    else:
-        st.error("❌ 無法取得足夠的數據")
 
 # ===== [改动7] 底部导航 (手机端) =====
 if is_mobile:

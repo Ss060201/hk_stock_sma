@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sqlite3
 import threading
@@ -126,6 +127,39 @@ def get_all_stats(db_path: Optional[str] = None) -> Dict[str, int]:
         for row in conn.execute("SELECT metric,value FROM fetcher_stats"):
             result[row["metric"]] = int(row["value"])
     return result
+
+
+def get_stat(metric: str, default: Any = None, db_path: Optional[str] = None) -> Any:
+    ensure_schema(db_path)
+    with get_db(db_path) as conn:
+        row = conn.execute(
+            "SELECT value FROM fetcher_stats WHERE metric=?",
+            (str(metric),),
+        ).fetchone()
+    if row is None:
+        return default
+    raw = row["value"]
+    try:
+        return json.loads(str(raw))
+    except (TypeError, ValueError):
+        return raw
+
+
+def set_stat(metric: str, value: Any, db_path: Optional[str] = None) -> None:
+    ensure_schema(db_path)
+    now = _utc_now_ts()
+    if isinstance(value, (dict, list, tuple)) or value is None:
+        stored = json.dumps(value, ensure_ascii=False)
+    elif isinstance(value, (int, float)):
+        stored = value
+    else:
+        stored = json.dumps(value, ensure_ascii=False)
+    with get_db(db_path) as conn:
+        conn.execute(
+            "INSERT INTO fetcher_stats(metric,value,updated_ts) VALUES(?,?,?) "
+            "ON CONFLICT(metric) DO UPDATE SET value=excluded.value, updated_ts=excluded.updated_ts",
+            (str(metric), stored, now),
+        )
 
 
 def upsert_ohlcv(
