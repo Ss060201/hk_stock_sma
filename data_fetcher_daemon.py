@@ -81,6 +81,8 @@ class DaemonState:
         self.total_ok = 0
         self.total_fail = 0
         self._recent_429_ts: List[int] = []
+        # per-symbol result bookkeeping for summaries: {symbol: dict(ok, error_msg, source, rows, last_close, last_trade_date, ts)}
+        self.per_symbol_results: Dict[str, Dict[str, Any]] = {}
 
     def is_paused(self) -> bool:
         return self.pause_until_ts > _ts_now()
@@ -117,6 +119,10 @@ def _process_one_symbol(state: DaemonState, symbol: str, max_retry: int = 1) -> 
 
     error_msg: Optional[str] = None
     source_route: Optional[str] = None
+    ok = False
+    rows_out: Optional[int] = None
+    last_close_out: Optional[float] = None
+    last_trade_date_out: Optional[str] = None
     try:
         # Bypass cache hit check (queue = caller decided it's time to refresh) but allow fallback.
         df, share_base = get_data_stack(sym, end_date=None)
@@ -144,31 +150,51 @@ def _process_one_symbol(state: DaemonState, symbol: str, max_retry: int = 1) -> 
                 source_route = None
             upsert_ohlcv(sym, df, share_base=share_base, source=(source_route or "stack"))
             mark_fetch_done(sym)
+            ok = True
+            rows_out = int(len(df))
+            close_series = pd.to_numeric(df["Close"], errors="coerce").replace(0, np.nan).dropna()
+            if len(close_series):
+                last_close_out = float(close_series.iloc[-1])
+            try:
+                last_trade_date_out = str(pd.to_datetime(df.index[-1]).date())
+            except Exception:
+                last_trade_date_out = None
             with state._lock:
                 state.total_processed += 1
                 state.total_ok += 1
             LOGGER.info("[%s] OK rows=%d close=%.2f source=%s share_base=%.2f",
                         sym, len(df),
-                        float(pd.to_numeric(df["Close"], errors="coerce").dropna().iloc[-1]) if len(df) else 0.0,
+                        float(last_close_out or 0.0),
                         source_route or "?",
                         float(share_base) if share_base is not None else 0.0)
-            return True
     except Exception as exc:
         error_msg = f"{type(exc).__name__}: {str(exc)[:300]}"
     # Fall through = failure path.
-    if error_msg is None:
-        error_msg = "unknown failure"
-    if any(k in error_msg for k in ("429", "Too Many Requests", "RateLimit")):
-        n_429 = state.record_429()
-        if n_429 >= _MAX_429_15MIN:
-            state.set_pause(_GLOBAL_PAUSE_SEC_ON_RISK,
-                            f"{n_429} 429s within 15 min > threshold {_MAX_429_15MIN}.")
-    mark_fetch_failed(sym, error_msg)
+    if not ok:
+        if error_msg is None:
+            error_msg = "unknown failure"
+        if any(k in error_msg for k in ("429", "Too Many Requests", "RateLimit")):
+            n_429 = state.record_429()
+            if n_429 >= _MAX_429_15MIN:
+                state.set_pause(_GLOBAL_PAUSE_SEC_ON_RISK,
+                                f"{n_429} 429s within 15 min > threshold {_MAX_429_15MIN}.")
+        mark_fetch_failed(sym, error_msg)
+        with state._lock:
+            state.total_processed += 1
+            state.total_fail += 1
+        LOGGER.warning("[%s] FAIL. %s", sym, error_msg)
+    # Record per-symbol bookkeeping (atomic update).
     with state._lock:
-        state.total_processed += 1
-        state.total_fail += 1
-    LOGGER.warning("[%s] FAIL. %s", sym, error_msg)
-    return False
+        state.per_symbol_results[sym] = {
+            "ok": bool(ok),
+            "error_msg": None if ok else str(error_msg),
+            "source": source_route,
+            "rows": rows_out,
+            "last_close": last_close_out,
+            "last_trade_date": last_trade_date_out,
+            "ts": _ts_now(),
+        }
+    return bool(ok)
 
 
 def queue_worker_thread(state: DaemonState) -> None:
@@ -320,7 +346,22 @@ def _write_github_step_summary(state: "DaemonState", is_once_mode: bool) -> None
         )
         db = get_cache_db_path()
         stats = get_all_stats(db_path=db) or {}
-        rows = list_cached_symbols(db_path=db, limit=15) or []
+        rows = list_cached_symbols(db_path=db, limit=20) or []
+        n_429_recent = len([t for t in state._recent_429_ts if _ts_now() - t <= 15 * 60])
+        pause_left = max(0, state.pause_until_ts - _ts_now())
+        # Build per-symbol run results (ok + failures) sorted by ts desc
+        ok_rows = [
+            {"symbol": k, **v}
+            for k, v in state.per_symbol_results.items()
+            if bool(v.get("ok"))
+        ]
+        fail_rows = [
+            {"symbol": k, **v}
+            for k, v in state.per_symbol_results.items()
+            if not bool(v.get("ok"))
+        ]
+        ok_rows.sort(key=lambda r: int(r.get("ts") or 0), reverse=True)
+        fail_rows.sort(key=lambda r: int(r.get("ts") or 0), reverse=True)
         lines: List[str] = []
         lines.append(f"# Data Fetcher Summary (mode={'once' if is_once_mode else 'daemon'})")
         lines.append("")
@@ -329,11 +370,35 @@ def _write_github_step_summary(state: "DaemonState", is_once_mode: bool) -> None
         lines.append(f"- processed = **{state.total_processed}**")
         lines.append(f"- ok = **{state.total_ok}**")
         lines.append(f"- fail = **{state.total_fail}**")
-        n_429_recent = len([t for t in state._recent_429_ts if _ts_now() - t <= 15 * 60])
         lines.append(f"- 429_15min_window = **{n_429_recent}**")
-        pause_left = max(0, state.pause_until_ts - _ts_now())
         lines.append(f"- global_paused_until_ts = **{state.pause_until_ts}** (left={pause_left}s)")
         lines.append(f"- cache_db = `{db}`")
+        lines.append("")
+        lines.append(f"## Failed symbols this run ({len(fail_rows)})")
+        lines.append("")
+        if fail_rows:
+            lines.append("| symbol | error_msg | ts |")
+            lines.append("| :--- | :--- | ---: |")
+            for r in fail_rows[:50]:
+                err = str(r.get("error_msg") or "").replace("|", "\\|").replace("\n", " ")
+                if len(err) > 200:
+                    err = err[:200] + "…"
+                lines.append(f"| {r.get('symbol')} | {err} | {r.get('ts')} |")
+        else:
+            lines.append("_None._")
+        lines.append("")
+        lines.append(f"## Successful symbols this run ({len(ok_rows)})")
+        lines.append("")
+        if ok_rows:
+            lines.append("| symbol | rows | source | last_close | last_trade_date |")
+            lines.append("| :--- | ---: | :--- | ---: | :--- |")
+            for r in ok_rows[:50]:
+                lines.append(
+                    f"| {r.get('symbol')} | {r.get('rows')} | {r.get('source')} | "
+                    f"{r.get('last_close')} | {r.get('last_trade_date')} |"
+                )
+        else:
+            lines.append("_None._")
         lines.append("")
         lines.append("## Fetcher stats (from SQLite fetcher_stats)")
         lines.append("")
@@ -345,13 +410,14 @@ def _write_github_step_summary(state: "DaemonState", is_once_mode: bool) -> None
         else:
             lines.append("_no stats collected yet_")
         lines.append("")
-        lines.append(f"## Top {len(rows)} cached symbols (by last_refresh_ts)")
+        lines.append(f"## Top {len(rows)} cached symbols (SQLite by last_refresh_ts)")
         lines.append("")
         lines.append("| symbol | rows | source | last_valid_close | last_trade_date |")
         lines.append("| :--- | ---: | :--- | ---: | :--- |")
         for r in rows:
             lines.append(
-                f"| {r.get('symbol')} | {r.get('rows')} | {r.get('source')} | {r.get('last_valid_close')} | {r.get('last_trade_date')} |"
+                f"| {r.get('symbol')} | {r.get('rows')} | {r.get('source')} | "
+                f"{r.get('last_valid_close')} | {r.get('last_trade_date')} |"
             )
         payload = "\n".join(lines) + "\n"
         try:

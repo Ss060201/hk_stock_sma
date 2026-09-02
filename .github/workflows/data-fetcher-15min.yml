@@ -21,7 +21,6 @@ on:
 permissions:
   contents: read
   actions: read
-  # required for uploading/downloading artifacts across runs and for REST access
   packages: none
 
 concurrency:
@@ -42,7 +41,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python 3.13
         uses: actions/setup-python@v5
@@ -51,7 +50,7 @@ jobs:
           check-latest: false
 
       - name: Pip cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: pip-cache
         with:
           path: ~/.cache/pip
@@ -66,12 +65,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Restore previous ohlcv_cache.sqlite (best-effort, continue on miss)
-        uses: actions/download-artifact@v4
+      - name: Restore previous ohlcv_cache.sqlite (best-effort, info-level only)
+        id: restore-cache-artifact
+        uses: actions/download-artifact@v5
         continue-on-error: true
         with:
           name: ohlcv-cache-artifact
           path: ${{ github.workspace }}/artifacts
+          merge-multiple: false
 
       - name: (Optional) Write Firebase admin cred from secret if provided
         shell: bash
@@ -122,24 +123,22 @@ jobs:
           print("DB path:", db)
           stats = get_all_stats(db_path=db) or {}
           print("STATS:", dict(stats))
-          rows = list_cached_symbols(db_path=db, limit=15) or []
+          rows = list_cached_symbols(db_path=db, limit=20) or []
           print(f"Top {len(rows)} symbols by last_refresh_ts:")
           for r in rows:
-              print(f"  {r.get('symbol'):>10s}  rows={r.get('rows'):<6d}  src={r.get('source'):<10s}  close={r.get('last_valid_close')}  td={r.get('last_trade_date')}")
+              print(f"  {str(r.get('symbol','')):>10s}  rows={r.get('rows',0):<6d}  src={str(r.get('source','')):<10s}  close={r.get('last_valid_close')}  td={r.get('last_trade_date')}")
           PY
           else
             echo "No cache DB found at $DB"
           fi
 
-      - name: Upload ohlcv_cache.sqlite as artifact (retention 7 days)
+      - name: Upload ohlcv_cache.sqlite as artifact (retention 30 days)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ohlcv-cache-artifact
           path: |
             ${{ github.workspace }}/artifacts/ohlcv_cache.sqlite
-            ${{ github.workspace }}/artifacts/ohlcv_cache.sqlite-wal
-            ${{ github.workspace }}/artifacts/ohlcv_cache.sqlite-shm
-          retention-days: 7
+          retention-days: 30
           if-no-files-found: ignore
           overwrite: true
