@@ -1,0 +1,145 @@
+name: HK Stock SMA Data Fetcher (15min cron + daemon --once)
+
+on:
+  schedule:
+    # every 15 minutes (UTC) — roughly aligns with HK market refresh interval
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      extra_symbols:
+        description: "Optional comma-separated tickers to force refresh (e.g. 0700,0005,9988.HK,00001.HK). Default uses bootstrap+cached+Firestore watchlist."
+        required: false
+        type: string
+        default: ""
+      log_level:
+        description: "Python logging level"
+        required: false
+        type: choice
+        options: ["DEBUG", "INFO", "WARNING", "ERROR"]
+        default: "INFO"
+
+permissions:
+  contents: read
+  actions: read
+  # required for uploading/downloading artifacts across runs and for REST access
+  packages: none
+
+concurrency:
+  group: data-fetcher-15min
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PYTHONIOENCODING: "utf-8"
+  LOG_LEVEL: ${{ inputs.log_level || 'INFO' }}
+  # Force SQLite cache DB location to a dedicated path on the runner (repo-relative)
+  OHLCV_CACHE_DB: ${{ github.workspace }}/artifacts/ohlcv_cache.sqlite
+
+jobs:
+  fetch-and-archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Pip cache
+        uses: actions/cache@v4
+        id: pip-cache
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Restore previous ohlcv_cache.sqlite (best-effort, continue on miss)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: ohlcv-cache-artifact
+          path: ${{ github.workspace }}/artifacts
+
+      - name: (Optional) Write Firebase admin cred from secret if provided
+        shell: bash
+        env:
+          FIREBASE_ADMIN_JSON_B64: ${{ secrets.FIREBASE_ADMIN_CREDENTIAL_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/secrets"
+          CREDS_JSON="$RUNNER_TEMP/secrets/firebase-admin.json"
+          if [[ -n "${FIREBASE_ADMIN_JSON_B64:-}" ]]; then
+            echo "$FIREBASE_ADMIN_JSON_B64" | base64 -d > "$CREDS_JSON"
+            echo "FIREBASE_ADMIN_CREDENTIAL_JSON=$CREDS_JSON" >> "$GITHUB_ENV"
+            echo "Wrote Firebase admin creds from base64 secret."
+          else
+            echo "No FIREBASE_ADMIN_CREDENTIAL_B64 secret set. Watchlist pre-seed from Firestore skipped; bootstrap + cached list still runs."
+          fi
+
+      - name: Run data fetcher daemon --once (bootstrap + drain queue)
+        id: run-daemon
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXTRA="${{ inputs.extra_symbols }}"
+          ARGS=(--once)
+          if [[ -n "$EXTRA" ]]; then
+            IFS=',' read -r -a arr <<< "$EXTRA"
+            for s in "${arr[@]}"; do
+              s="$(echo "$s" | xargs)"
+              [[ -n "$s" ]] && ARGS+=(--symbol "$s")
+            done
+          fi
+          set -x
+          python data_fetcher_daemon.py "${ARGS[@]}"
+
+      - name: Print final cache summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          DB="${{ env.OHLCV_CACHE_DB }}"
+          if [[ -f "$DB" ]]; then
+            du -h "$DB" || true
+            python - <<'PY'
+          import os, sys
+          sys.path.insert(0, os.getcwd())
+          from cache_layer import get_all_stats, list_cached_symbols, get_cache_db_path
+          db = os.environ.get("OHLCV_CACHE_DB") or get_cache_db_path()
+          print("DB path:", db)
+          stats = get_all_stats(db_path=db) or {}
+          print("STATS:", dict(stats))
+          rows = list_cached_symbols(db_path=db, limit=15) or []
+          print(f"Top {len(rows)} symbols by last_refresh_ts:")
+          for r in rows:
+              print(f"  {r.get('symbol'):>10s}  rows={r.get('rows'):<6d}  src={r.get('source'):<10s}  close={r.get('last_valid_close')}  td={r.get('last_trade_date')}")
+          PY
+          else
+            echo "No cache DB found at $DB"
+          fi
+
+      - name: Upload ohlcv_cache.sqlite as artifact (retention 7 days)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ohlcv-cache-artifact
+          path: |
+            ${{ github.workspace }}/artifacts/ohlcv_cache.sqlite
+            ${{ github.workspace }}/artifacts/ohlcv_cache.sqlite-wal
+            ${{ github.workspace }}/artifacts/ohlcv_cache.sqlite-shm
+          retention-days: 7
+          if-no-files-found: ignore
+          overwrite: true

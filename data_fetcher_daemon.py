@@ -307,6 +307,66 @@ def _install_signal_handlers(state: DaemonState) -> None:
         pass
 
 
+def _write_github_step_summary(state: "DaemonState", is_once_mode: bool) -> None:
+    """Best-effort GITHUB_STEP_SUMMARY writer. Does nothing outside GHA."""
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    try:
+        from cache_layer import (  # noqa: WPS433 lazy local import
+            get_all_stats,
+            get_cache_db_path,
+            list_cached_symbols,
+        )
+        db = get_cache_db_path()
+        stats = get_all_stats(db_path=db) or {}
+        rows = list_cached_symbols(db_path=db, limit=15) or []
+        lines: List[str] = []
+        lines.append(f"# Data Fetcher Summary (mode={'once' if is_once_mode else 'daemon'})")
+        lines.append("")
+        lines.append("## Final process stats")
+        lines.append("")
+        lines.append(f"- processed = **{state.total_processed}**")
+        lines.append(f"- ok = **{state.total_ok}**")
+        lines.append(f"- fail = **{state.total_fail}**")
+        n_429_recent = len([t for t in state._recent_429_ts if _ts_now() - t <= 15 * 60])
+        lines.append(f"- 429_15min_window = **{n_429_recent}**")
+        pause_left = max(0, state.pause_until_ts - _ts_now())
+        lines.append(f"- global_paused_until_ts = **{state.pause_until_ts}** (left={pause_left}s)")
+        lines.append(f"- cache_db = `{db}`")
+        lines.append("")
+        lines.append("## Fetcher stats (from SQLite fetcher_stats)")
+        lines.append("")
+        if stats:
+            lines.append("| metric | value |")
+            lines.append("| :--- | ---: |")
+            for k, v in sorted(stats.items()):
+                lines.append(f"| `{k}` | `{v}` |")
+        else:
+            lines.append("_no stats collected yet_")
+        lines.append("")
+        lines.append(f"## Top {len(rows)} cached symbols (by last_refresh_ts)")
+        lines.append("")
+        lines.append("| symbol | rows | source | last_valid_close | last_trade_date |")
+        lines.append("| :--- | ---: | :--- | ---: | :--- |")
+        for r in rows:
+            lines.append(
+                f"| {r.get('symbol')} | {r.get('rows')} | {r.get('source')} | {r.get('last_valid_close')} | {r.get('last_trade_date')} |"
+            )
+        payload = "\n".join(lines) + "\n"
+        try:
+            with open(summary_path, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+        except OSError:
+            try:
+                with open(summary_path, "w") as fh:
+                    fh.write(payload)
+            except OSError as exc:
+                LOGGER.warning("Unable to write GITHUB_STEP_SUMMARY: %s", exc)
+    except Exception as exc:  # noqa: BLE001 never fail CI because of summary
+        LOGGER.warning("GITHUB_STEP_SUMMARY build skipped: %s", exc)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="HK Stock SMA Data Fetcher Daemon (SQLite cache + queue).")
     parser.add_argument("--once", action="store_true",
@@ -341,7 +401,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 LOGGER.warning("Failed to enqueue symbol %s: %s", raw, exc)
 
     threads: List[threading.Thread] = []
-    if not args.once:
+    rc = 0
+    is_once_mode = bool(args.once)
+    if not is_once_mode:
         threads.append(threading.Thread(target=queue_worker_thread, args=(state,), name="queue-worker", daemon=True))
         threads.append(threading.Thread(target=scheduled_refresh_thread, args=(state,), name="scheduler", daemon=True))
         threads.append(threading.Thread(target=ip_risk_monitor_thread, args=(state,), name="risk-monitor", daemon=True))
@@ -364,10 +426,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         LOGGER.info("--once mode: running single refresh + queue drain.")
         scheduled_refresh_thread_once(state)
         LOGGER.info("--once bootstrap finished. ok=%d fail=%d", state.total_ok, state.total_fail)
+        if state.total_fail > 0 and state.total_ok == 0:
+            rc = 1
+            LOGGER.warning("--once exit code -> 1 (all targets failed or no cache seeded).")
+        elif state.total_fail > 0:
+            rc = 0
+            LOGGER.info("--once partial success, warn-level only (rc stays 0 so artifact uploads): ok=%d fail=%d",
+                        state.total_ok, state.total_fail)
+        else:
+            rc = 0
 
+    _write_github_step_summary(state, is_once_mode)
     LOGGER.info("Daemon exit. Final stats: processed=%d ok=%d fail=%d",
                 state.total_processed, state.total_ok, state.total_fail)
-    return 0
+    return rc
 
 
 def scheduled_refresh_thread_once(state: DaemonState) -> None:
