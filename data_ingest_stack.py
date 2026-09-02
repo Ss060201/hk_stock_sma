@@ -161,6 +161,54 @@ def get_yahoo_ticker(symbol):
 
 
 # ---------------------------------------------------------------------------
+# Ticker alias pool (for providers with mismatched conventions)
+#   Examples for 0011.HK -> [0011.HK, 0011.hk, 11.HK, 00011.HK]
+#   Route4 Sina additionally requires hk prefix separately.
+# ---------------------------------------------------------------------------
+def _build_ticker_aliases(symbol: str) -> list[str]:
+    raw = str(symbol or "").strip()
+    if not raw:
+        return []
+    digits = re.sub(r"\D", "", raw)
+    suffix = ".HK"
+    # extract any explicit suffix if present
+    for sf in (".HK", ".hk"):
+        if raw.endswith(sf):
+            suffix = sf
+            break
+    seen: set[str] = set()
+    out: list[str] = []
+    # Primary: keep original as-is first
+    for cand in (raw, raw.upper() if not raw.isupper() else raw, raw.lower() if not raw.islower() else raw):
+        if cand and cand not in seen:
+            seen.add(cand)
+            out.append(cand)
+    # 4-digit canonical (e.g. 0011.HK)
+    if digits:
+        d4 = digits.zfill(4)
+        for c in (f"{d4}.HK", f"{d4}.hk"):
+            if c not in seen:
+                seen.add(c); out.append(c)
+        # non-padded numeric (e.g. 11.HK for short codes)
+        d_strip = digits.lstrip("0") or digits
+        for c in (f"{d_strip}.HK", f"{d_strip}.hk"):
+            if c not in seen:
+                seen.add(c); out.append(c)
+        # 5-digit canonical (Stooq sometimes uses 00011.HK)
+        if len(digits) <= 5:
+            d5 = digits.zfill(5)
+            for c in (f"{d5}.HK", f"{d5}.hk"):
+                if c not in seen:
+                    seen.add(c); out.append(c)
+    # De-dup and trim
+    trimmed: list[str] = []
+    for c in out:
+        if c and c not in trimmed:
+            trimmed.append(c)
+    return trimmed[:12]
+
+
+# ---------------------------------------------------------------------------
 # Share-base post resolver (mirror app.py _resolve_share_base_post)
 # ---------------------------------------------------------------------------
 def _resolve_share_base_post(df: pd.DataFrame, symbol: str,
@@ -536,76 +584,103 @@ def _native_sina_download(symbol: str, timeout: int = 25):
 # ---------------------------------------------------------------------------
 # Master stack: 4-route get_data (mirror app.py get_data_v7, NO st.cache_data)
 # ---------------------------------------------------------------------------
+def _finalize_df_and_return(df: pd.DataFrame, sym_used: str, orig_symbol: str,
+                            end_date, route_key: str) -> Optional[Tuple[Optional[pd.DataFrame], Any]]:
+    """Shared finalize: apply end_date filter, resolve share_base (fallback Volume/0.35%), return."""
+    if end_date is not None:
+        df = df[df.index <= pd.to_datetime(end_date)]
+    if df is None or len(df) <= 5:
+        return None
+    share_base = None
+    try:
+        share_base, _sb_note = _resolve_share_base_post(df, sym_used)
+    except Exception:
+        share_base = None
+    # Belt-and-suspenders: if share_base still 0/None/NaN, re-derive from df Volume
+    if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+        try:
+            if df is not None and "Volume" in df.columns and len(df) >= 10:
+                vol = pd.to_numeric(df["Volume"], errors="coerce")
+                tail = vol.tail(120).replace(0, np.nan).dropna()
+                if len(tail) >= 10:
+                    avg_v = float(tail.mean())
+                    if avg_v > 0:
+                        approx_sb = avg_v / 0.0035  # 120d avg volume / 35 bps turnover
+                        if np.isfinite(approx_sb) and approx_sb > 0:
+                            share_base = float(approx_sb)
+        except Exception:
+            pass
+    _YF_SESS_MGR.record_success(orig_symbol)
+    _NATIVE_DOWNLOAD_STATS[f"{route_key}_success"] = _NATIVE_DOWNLOAD_STATS.get(f"{route_key}_success", 0) + 1
+    _persist_last_error(orig_symbol, route_key, f"OK rows={len(df)} sym_used={sym_used}")
+    return df, share_base
+
+
 def get_data_stack(symbol, end_date=None) -> Tuple[Optional[pd.DataFrame], Any]:
-    """Returns (df, share_base) on success, else (None, None)."""
+    """Returns (df, share_base) on success, else (None, None).
+
+    G3: For every route, first try a list of ticker aliases
+    (e.g. 0011.HK / 0011.hk / 11.HK / 00011.HK) to handle provider-specific
+    ticker naming conventions that otherwise produce rows=0.
+    """
     last_err = None
     if _YF_SESS_MGR.should_skip(symbol):
         return None, None
+    aliases = _build_ticker_aliases(symbol) or [str(symbol).strip()]
+    # Cap aliases per route (first 4 is enough for most HK ticker oddities)
+    yahoo_aliases = aliases[:4]
+    stooq_aliases = aliases[:6]
+    # Sina extracts digits internally; try the original+canonical aliases for its digit parser
+    sina_aliases = aliases[:3] + [str(symbol).strip()]
 
     for attempt in range(3):
-        # Route 1: native yahoo
+        # --- Route 1: native yahoo (try yahoo aliases) ---
         _NATIVE_DOWNLOAD_STATS["native_attempts"] = _NATIVE_DOWNLOAD_STATS.get("native_attempts", 0) + 1
-        try:
-            df, share_base = _native_yahoo_chart_download(symbol, range_="5y", interval="1d", timeout=25)
-            if end_date is not None:
-                df = df[df.index <= pd.to_datetime(end_date)]
-            if df is not None and len(df) > 5:
-                if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
-                    share_base, _ = _resolve_share_base_post(df, symbol)
-                _YF_SESS_MGR.record_success(symbol)
-                _NATIVE_DOWNLOAD_STATS["native_success"] = _NATIVE_DOWNLOAD_STATS.get("native_success", 0) + 1
-                _persist_last_error(symbol, "native", f"OK rows={len(df)}")
-                return df, share_base
-        except Exception as exc_native:
-            last_err = exc_native
+        for alias in yahoo_aliases:
+            try:
+                df, _sb = _native_yahoo_chart_download(alias, range_="5y", interval="1d", timeout=25)
+                if df is not None and len(df) > 5:
+                    ret = _finalize_df_and_return(df, alias, symbol, end_date, "native")
+                    if ret is not None:
+                        return ret
+            except Exception as exc_native:
+                last_err = exc_native
 
-        # Route 2: yfinance
+        # --- Route 2: yfinance (try yahoo aliases) ---
         _NATIVE_DOWNLOAD_STATS["yf_attempts"] = _NATIVE_DOWNLOAD_STATS.get("yf_attempts", 0) + 1
-        try:
-            df, share_base = _try_yfinance_download(symbol, period="5y", timeout=30)
-            if end_date is not None:
-                df = df[df.index <= pd.to_datetime(end_date)]
-            if df is not None and len(df) > 5:
-                if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
-                    share_base, _ = _resolve_share_base_post(df, symbol)
-                _YF_SESS_MGR.record_success(symbol)
-                _NATIVE_DOWNLOAD_STATS["yf_success"] = _NATIVE_DOWNLOAD_STATS.get("yf_success", 0) + 1
-                _persist_last_error(symbol, "yfinance", f"OK rows={len(df)}")
-                return df, share_base
-        except Exception as exc_yf:
-            last_err = exc_yf
+        for alias in yahoo_aliases:
+            try:
+                df, _sb = _try_yfinance_download(alias, period="5y", timeout=30)
+                if df is not None and len(df) > 5:
+                    ret = _finalize_df_and_return(df, alias, symbol, end_date, "yf")
+                    if ret is not None:
+                        return ret
+            except Exception as exc_yf:
+                last_err = exc_yf
 
-        # Route 3: Stooq
+        # --- Route 3: Stooq (try stooq aliases including 5-digit 00011.HK) ---
         _NATIVE_DOWNLOAD_STATS["stooq_attempts"] = _NATIVE_DOWNLOAD_STATS.get("stooq_attempts", 0) + 1
-        try:
-            df, share_base = _native_stooq_download(symbol, period_years=5, timeout=25)
-            if end_date is not None:
-                df = df[df.index <= pd.to_datetime(end_date)]
-            if df is not None and len(df) > 5:
-                if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
-                    share_base, _ = _resolve_share_base_post(df, symbol)
-                _YF_SESS_MGR.record_success(symbol)
-                _NATIVE_DOWNLOAD_STATS["stooq_success"] = _NATIVE_DOWNLOAD_STATS.get("stooq_success", 0) + 1
-                _persist_last_error(symbol, "stooq", f"OK rows={len(df)}")
-                return df, share_base
-        except Exception as exc_stooq:
-            last_err = exc_stooq
+        for alias in stooq_aliases:
+            try:
+                df, _sb = _native_stooq_download(alias, period_years=5, timeout=25)
+                if df is not None and len(df) > 5:
+                    ret = _finalize_df_and_return(df, alias, symbol, end_date, "stooq")
+                    if ret is not None:
+                        return ret
+            except Exception as exc_stooq:
+                last_err = exc_stooq
 
-        # Route 4: Sina
+        # --- Route 4: Sina (try sina aliases; it builds hk_code internally from digits) ---
         _NATIVE_DOWNLOAD_STATS["sina_attempts"] = _NATIVE_DOWNLOAD_STATS.get("sina_attempts", 0) + 1
-        try:
-            df, share_base = _native_sina_download(symbol, timeout=25)
-            if end_date is not None:
-                df = df[df.index <= pd.to_datetime(end_date)]
-            if df is not None and len(df) > 5:
-                if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
-                    share_base, _ = _resolve_share_base_post(df, symbol)
-                _YF_SESS_MGR.record_success(symbol)
-                _NATIVE_DOWNLOAD_STATS["sina_success"] = _NATIVE_DOWNLOAD_STATS.get("sina_success", 0) + 1
-                _persist_last_error(symbol, "sina", f"OK rows={len(df)}")
-                return df, share_base
-        except Exception as exc_sina:
-            last_err = exc_sina
+        for alias in sina_aliases:
+            try:
+                df, _sb = _native_sina_download(alias, timeout=25)
+                if df is not None and len(df) > 5:
+                    ret = _finalize_df_and_return(df, alias, symbol, end_date, "sina")
+                    if ret is not None:
+                        return ret
+            except Exception as exc_sina:
+                last_err = exc_sina
 
         msg = str(last_err) or ""
         name = type(last_err).__name__

@@ -131,9 +131,14 @@ jobs:
             done
           fi
           set -x
+          # --- G4 rc handling: disable pipefail + ignore exit during python|tee,
+          # then capture ONLY python's exit via PIPESTATUS[0]. This ensures
+          # SIGPIPE on tee/tail never masks the daemon exit code.
           set +e
+          set +o pipefail
           python -u data_fetcher_daemon.py "${ARGS[@]}" 2>&1 | tee "$LOGFILE"
           DAEMON_RC=${PIPESTATUS[0]}
+          set -o pipefail
           set -e
           echo "daemon_exit_code=$DAEMON_RC" >> "$GITHUB_OUTPUT"
           # Append last 60 lines of daemon log to GITHUB_STEP_SUMMARY for quick debug
@@ -149,7 +154,8 @@ jobs:
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "LOGFILE=$LOGFILE" >> "$GITHUB_ENV"
-          # Re-raise daemon exit code properly (but never fail on partial success: daemon should return 0 already for ok>0)
+          # Re-raise daemon exit code properly (but never fail on partial success:
+          # daemon's main() already returns 0 when processed_ok>=1, 1 only for 0011.HK-style single failures on a first run with 0 ok count -- that is still a legit failure.)
           exit "$DAEMON_RC"
 
       - name: Print final cache summary

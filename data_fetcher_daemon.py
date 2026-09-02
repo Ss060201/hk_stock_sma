@@ -151,9 +151,10 @@ def _process_one_symbol(state: DaemonState, symbol: str, max_retry: int = 1) -> 
             upsert_ohlcv(sym, df, share_base=share_base, source=(source_route or "stack"))
             mark_fetch_done(sym)
             ok = True
-            # F3: re-read from cache metadata to guarantee last_valid_close / last_trade_date are populated correctly
+            # F3-G2a: re-read from cache (no age filter) to guarantee last_valid_close / last_trade_date are populated correctly.
+            # (max_age_sec=None = accept any cache age; we just wrote it so status will always be HIT)
             try:
-                df_refresh, _sb_refresh, _status_refresh = get_cached_ohlcv(sym, max_age_sec=0, bump_stats=False)
+                df_refresh, _sb_refresh, _status_refresh = get_cached_ohlcv(sym, max_age_sec=None, bump_stats=False)
                 rows_out = int(len(df_refresh)) if df_refresh is not None else int(len(df))
                 close_s = pd.to_numeric(df_refresh["Close"], errors="coerce").replace(0, np.nan).dropna() if df_refresh is not None else pd.Series(dtype=float)
                 if len(close_s):
@@ -383,6 +384,32 @@ def _write_github_step_summary(state: "DaemonState", is_once_mode: bool) -> None
         ]
         ok_rows.sort(key=lambda r: int(r.get("ts") or 0), reverse=True)
         fail_rows.sort(key=lambda r: int(r.get("ts") or 0), reverse=True)
+        # ---- G2b: Belt-and-suspenders backfill Successful rows from SQLite metadata ----
+        # (Because _process_one_symbol may have transient None from sqlite busy / race; but
+        #  rows from list_cached_symbols() below are authoritative and proven correct.)
+        cache_meta_by_symbol: Dict[str, Dict[str, Any]] = {}
+        for r in rows or []:
+            sym = str(r.get("symbol", "")).strip().upper()
+            if sym:
+                cache_meta_by_symbol[sym] = r
+        for r in ok_rows:
+            sym_key = str(r.get("symbol", "")).strip().upper()
+            meta = cache_meta_by_symbol.get(sym_key)
+            if meta:
+                if r.get("last_close") is None and meta.get("last_valid_close") is not None:
+                    try:
+                        r["last_close"] = float(meta.get("last_valid_close"))
+                    except (TypeError, ValueError):
+                        pass
+                if r.get("last_trade_date") is None and meta.get("last_trade_date"):
+                    r["last_trade_date"] = str(meta.get("last_trade_date"))
+                if (r.get("rows") is None or r.get("rows") == 0) and meta.get("rows"):
+                    try:
+                        r["rows"] = int(meta.get("rows"))
+                    except (TypeError, ValueError):
+                        pass
+                if not r.get("source") and meta.get("source"):
+                    r["source"] = str(meta.get("source"))
         lines: List[str] = []
         lines.append(f"# Data Fetcher Summary (mode={'once' if is_once_mode else 'daemon'})")
         lines.append("")
