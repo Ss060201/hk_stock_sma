@@ -189,7 +189,7 @@ def _build_ticker_aliases(symbol: str) -> list[str]:
         for c in (f"{d4}.HK", f"{d4}.hk"):
             if c not in seen:
                 seen.add(c); out.append(c)
-        # non-padded numeric (e.g. 11.HK for short codes)
+        # non-padded numeric (e.g. 11.HK for short codes like Hang Seng Bank)
         d_strip = digits.lstrip("0") or digits
         for c in (f"{d_strip}.HK", f"{d_strip}.hk"):
             if c not in seen:
@@ -200,12 +200,30 @@ def _build_ticker_aliases(symbol: str) -> list[str]:
             for c in (f"{d5}.HK", f"{d5}.hk"):
                 if c not in seen:
                     seen.add(c); out.append(c)
+        # ---- G6b extras for HK short codes that often get mis-formatted by providers:
+        # hk + digits (no dot) — Route3 stooq / Route4 sina compatible raw forms
+        hk_prefix_upper = f"HK{d4}"
+        hk_prefix_lower = f"hk{d4}"
+        if len(digits) <= 5:
+            d5_raw = digits.zfill(5)
+            hk_prefix_upper5 = f"HK{d5_raw}"
+            hk_prefix_lower5 = f"hk{d5_raw}"
+        else:
+            hk_prefix_upper5 = f"HK{digits}"
+            hk_prefix_lower5 = f"hk{digits}"
+        for c in (hk_prefix_upper, hk_prefix_lower, hk_prefix_upper5, hk_prefix_lower5):
+            if c not in seen:
+                seen.add(c); out.append(c)
+        # digits only with no suffix for providers that infer market from context
+        for c in (d4, d5_raw if len(digits) <= 5 else digits, d_strip):
+            if c and c not in seen:
+                seen.add(c); out.append(c)
     # De-dup and trim
     trimmed: list[str] = []
     for c in out:
         if c and c not in trimmed:
             trimmed.append(c)
-    return trimmed[:12]
+    return trimmed[:20]
 
 
 # ---------------------------------------------------------------------------

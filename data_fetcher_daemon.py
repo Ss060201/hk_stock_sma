@@ -542,9 +542,38 @@ def main(argv: Optional[List[str]] = None) -> int:
             LOGGER.info("--once mode: running single refresh + queue drain.")
             scheduled_refresh_thread_once(state)
             LOGGER.info("--once bootstrap finished. ok=%d fail=%d", state.total_ok, state.total_fail)
+            # ---- G6a rc rule with artifact restore belt-and-suspenders:
+            #   If restore brought back 5+ valid cached symbols already, treat as green
+            #   even if the only queue item we processed this run (e.g. 0011.HK retry)
+            #   failed (which would otherwise leave total_ok=0).
             if state.total_fail > 0 and state.total_ok == 0:
-                rc = 1
-                LOGGER.warning("--once exit code -> 1 (all targets failed or no cache seeded).")
+                try:
+                    from cache_layer import list_cached_symbols as _lcs
+                    cached_now = _lcs(limit=500) or []
+                    valid_cached_n = 0
+                    for r in cached_now:
+                        try:
+                            rs = int(r.get("rows") or 0)
+                            has_close = r.get("last_valid_close") is not None and pd.notna(r.get("last_valid_close"))
+                            has_td = bool(r.get("last_trade_date"))
+                            if rs >= 100 and has_close and has_td:
+                                valid_cached_n += 1
+                        except Exception:
+                            pass
+                    if valid_cached_n >= 5:
+                        rc = 0
+                        LOGGER.info(
+                            "--once rc override -> 0 (total_ok=0 but SQLite already has %d valid cached "
+                            "symbols from restored artifact; partial run must NOT fail workflow).",
+                            valid_cached_n,
+                        )
+                    else:
+                        rc = 1
+                        LOGGER.warning("--once exit code -> 1 (all targets failed; only %d valid cached symbols in DB).",
+                                       valid_cached_n)
+                except Exception:
+                    rc = 1
+                    LOGGER.warning("--once rc fallback 1 (error while validating cached symbols).", exc_info=True)
             elif state.total_fail > 0:
                 rc = 0
                 LOGGER.info("--once partial success, warn-level only (rc stays 0 so artifact uploads): ok=%d fail=%d",
