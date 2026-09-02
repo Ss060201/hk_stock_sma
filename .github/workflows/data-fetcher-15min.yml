@@ -43,16 +43,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Setup Python 3.13
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.13"
           check-latest: false
 
       - name: Pip cache
-        uses: actions/cache@v7
+        uses: actions/cache@v4
         id: pip-cache
         with:
           path: ~/.cache/pip
@@ -91,7 +91,7 @@ jobs:
       - name: Restore previous ohlcv_cache.sqlite (only if prior v5 artifact exists)
         if: steps.check-artifact.outputs.restore_enabled == 'true'
         id: restore-cache-artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ github.workspace }}/artifacts
@@ -203,7 +203,7 @@ jobs:
 
       - name: Upload ohlcv_cache.sqlite as artifact (retention 30 days, v5 name)
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: |
