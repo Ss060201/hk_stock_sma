@@ -5968,11 +5968,11 @@ elif current_page == "home":
                             unsafe_allow_html=True,
                         )
 
-elif not current_code:
+elif current_page == "stock" and not current_code:
     st.title("📈 單股分析")
     st.info("請先從左側輸入股票代號或點擊收藏清單，再查看單股功能。")
 
-else:
+elif current_page == "stock":
     yahoo_ticker = get_yahoo_ticker(current_code)
     display_ticker = current_code.zfill(5)
     show_header = True
