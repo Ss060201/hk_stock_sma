@@ -4398,6 +4398,7 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
         t_rows = []
         dev_arrays_np = {k: dev_arrays[k] for k in offsets_int}
         close_finite = np.isfinite(pick_close_arr)
+        offsets_arr = np.array(offsets_int, dtype=int)
         for i in range(n_pick):
             ts = pick_dates_arr[i]
             try:
@@ -4425,6 +4426,16 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
                             "value": float(dv),
                             "abs_err": float(err),
                         }
+            # AvgDev = (Dev0 + Dev1 + Dev2 + Dev3 + Dev4 + Dev5) / 6
+            _dev_flist = []
+            for k in offsets_int:
+                _dv = dev_dict.get(k)
+                if _dv is not None and isinstance(_dv, float) and np.isfinite(_dv):
+                    _dev_flist.append(float(_dv))
+            if _dev_flist:
+                avg_dev = float(sum(_dev_flist)) / 6.0
+            else:
+                avg_dev = float("nan")
             t_rows.append({
                 "date": date_s,
                 "close": float(close_v) if close_v is not None else None,
@@ -4432,6 +4443,7 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
                 "amp": amp_v,
                 "avg3_t": avg3_t,
                 "dev": dev_dict,
+                "avg_dev": avg_dev,
             })
         res["time_rows"] = t_rows
         if best_meta.get("date") is not None:
@@ -4490,7 +4502,7 @@ def render_pmax_index6_panel(matrix, prefix: str = "p6d_"):
     else:
         parts.append(f'<div class="{prefix}note">Devk[t]=(Close[t]-Avg3[t−k])/Avg3[t−k]·100%（M1 向歷史偏移 k）｜🎯 未命中校準點 {CAL_TARGET_RED_VALUE}（若有 8/11 數據會自動畫紅框）</div>')
     parts.append(f'<table class="{prefix}tbl">')
-    head_row = ["<th>Date</th><th>Close</th><th>TUR</th><th>Amp(%)</th>"]
+    head_row = ["<th>Date</th><th>Close</th><th>TUR</th><th>Amp(%)</th><th>AvgDev</th>"]
     for k in offsets:
         head_row.append(f"<th>Dev{k}</th>")
     parts.append(f"<thead><tr>{''.join(head_row)}</tr></thead><tbody>")
@@ -4498,12 +4510,19 @@ def render_pmax_index6_panel(matrix, prefix: str = "p6d_"):
         ds = r.get("date") or ""
         is_cal_date = (cal_date is not None and ds == cal_date)
         dev = r.get("dev") or {}
+        avg_dev_v = r.get("avg_dev")
         cells = [
             f"<td class='date-cell'>{ds}</td>",
             f"<td>{_fmt(r.get('close'), 2)}</td>",
             f"<td>{_fmt(r.get('tur'), 4)}</td>",
             f"<td>{_fmt(r.get('amp'), 2)}</td>",
         ]
+        # AvgDev cell (between Amp and Dev0)
+        if avg_dev_v is None or (isinstance(avg_dev_v, float) and not np.isfinite(avg_dev_v)) or pd.isna(avg_dev_v):
+            cells.append("<td class='empty'>—</td>")
+        else:
+            _avg_cls = "dev-pos" if float(avg_dev_v) >= 0 else "dev-neg"
+            cells.append(f"<td class='{_avg_cls}' style='font-weight:700;'>{float(avg_dev_v):+.2f}%</td>")
         for k in offsets:
             v = dev.get(int(k))
             if v is None or (isinstance(v, float) and not np.isfinite(v)) or pd.isna(v):

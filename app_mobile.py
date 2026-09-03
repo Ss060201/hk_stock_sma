@@ -1116,6 +1116,16 @@ def calc_pmax_index6_matrix_m(df: pd.DataFrame,
                     if err < best_err:
                         best_err = err
                         best_meta = {"date": date_s, "k": int(k), "value": float(dv), "abs_err": float(err)}
+            # AvgDev = (Dev0 + Dev1 + Dev2 + Dev3 + Dev4 + Dev5) / 6
+            _dev_flist_m = []
+            for k in offsets_int:
+                _dv = dev_dict.get(k)
+                if _dv is not None and isinstance(_dv, float) and np.isfinite(_dv):
+                    _dev_flist_m.append(float(_dv))
+            if _dev_flist_m:
+                avg_dev_m = float(sum(_dev_flist_m)) / 6.0
+            else:
+                avg_dev_m = float("nan")
             t_rows.append({
                 "date": date_s,
                 "close": float(close_v) if close_v is not None else None,
@@ -1123,6 +1133,7 @@ def calc_pmax_index6_matrix_m(df: pd.DataFrame,
                 "amp": amp_v,
                 "avg3_t": avg3_t,
                 "dev": dev_dict,
+                "avg_dev": avg_dev_m,
             })
         res["time_rows"] = t_rows
         if best_meta.get("date") is not None:
@@ -1403,7 +1414,7 @@ def render_pmax_index6_panel_m(matrix, prefix: str = "p6m_"):
     else:
         parts.append(f'<div class="{prefix}note">Devk=(Close[t]−Avg3[t−k])/Avg3[t−k]·100%（M1 向歷史偏移 k，禁止未來函數）</div>')
     parts.append(f'<table class="{prefix}tbl">')
-    head_row = ["<th>Date</th><th>C</th><th>T</th><th>A(%)</th>"]
+    head_row = ["<th>Date</th><th>C</th><th>T</th><th>A(%)</th><th>AD</th>"]
     for k in offsets:
         head_row.append(f"<th>D{k}</th>")
     parts.append(f"<thead><tr>{''.join(head_row)}</tr></thead><tbody>")
@@ -1411,12 +1422,19 @@ def render_pmax_index6_panel_m(matrix, prefix: str = "p6m_"):
         ds = r.get("date") or ""
         is_cal_date = (cal_date is not None and ds == cal_date)
         dev = r.get("dev") or {}
+        avg_dev_v = r.get("avg_dev")
         cells = [
             f"<td class='date-cell'>{ds[5:]}</td>",
             f"<td>{_fmt_m(r.get('close'), 1)}</td>",
             f"<td>{_fmt_m(r.get('tur'), 2)}</td>",
             f"<td>{_fmt_m(r.get('amp'), 1)}</td>",
         ]
+        # AvgDev (AD) cell between Amp and D0
+        if avg_dev_v is None or (isinstance(avg_dev_v, float) and not np.isfinite(avg_dev_v)) or pd.isna(avg_dev_v):
+            cells.append("<td class='empty'>—</td>")
+        else:
+            _avg_cls_m = "dev-pos" if float(avg_dev_v) >= 0 else "dev-neg"
+            cells.append(f"<td class='{_avg_cls_m}' style='font-weight:700;'>{float(avg_dev_v):+.1f}%</td>")
         for k in offsets:
             v = dev.get(int(k))
             if v is None or (isinstance(v, float) and not np.isfinite(v)) or pd.isna(v):
