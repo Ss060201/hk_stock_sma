@@ -1676,83 +1676,108 @@ if not current_code:
         
         st.divider()
         
-        # ===== [改动5.2] 卡片式显示 =====
+        # ===== [改动5.2] 卡片式显示（A1 升級：優先讀 SQLite artifact 快取，全 HIT 零等待） =====
+        _ref_date_m = st.session_state.ref_date.strftime('%Y-%m-%d')
+        _prev_ok_m = False
         for ticker in watchlist_list:
             yt = get_yahoo_ticker(ticker)
-            with st.spinner(f"正在分析 {ticker}..."):
+            df_w, sb_w, is_cached_w = None, None, False
+            try:
+                _r = get_data_v7(yt, _ref_date_m)
+                if isinstance(_r, tuple) and len(_r) >= 3:
+                    df_w, sb_w, is_cached_w = _r[0], _r[1], _r[2]
+                elif isinstance(_r, tuple):
+                    df_w, sb_w = _r[0], _r[1]
+                else:
+                    df_w = _r
+            except Exception as _e_load:
+                df_w = None
                 try:
                     df_w = yf.download(yt, period="1y", progress=False, auto_adjust=False)
-                    if isinstance(df_w.columns, pd.MultiIndex): 
+                    if isinstance(df_w.columns, pd.MultiIndex):
                         df_w.columns = df_w.columns.get_level_values(0)
-                    
+                    end_dt = pd.to_datetime(st.session_state.ref_date)
+                    df_w = df_w[df_w.index <= end_dt]
+                except Exception:
+                    df_w = None
+            try:
+                if df_w is not None and len(df_w) > 20:
+                    if isinstance(df_w.columns, pd.MultiIndex):
+                        df_w.columns = df_w.columns.get_level_values(0)
                     end_dt = pd.to_datetime(st.session_state.ref_date)
                     df_w = df_w[df_w.index <= end_dt]
                     
-                    if len(df_w) > 20:
-                        curr_p = df_w['Close'].iloc[-1]
-                        prev_close_w = df_w['Close'].shift(1).replace(0, np.nan)
-                        prev_close_last = prev_close_w.iloc[-1]
-                        prev_close_last = float(prev_close_last) if pd.notna(prev_close_last) else 0.0
-                        chg = (curr_p - prev_close_last) if prev_close_last else 0.0
-                        pct = (chg / prev_close_last * 100) if prev_close_last else 0.0
+                    curr_p_s = pd.to_numeric(df_w['Close'], errors='coerce').replace(0, np.nan).dropna()
+                    if len(curr_p_s) == 0:
+                        raise RuntimeError("close all nan/0")
+                    curr_p = float(curr_p_s.iloc[-1])
+                    prev_close_w = curr_p_s.shift(1)
+                    prev_close_last = float(prev_close_w.iloc[-1]) if pd.notna(prev_close_w.iloc[-1]) else 0.0
+                    chg = (curr_p - prev_close_last) if prev_close_last else 0.0
+                    pct = (chg / prev_close_last * 100) if prev_close_last else 0.0
                         
-                        if is_mobile:
-                            # ===== [改动5.3] 手机卡片UI =====
-                            with st.container():
-                                col1, col2 = st.columns([2, 1])
+                    if is_mobile:
+                        # ===== [改动5.3] 手机卡片UI =====
+                        with st.container():
+                            col1, col2 = st.columns([2, 1])
+                            with col1:
+                                st.markdown(f"""
+                                <div style="font-size: 18px; font-weight: bold;">
+                                    {ticker.upper()}
+                                </div>
+                                """, unsafe_allow_html=True)
+                                st.caption(f"Price: {curr_p:.2f}")
+                            
+                            with col2:
+                                chg_color = "🟢" if chg > 0 else "🔴" if chg < 0 else "⚪"
+                                color_text = "green" if chg > 0 else "red" if chg < 0 else "gray"
+                                st.markdown(f"""
+                                <div style="text-align: right; font-weight: bold; color: {color_text};">
+                                    {chg_color}<br/>{pct:+.2f}%
+                                </div>
+                                """, unsafe_allow_html=True)
+                            
+                            with st.expander(f"📊 詳細數據", expanded=False):
+                                intervals = [7, 14, 28, 57, 106, 212]
+                                avgp_vals = [curr_p]
+                                for p in intervals:
+                                    avgp_vals.append(curr_p_s.rolling(p).mean().iloc[-1] if len(curr_p_s)>=p else 0)
+                                
+                                valid_avgp = [v for v in avgp_vals if v > 0]
+                                avg_avgp = sum(valid_avgp) / len(valid_avgp) if valid_avgp else 0
+                                avgp_mr_vals = [((v / avg_avgp) - 1)*100 if avg_avgp else 0 for v in avgp_vals]
+                                
+                                st.write("**SMA 價格**")
+                                col1, col2, col3 = st.columns(3)
                                 with col1:
-                                    st.markdown(f"""
-                                    <div style="font-size: 18px; font-weight: bold;">
-                                        {ticker.upper()}
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                                    st.caption(f"Price: {curr_p:.2f}")
-                                
+                                    st.metric("SMA7", f"{avgp_vals[1]:.2f}")
                                 with col2:
-                                    chg_color = "🟢" if chg > 0 else "🔴" if chg < 0 else "⚪"
-                                    color_text = "green" if chg > 0 else "red" if chg < 0 else "gray"
-                                    st.markdown(f"""
-                                    <div style="text-align: right; font-weight: bold; color: {color_text};">
-                                        {chg_color}<br/>{pct:+.2f}%
-                                    </div>
-                                    """, unsafe_allow_html=True)
+                                    st.metric("SMA14", f"{avgp_vals[2]:.2f}")
+                                with col3:
+                                    st.metric("SMA28", f"{avgp_vals[3]:.2f}")
                                 
-                                with st.expander(f"📊 詳細數據", expanded=False):
-                                    intervals = [7, 14, 28, 57, 106, 212]
-                                    avgp_vals = [curr_p]
-                                    for p in intervals:
-                                        avgp_vals.append(df_w['Close'].rolling(p).mean().iloc[-1] if len(df_w)>=p else 0)
-                                    
-                                    valid_avgp = [v for v in avgp_vals if v > 0]
-                                    avg_avgp = sum(valid_avgp) / len(valid_avgp) if valid_avgp else 0
-                                    avgp_mr_vals = [((v / avg_avgp) - 1)*100 if avg_avgp else 0 for v in avgp_vals]
-                                    
-                                    st.write("**SMA 價格**")
-                                    col1, col2, col3 = st.columns(3)
-                                    with col1:
-                                        st.metric("SMA7", f"{avgp_vals[1]:.2f}")
-                                    with col2:
-                                        st.metric("SMA14", f"{avgp_vals[2]:.2f}")
-                                    with col3:
-                                        st.metric("SMA28", f"{avgp_vals[3]:.2f}")
-                                    
-                                    st.write("**MR 偏差%**")
-                                    col1, col2, col3 = st.columns(3)
-                                    with col1:
-                                        st.metric("MR7", f"{avgp_mr_vals[1]:.2f}%")
-                                    with col2:
-                                        st.metric("MR14", f"{avgp_mr_vals[2]:.2f}%")
-                                    with col3:
-                                        st.metric("MR28", f"{avgp_mr_vals[3]:.2f}%")
-                                
-                                st.divider()
-                        else:
-                            # 桌面版本 - 显示完整的卡片和表格
-                            st.write(f"**{ticker}** | Price: {curr_p:.2f} | Change: {pct:+.2f}%")
+                                st.write("**MR 偏差%**")
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.metric("MR7", f"{avgp_mr_vals[1]:.2f}%")
+                                with col2:
+                                    st.metric("MR14", f"{avgp_mr_vals[2]:.2f}%")
+                                with col3:
+                                    st.metric("MR28", f"{avgp_mr_vals[3]:.2f}%")
+                            
                             st.divider()
-                
-                except Exception as e: 
-                    st.error(f"Error {ticker}: {e}")
+                    else:
+                        st.write(f"**{ticker}** | Price: {curr_p:.2f} | Change: {pct:+.2f}%")
+                        st.divider()
+                    _prev_ok_m = True
+            except Exception as e: 
+                st.error(f"Error {ticker}: {type(e).__name__}: {str(e)[:80]}")
+            # 只有 LIVE 抓數據才 sleep，避免全快取 HIT 時首頁 N 秒等待
+            if not is_cached_w:
+                try:
+                    _time_mod.sleep(_rand_mod.uniform(0.35, 0.85))
+                except Exception:
+                    pass
 
 # ===== [改动6] 詳細模式 =====
 else:
@@ -2137,11 +2162,12 @@ else:
         sym_upper_m = str(symbol).strip().upper()
 
         # Step A: prefer SQLite persistent cache (daemon pre-fetched). max_age=10min.
+        is_cached = False
         if _CACHE_LAYER_OK_M and _get_cached_ohlcv_m is not None:
             try:
                 df_cache_m, sb_cache_m, cs_m = _get_cached_ohlcv_m(sym_upper_m, end_date=end_date, max_age_sec=10*60, bump_stats=True)
                 if df_cache_m is not None and len(df_cache_m) > 10 and (cs_m in ("HIT", "STALE")):
-                    return df_cache_m, sb_cache_m
+                    return df_cache_m, sb_cache_m, True
                 if cs_m == "MISS" and _request_async_fetch_m is not None:
                     try:
                         _request_async_fetch_m(sym_upper_m)
@@ -2152,7 +2178,7 @@ else:
 
         last_err = None
         if _YF_SESS_MGR_M.should_skip(symbol):
-            return None, None
+            return None, None, False
 
         result_df_m, result_sb_m = None, None
         source_route_m: Optional[str] = None
@@ -2239,11 +2265,17 @@ else:
         if result_df_m is None and last_err is not None:
             _YF_SESS_MGR_M.record_failure(symbol, cooldown_sec=180)
             _persist_lerr_m(symbol, "final", f"ALL 3 attempts failed | last={type(last_err).__name__}: {str(last_err)[:160]}")
-            return None, None
+            return None, None, False
 
-        return result_df_m, result_sb_m
+        return result_df_m, result_sb_m, False
 
-    df, share_base = get_data_v7(yahoo_ticker, st.session_state.ref_date)
+    _res_v7 = get_data_v7(yahoo_ticker, st.session_state.ref_date)
+    if isinstance(_res_v7, tuple) and len(_res_v7) >= 3:
+        df, share_base = _res_v7[0], _res_v7[1]
+    elif isinstance(_res_v7, tuple):
+        df, share_base = _res_v7[0], _res_v7[1]
+    else:
+        df, share_base = _res_v7, None
     
     if df is None or len(df) <= 5:
         _extra_info_m = []

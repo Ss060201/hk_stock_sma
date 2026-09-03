@@ -3596,13 +3596,13 @@ def get_data_v7(symbol, end_date):
     sym_upper = str(symbol).strip().upper()
 
     # Step A: prefer SQLite persistent cache (daemon pre-fetched). max_age=10min = within trading session.
+    is_cached = False
     if _CACHE_LAYER_OK and _get_cached_ohlcv is not None:
         try:
             df_cache, sb_cache, cache_status = _get_cached_ohlcv(sym_upper, end_date=end_date, max_age_sec=10*60, bump_stats=True)
             if df_cache is not None and len(df_cache) > 10 and (cache_status in ("HIT", "STALE")):
-                return df_cache, sb_cache
+                return df_cache, sb_cache, True
             if cache_status == "MISS" and _request_async_fetch is not None:
-                # MISS: enqueue for daemon so NEXT user hits cache. Also will fall back to live download below for THIS user.
                 try:
                     _request_async_fetch(sym_upper)
                 except Exception:
@@ -3708,9 +3708,9 @@ def get_data_v7(symbol, end_date):
     if result_df is None and last_err is not None:
         _YF_SESS_MGR.record_failure(symbol, cooldown_sec=180)
         _persist_last_error(symbol, "final", f"ALL 3 attempts failed | last={type(last_err).__name__}: {str(last_err)[:160]}")
-        return None, None
+        return None, None, False
 
-    return result_df, result_share_base
+    return result_df, result_share_base, False
 
 def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) -> Optional[Dict[str, Any]]:
     if df is None or df.empty or len(df) < 2:
@@ -3862,7 +3862,13 @@ def get_home_watchlist_snapshot(watchlist_codes: List[str], ref_date: str) -> Di
     for ticker in watchlist_codes:
         yt = get_yahoo_ticker(ticker)
         try:
-            df, share_base = get_data_v7(yt, ref_date)
+            res = get_data_v7(yt, ref_date)
+            if isinstance(res, tuple) and len(res) >= 3:
+                df, share_base, is_cached = res[0], res[1], res[2]
+            elif isinstance(res, tuple):
+                df, share_base, is_cached = res[0], res[1], False
+            else:
+                df, share_base, is_cached = res, None, False
         except Exception as exc:
             exc_name = type(exc).__name__
             exc_msg = str(exc) or ""
@@ -3874,23 +3880,27 @@ def get_home_watchlist_snapshot(watchlist_codes: List[str], ref_date: str) -> Di
                 diagnostic[ticker] = f"Yahoo 回傳 possibly delisted：請確認 {ticker} 代號是否正確"
             else:
                 diagnostic[ticker] = f"{exc_name}：{exc_msg[:80]}"
-            # After an error, add a longer backoff before next ticker.
+            # Error occurred (tried live and failed): backoff to avoid hammering Yahoo on next ticker.
             time.sleep(random.uniform(0.8, 1.8))
             continue
         if df is None:
             diagnostic[ticker] = "數據載入失敗（Yahoo 可能暫不可用）"
-            time.sleep(random.uniform(0.5, 1.1))
+            if not is_cached:
+                time.sleep(random.uniform(0.5, 1.1))
             continue
         raw_len = len(df)
         snapshot = _compute_home_snapshot_for_stock(ticker, df, share_base)
         if not snapshot:
             diagnostic[ticker] = f"有效交易日不足：載入 {raw_len} 列，過濾 NaN/0 後不足 2 列可計算"
-            time.sleep(random.uniform(0.3, 0.7))
+            if not is_cached:
+                time.sleep(random.uniform(0.3, 0.7))
             continue
         summaries.append(snapshot["summary"])
         details[ticker] = snapshot["detail"]
-        # Success: small randomized delay to avoid hammering Yahoo on next ticker.
-        time.sleep(random.uniform(0.35, 0.95))
+        # Success: if fetched from live download, small randomized delay to avoid hammering Yahoo.
+        # If read from SQLite cache, skip delay entirely to keep home page instant.
+        if not is_cached:
+            time.sleep(random.uniform(0.35, 0.95))
 
     return {"summaries": summaries, "details": details, "diagnostic": diagnostic}
 
@@ -5317,7 +5327,9 @@ def render_backtest_hub_page(current_code: str, watchlist_data: Dict[str, Any], 
         return
 
     yahoo_ticker = get_yahoo_ticker(current_code)
-    df, share_base = get_data_v7(yahoo_ticker, st.session_state.ref_date)
+    df_share = get_data_v7(yahoo_ticker, st.session_state.ref_date)
+    df = df_share[0] if isinstance(df_share, tuple) else df_share
+    share_base = df_share[1] if isinstance(df_share, tuple) else None
     if df is None or len(df) <= 5:
         st.warning("無法取得足夠數據進行回測。")
         return
@@ -5969,7 +5981,9 @@ else:
                 if update_stock_in_db(current_code):
                     st.rerun()
 
-    df, share_base = get_data_v7(yahoo_ticker, st.session_state.ref_date)
+    df_share = get_data_v7(yahoo_ticker, st.session_state.ref_date)
+    df = df_share[0] if isinstance(df_share, tuple) else df_share
+    share_base = df_share[1] if isinstance(df_share, tuple) else None
 
     if df is None or len(df) <= 5:
         import time as _t_now
