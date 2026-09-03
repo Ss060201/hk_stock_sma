@@ -2175,7 +2175,7 @@ else:
         except Exception as e_out:
             raise RuntimeError(f"sina outer: {type(e_out).__name__}: {str(e_out)[:160]}") from e_out
 
-    @st.cache_data(ttl=900)
+    @st.cache_data(ttl=3600)
     def get_data_v7(symbol, end_date):
         sym_upper_m = str(symbol).strip().upper()
 

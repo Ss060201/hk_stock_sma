@@ -3591,7 +3591,7 @@ def _native_sina_download(symbol: str, timeout: int = 25):
         raise RuntimeError(f"sina outer: {type(e_out).__name__}: {str(e_out)[:160]}") from e_out
 
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=3600)
 def get_data_v7(symbol, end_date):
     sym_upper = str(symbol).strip().upper()
 
@@ -3853,11 +3853,14 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
         },
     }
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_home_watchlist_snapshot(watchlist_codes: List[str], ref_date: str) -> Dict[str, Any]:
     summaries: List[Dict[str, Any]] = []
     details: Dict[str, Dict[str, Any]] = {}
     diagnostic: Dict[str, str] = {}
+
+    if not watchlist_codes:
+        return {"summaries": summaries, "details": details, "diagnostic": diagnostic}
 
     for ticker in watchlist_codes:
         yt = get_yahoo_ticker(ticker)
