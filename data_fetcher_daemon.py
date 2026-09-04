@@ -37,8 +37,28 @@ def _ts_now() -> int:
 
 
 def _resolve_seed_symbols_from_watchlist() -> Set[str]:
-    """Best-effort watchlist load from Firestore. Failures degrade to seed list only."""
+    """Best-effort watchlist load: SQLite shared watchlist first, Firestore as fallback.
+    Failures degrade to seed list only.
+    """
     out: Set[str] = set()
+
+    try:
+        from cache_layer import list_watchlist_symbols, get_cache_db_path
+        try:
+            rows = list_watchlist_symbols(db_path=get_cache_db_path(), limit=2000)
+            for r in rows:
+                try:
+                    from data_ingest_stack import get_yahoo_ticker
+                    out.add(str(get_yahoo_ticker(r["symbol"])).strip().upper())
+                except Exception:
+                    continue
+            if out:
+                LOGGER.info("Pre-seeded %d watchlist symbols from SQLite shared watchlist.", len(out))
+        except Exception as exc:
+            LOGGER.info("SQLite shared watchlist unavailable (will try Firestore next): %s", exc)
+    except Exception:
+        pass
+
     try:
         from watchlist_storage import get_watchlist_from_firestore
         try:
@@ -50,23 +70,32 @@ def _resolve_seed_symbols_from_watchlist() -> Set[str]:
                     cred = credentials.Certificate(cred_path)
                     firebase_admin.initialize_app(cred)
                 else:
-                    # Try GOOGLE_APPLICATION_CREDENTIALS default
                     try:
                         firebase_admin.initialize_app()
                     except Exception:
+                        if out:
+                            return out
                         LOGGER.info("Firebase app not initialized; watchlist pre-seed skipped.")
                         return out
             db = firestore.client()
             wl = get_watchlist_from_firestore(db) or {}
+            added = 0
             for raw in wl.keys():
                 try:
                     from data_ingest_stack import get_yahoo_ticker
-                    out.add(str(get_yahoo_ticker(raw)).strip().upper())
+                    ticker = str(get_yahoo_ticker(raw)).strip().upper()
+                    if ticker and ticker not in out:
+                        out.add(ticker)
+                        added += 1
                 except Exception:
                     continue
-            LOGGER.info("Pre-seeded %d watchlist symbols from Firestore.", len(out))
+            if added:
+                LOGGER.info("Pre-seeded %d additional symbols from Firestore watchlist (total %d).", added, len(out))
+            elif not out:
+                LOGGER.info("Pre-seeded 0 watchlist symbols from Firestore.")
         except Exception as exc:
-            LOGGER.warning("Unable to seed from Firestore watchlist: %s", exc)
+            if not out:
+                LOGGER.warning("Unable to seed from Firestore watchlist: %s", exc)
     except Exception:
         pass
     return out

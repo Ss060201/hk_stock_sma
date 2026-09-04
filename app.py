@@ -50,6 +50,9 @@ _get_cache_db_path = None
 _list_cached_symbols = None
 _get_stat = None
 _set_stat = None
+_upsert_watchlist_symbol = None
+_delete_watchlist_symbol = None
+_list_watchlist_symbols = None
 
 _ARTIFACT_SYNC_OK = False
 _ARTIFACT_LAST_SYNC_TS = ""
@@ -264,6 +267,9 @@ try:
         list_cached_symbols as _list_cached_symbols,
         get_stat as _get_stat,
         set_stat as _set_stat,
+        upsert_watchlist_symbol as _upsert_watchlist_symbol,
+        delete_watchlist_symbol as _delete_watchlist_symbol,
+        list_watchlist_symbols as _list_watchlist_symbols,
     )
     try:
         _a1_sync_artifact_v5()
@@ -273,6 +279,24 @@ try:
     try:
         _ensure_cache_schema(None)
         _CACHE_LAYER_OK = True
+        try:
+            if _list_watchlist_symbols is not None and _upsert_watchlist_symbol is not None:
+                _db_mig = get_db()
+                if _db_mig is not None:
+                    _wl_mig = get_watchlist_from_firestore(_db_mig) or {}
+                    _sqlite_syms = {r["symbol"] for r in _list_watchlist_symbols(limit=5000)}
+                    _mig_count = 0
+                    for _sym, _par in _wl_mig.items():
+                        if str(_sym).strip().upper() not in _sqlite_syms:
+                            try:
+                                _upsert_watchlist_symbol(_sym, params=_par if isinstance(_par, dict) else None, source="firestore_migrate")
+                                _mig_count += 1
+                            except Exception:
+                                pass
+                    if _mig_count:
+                        LOGGER.info("One-time Firestore→SQLite watchlist migration: %d symbols copied.", _mig_count)
+        except Exception as _exc_mig:
+            LOGGER.info("Firestore→SQLite watchlist migration skipped: %s", _exc_mig)
     except Exception as _exc_cache_init:
         LOGGER.warning("SQLite cache layer init failed (will use live fetch only): %s", _exc_cache_init)
         _CACHE_LAYER_OK = False
@@ -979,6 +1003,11 @@ def update_stock_in_db(symbol, params=None):
             st.session_state.pop("_wl_cache_ts_v2", None)
         except Exception:
             pass
+        if _CACHE_LAYER_OK and _upsert_watchlist_symbol is not None:
+            try:
+                _upsert_watchlist_symbol(saved_symbol, params=params, source="firestore_sync")
+            except Exception:
+                pass
         return True
     except Exception as e:
         err_msg = f"{type(e).__name__}: {str(e)}"
@@ -1001,6 +1030,11 @@ def remove_stock_from_db(symbol):
             st.session_state.pop("_wl_cache_ts_v2", None)
         except Exception:
             pass
+        if _CACHE_LAYER_OK and _delete_watchlist_symbol is not None:
+            try:
+                _delete_watchlist_symbol(removed_symbol if removed_symbol else symbol)
+            except Exception:
+                pass
         return True
     except Exception as e:
         err_msg = f"{type(e).__name__}: {str(e)}"
@@ -3591,7 +3625,7 @@ def _native_sina_download(symbol: str, timeout: int = 25):
         raise RuntimeError(f"sina outer: {type(e_out).__name__}: {str(e_out)[:160]}") from e_out
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_data_v7(symbol, end_date):
     sym_upper = str(symbol).strip().upper()
 

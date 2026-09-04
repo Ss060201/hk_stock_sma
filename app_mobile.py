@@ -41,6 +41,9 @@ _get_cache_db_path_m = None
 _list_cached_symbols_m = None
 _get_stat_m = None
 _set_stat_m = None
+_upsert_watchlist_symbol_m = None
+_delete_watchlist_symbol_m = None
+_list_watchlist_symbols_m = None
 
 _ARTIFACT_SYNC_OK_M = False
 _ARTIFACT_LAST_SYNC_TS_M = ""
@@ -255,6 +258,9 @@ try:
         list_cached_symbols as _list_cached_symbols_m,
         get_stat as _get_stat_m,
         set_stat as _set_stat_m,
+        upsert_watchlist_symbol as _upsert_watchlist_symbol_m,
+        delete_watchlist_symbol as _delete_watchlist_symbol_m,
+        list_watchlist_symbols as _list_watchlist_symbols_m,
     )
     try:
         _a1_sync_artifact_v5_m()
@@ -264,6 +270,26 @@ try:
     try:
         _ensure_cache_schema_m(None)
         _CACHE_LAYER_OK_M = True
+        try:
+            if _list_watchlist_symbols_m is not None and _upsert_watchlist_symbol_m is not None:
+                _db_mig_m = get_db()
+                if _db_mig_m is not None:
+                    _wl_mig_m = get_watchlist_from_firestore(_db_mig_m) or {}
+                    _sqlite_syms_m = {r["symbol"] for r in _list_watchlist_symbols_m(limit=5000)}
+                    _mig_count_m = 0
+                    for _sym_m, _par_m in _wl_mig_m.items():
+                        if str(_sym_m).strip().upper() not in _sqlite_syms_m:
+                            try:
+                                _upsert_watchlist_symbol_m(_sym_m, params=_par_m if isinstance(_par_m, dict) else None, source="firestore_migrate_m")
+                                _mig_count_m += 1
+                            except Exception:
+                                pass
+                    if _mig_count_m:
+                        import logging as _logging_mig
+                        _logging_mig.getLogger(__name__).info("Mobile Firestore→SQLite watchlist migration: %d symbols copied.", _mig_count_m)
+        except Exception as _exc_mig_m:
+            import logging as _logging_mig_skip
+            _logging_mig_skip.getLogger(__name__).info("Mobile Firestore→SQLite migration skipped: %s", _exc_mig_m)
     except Exception as _exc_cache_init_m:
         import logging as _logging_m
         _logging_m.getLogger(__name__).warning("SQLite cache init failed (mobile): %s", _exc_cache_init_m)
@@ -589,6 +615,11 @@ def update_stock_in_db(symbol, params=None):
             st.session_state.pop("_wl_cache_ts_v2", None)
         except Exception:
             pass
+        if _CACHE_LAYER_OK_M and _upsert_watchlist_symbol_m is not None:
+            try:
+                _upsert_watchlist_symbol_m(saved_symbol, params=params, source="firestore_sync_m")
+            except Exception:
+                pass
         return True
     except Exception as e:
         err_msg = f"{type(e).__name__}: {str(e)}"
@@ -611,6 +642,11 @@ def remove_stock_from_db(symbol):
             st.session_state.pop("_wl_cache_ts_v2", None)
         except Exception:
             pass
+        if _CACHE_LAYER_OK_M and _delete_watchlist_symbol_m is not None:
+            try:
+                _delete_watchlist_symbol_m(removed_symbol if removed_symbol else symbol)
+            except Exception:
+                pass
         return True
     except Exception as e:
         err_msg = f"{type(e).__name__}: {str(e)}"
@@ -2175,7 +2211,7 @@ else:
         except Exception as e_out:
             raise RuntimeError(f"sina outer: {type(e_out).__name__}: {str(e_out)[:160]}") from e_out
 
-    @st.cache_data(ttl=3600)
+    @st.cache_data(ttl=3600, show_spinner=False)
     def get_data_v7(symbol, end_date):
         sym_upper_m = str(symbol).strip().upper()
 

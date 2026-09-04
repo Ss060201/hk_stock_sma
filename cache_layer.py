@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS fetcher_stats (
     value      INTEGER NOT NULL DEFAULT 0,
     updated_ts INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS watchlist (
+    symbol       TEXT PRIMARY KEY,
+    params_json  TEXT,
+    added_ts     INTEGER NOT NULL,
+    updated_ts   INTEGER NOT NULL,
+    source       TEXT DEFAULT 'manual'
+);
 """
 
 
@@ -461,3 +469,73 @@ def list_cached_symbols(
             (int(limit),),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def upsert_watchlist_symbol(
+    symbol: str,
+    params: Optional[Dict[str, Any]] = None,
+    source: str = "app",
+    db_path: Optional[str] = None,
+) -> str:
+    """Upsert one symbol into local SQLite watchlist table. Returns normalized symbol."""
+    ensure_schema(db_path)
+    sym = str(symbol).strip().upper()
+    params_json = json.dumps(params or {}, ensure_ascii=False) if params is not None else None
+    now_ts = _utc_now_ts()
+    with _LOCK:
+        with get_db(db_path) as conn:
+            row = conn.execute(
+                "SELECT added_ts FROM watchlist WHERE symbol=?", (sym,)
+            ).fetchone()
+            added = int(row["added_ts"]) if row is not None else now_ts
+            conn.execute(
+                "INSERT INTO watchlist(symbol,params_json,added_ts,updated_ts,source) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(symbol) DO UPDATE SET params_json=excluded.params_json, "
+                "updated_ts=excluded.updated_ts, source=excluded.source",
+                (sym, params_json, added, now_ts, str(source or "app")[:32]),
+            )
+    return sym
+
+
+def delete_watchlist_symbol(
+    symbol: str,
+    db_path: Optional[str] = None,
+) -> bool:
+    """Returns True if a row was deleted."""
+    ensure_schema(db_path)
+    sym = str(symbol).strip().upper()
+    with _LOCK:
+        with get_db(db_path) as conn:
+            cur = conn.execute("DELETE FROM watchlist WHERE symbol=?", (sym,))
+            return int(cur.rowcount or 0) > 0
+
+
+def list_watchlist_symbols(
+    db_path: Optional[str] = None,
+    limit: int = 1000,
+    include_params: bool = False,
+) -> Any:
+    """Returns list of dicts: [{symbol,added_ts,updated_ts,source,params?}] sorted by added_ts DESC."""
+    ensure_schema(db_path)
+    cols = ["symbol", "added_ts", "updated_ts", "source"]
+    if include_params:
+        cols.insert(1, "params_json")
+    sql = f"SELECT {', '.join(cols)} FROM watchlist ORDER BY updated_ts DESC LIMIT ?"
+    with get_db(db_path) as conn:
+        rows = conn.execute(sql, (int(limit),)).fetchall()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        item: Dict[str, Any] = {
+            "symbol": str(r["symbol"]),
+            "added_ts": int(r["added_ts"] or 0),
+            "updated_ts": int(r["updated_ts"] or 0),
+            "source": str(r["source"] or ""),
+        }
+        if include_params:
+            raw_p = r["params_json"] if "params_json" in r.keys() else None
+            try:
+                item["params"] = json.loads(str(raw_p)) if raw_p else {}
+            except Exception:
+                item["params"] = {}
+        out.append(item)
+    return out
