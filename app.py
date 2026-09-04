@@ -38,6 +38,9 @@ from watchlist_storage import (
     save_watchlist_symbol,
 )
 
+# Pre-init logger (before LOGGER assignment below for cache init except branches)
+_LOG_CACHE_INIT = logging.getLogger(__name__)
+
 # --- Optional async SQLite cache layer (graceful degrade if module missing) ---
 _CACHE_LAYER_OK = False
 _get_cached_ohlcv = None
@@ -294,14 +297,14 @@ try:
                             except Exception:
                                 pass
                     if _mig_count:
-                        LOGGER.info("One-time Firestore→SQLite watchlist migration: %d symbols copied.", _mig_count)
+                        _LOG_CACHE_INIT.info("One-time Firestore→SQLite watchlist migration: %d symbols copied.", _mig_count)
         except Exception as _exc_mig:
-            LOGGER.info("Firestore→SQLite watchlist migration skipped: %s", _exc_mig)
+            _LOG_CACHE_INIT.info("Firestore→SQLite watchlist migration skipped: %s", _exc_mig)
     except Exception as _exc_cache_init:
-        LOGGER.warning("SQLite cache layer init failed (will use live fetch only): %s", _exc_cache_init)
+        _LOG_CACHE_INIT.warning("SQLite cache layer init failed (will use live fetch only): %s", _exc_cache_init)
         _CACHE_LAYER_OK = False
 except Exception as _exc_cache_import:
-    LOGGER.info("cache_layer module not found (daemon may not be installed): %s", _exc_cache_import)
+    _LOG_CACHE_INIT.info("cache_layer module not found (daemon may not be installed): %s", _exc_cache_import)
     _CACHE_LAYER_OK = False
 
 # --- 1. 系統初始化 ---
