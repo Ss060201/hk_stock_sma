@@ -1894,9 +1894,31 @@ else:
                 pass
 
     def _yf_log_step_m(symbol, stage, msg):
-        # 性能優化：首頁 watchlist 串行 N 支會塞滿 step log；收斂到最近 12 條，debug 足夠 + rerun 明顯更快
         _yf_append_log_m(_YF_STEP_LOG_M,
                          (_time_mod.strftime("%H:%M:%S"), symbol, stage, (msg or "")[:220]), limit=12)
+
+    def _should_force_live_by_clock_m(last_trade_date):
+        try:
+            import zoneinfo as _zi_m
+        except Exception:
+            from backports import zoneinfo as _zi_m  # type: ignore
+        try:
+            _hkt_m = _zi_m.ZoneInfo("Asia/Hong_Kong")
+        except Exception:
+            try:
+                _hkt_m = _zi_m.ZoneInfo("Hongkong")
+            except Exception:
+                _hkt_m = None
+        _now_m = pd.Timestamp.now(tz=_hkt_m or "Asia/Hong_Kong")
+        _today_m = _now_m.date()
+        _delta_m = (_today_m - pd.to_datetime(last_trade_date).date()).days
+        _dow_m = _now_m.weekday()
+        _is_weekday_m = _dow_m < 5
+        _h_m, _mi_m = _now_m.hour, _now_m.minute
+        _post_close_m = (_h_m > 17) or (_h_m == 17 and _mi_m >= 30)
+        if _is_weekday_m and _post_close_m:
+            return _delta_m >= 1
+        return _delta_m >= 2
 
     def _persist_lerr_m(symbol: str, route: str, detail: str):
         try:
@@ -2227,9 +2249,7 @@ else:
                     try:
                         idx = pd.to_datetime(df_cache_m.index) if not isinstance(df_cache_m.index, pd.DatetimeIndex) else df_cache_m.index
                         last_td = pd.to_datetime(idx.max()).date()
-                        today = pd.Timestamp.now(tz="Asia/Hong_Kong").date()
-                        # delta >= 2 calendar days means 1+ full trading day missing: force live-fetch.
-                        if (today - last_td).days >= 2:
+                        if _should_force_live_by_clock_m(last_td):
                             use_cache = False
                     except Exception:
                         use_cache = True

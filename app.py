@@ -3282,9 +3282,43 @@ def _yf_append_log(log_list: list, payload, limit: int = 20):
             pass
 
 def _yf_log_step(symbol: str, stage: str, message: str):
-    # 性能優化：首頁 N 支股票串行下載會把 step log 塞爆；收斂到最近 12 條，足夠 debug 又不會拖慢 rerun
     _yf_append_log(_YF_NATIVE_STEP_LOG,
                    (time.strftime("%H:%M:%S"), symbol, stage, (message or "")[:220]), limit=12)
+
+
+def _should_force_live_by_clock(last_trade_date) -> bool:
+    """Freshness guard helper. Returns True if we should discard cache and live-fetch.
+
+    Rules (all in HKT = Asia/Hong_Kong):
+      * If weekday (Mon-Fri) AND current time >= 17:30 (post close + 30 min settlement)
+            → tolerate only 0 calendar day gap (today's data must be in cache)
+            → delta_days >= 1 → force live
+      * Otherwise (pre-open, lunch, weekend, or holiday)
+            → tolerate 1 calendar day gap (covers Fri→Mon naturally, or Fri intraday uses Thu close)
+            → delta_days >= 2 → force live
+    """
+    try:
+        import zoneinfo as _zi
+    except Exception:
+        from backports import zoneinfo as _zi  # type: ignore
+    try:
+        _hkt = _zi.ZoneInfo("Asia/Hong_Kong")
+    except Exception:
+        try:
+            _hkt = _zi.ZoneInfo("Hongkong")
+        except Exception:
+            _hkt = None
+    _now_hkt = pd.Timestamp.now(tz=_hkt or "Asia/Hong_Kong")
+    _today_hkt = _now_hkt.date()
+    _delta = (_today_hkt - pd.to_datetime(last_trade_date).date()).days
+    _dow = _now_hkt.weekday()  # 0=Mon..4=Fri, 5=Sat, 6=Sun
+    _is_weekday = _dow < 5
+    _hour, _minute = _now_hkt.hour, _now_hkt.minute
+    _is_post_close = (_hour > 17) or (_hour == 17 and _minute >= 30)
+    if _is_weekday and _is_post_close:
+        return _delta >= 1
+    return _delta >= 2
+
 
 def _persist_last_error(symbol: str, route: str, detail: str):
     try:
@@ -3645,11 +3679,7 @@ def get_data_v7(symbol, end_date):
                 try:
                     idx = pd.to_datetime(df_cache.index) if not isinstance(df_cache.index, pd.DatetimeIndex) else df_cache.index
                     last_trade_date = pd.to_datetime(idx.max()).date()
-                    today = pd.Timestamp.now(tz="Asia/Hong_Kong").date()
-                    delta_days = (today - last_trade_date).days
-                    # If cache is missing 1+ full trading day (delta >= 2 calendar days covers
-                    # Tue(last=Sun, skipped) / Wed-Fri gaps, plus weekend Fri→Mon=3).
-                    if delta_days >= 2:
+                    if _should_force_live_by_clock(last_trade_date):
                         use_cache = False
                 except Exception:
                     use_cache = True
