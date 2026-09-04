@@ -2179,13 +2179,26 @@ else:
     def get_data_v7(symbol, end_date):
         sym_upper_m = str(symbol).strip().upper()
 
-        # Step A: prefer SQLite persistent cache (daemon pre-fetched). max_age=10min.
+        # Step A: prefer SQLite persistent cache (daemon pre-fetched).
+        # Freshness guard: if last_trade_date > 3 calendar days before today,
+        # force StepB live-fetch (avoids stale SQLite locking baseline forever).
         is_cached = False
         if _CACHE_LAYER_OK_M and _get_cached_ohlcv_m is not None:
             try:
                 df_cache_m, sb_cache_m, cs_m = _get_cached_ohlcv_m(sym_upper_m, end_date=end_date, max_age_sec=10*60, bump_stats=True)
                 if df_cache_m is not None and len(df_cache_m) > 10 and (cs_m in ("HIT", "STALE")):
-                    return df_cache_m, sb_cache_m, True
+                    use_cache = True
+                    try:
+                        idx = pd.to_datetime(df_cache_m.index) if not isinstance(df_cache_m.index, pd.DatetimeIndex) else df_cache_m.index
+                        last_td = pd.to_datetime(idx.max()).date()
+                        today = pd.Timestamp.now(tz="Asia/Hong_Kong").date()
+                        # delta >= 2 calendar days means 1+ full trading day missing: force live-fetch.
+                        if (today - last_td).days >= 2:
+                            use_cache = False
+                    except Exception:
+                        use_cache = True
+                    if use_cache:
+                        return df_cache_m, sb_cache_m, True
                 if cs_m == "MISS" and _request_async_fetch_m is not None:
                     try:
                         _request_async_fetch_m(sym_upper_m)

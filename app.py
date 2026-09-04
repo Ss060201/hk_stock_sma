@@ -3595,13 +3595,29 @@ def _native_sina_download(symbol: str, timeout: int = 25):
 def get_data_v7(symbol, end_date):
     sym_upper = str(symbol).strip().upper()
 
-    # Step A: prefer SQLite persistent cache (daemon pre-fetched). max_age=10min = within trading session.
+    # Step A: prefer SQLite persistent cache (daemon pre-fetched).
+    # Freshness guard: if last_trade_date is more than 3 calendar days before today
+    # (covers weekends Fri→Mon = 2 trading days / 3 calendar days), force StepB live-fetch
+    # so that stale SQLite (last_refresh old) won't lock the baseline date forever.
     is_cached = False
     if _CACHE_LAYER_OK and _get_cached_ohlcv is not None:
         try:
             df_cache, sb_cache, cache_status = _get_cached_ohlcv(sym_upper, end_date=end_date, max_age_sec=10*60, bump_stats=True)
             if df_cache is not None and len(df_cache) > 10 and (cache_status in ("HIT", "STALE")):
-                return df_cache, sb_cache, True
+                use_cache = True
+                try:
+                    idx = pd.to_datetime(df_cache.index) if not isinstance(df_cache.index, pd.DatetimeIndex) else df_cache.index
+                    last_trade_date = pd.to_datetime(idx.max()).date()
+                    today = pd.Timestamp.now(tz="Asia/Hong_Kong").date()
+                    delta_days = (today - last_trade_date).days
+                    # If cache is missing 1+ full trading day (delta >= 2 calendar days covers
+                    # Tue(last=Sun, skipped) / Wed-Fri gaps, plus weekend Fri→Mon=3).
+                    if delta_days >= 2:
+                        use_cache = False
+                except Exception:
+                    use_cache = True
+                if use_cache:
+                    return df_cache, sb_cache, True
             if cache_status == "MISS" and _request_async_fetch is not None:
                 try:
                     _request_async_fetch(sym_upper)
