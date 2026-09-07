@@ -2737,19 +2737,31 @@ def render_comparison_page(watchlist_list: List[str], watchlist_data: Dict[str, 
     show_amp = True
     show_score = True
 
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+    col1, col2, col3, col4, col5 = st.columns([1, 1.2, 1, 1, 1])
     with col1:
-        if st.button("🏠 回到主頁面", use_container_width=True):
+        if st.button("🏠 回到主頁面", use_container_width=True, key="cmp_back_home"):
             set_current_page("home")
             st.rerun()
     with col2:
-        if st.button("🔄 刷新數據", use_container_width=True):
+        if st.button("🛠️ 強制更新數據（防呆）", use_container_width=True, key="cmp_force_bang"):
+            _wls = list(watchlist_list or [])
+            _bok, _bmsg = _perform_force_refresh_bang(_wls)
+            try:
+                if _bok:
+                    st.success(_bmsg)
+                else:
+                    st.warning(_bmsg)
+            except Exception:
+                pass
+            st.rerun()
+    with col3:
+        if st.button("🔄 刷新數據", use_container_width=True, key="cmp_refresh_soft"):
             st.cache_data.clear()
             st.rerun()
-    with col4:
-        if st.button("🔧 篩選設定", use_container_width=True):
+    with col5:
+        if st.button("🔧 篩選設定", use_container_width=True, key="cmp_filter_toggle"):
             st.session_state.show_filter = not st.session_state.get("show_filter", False)
-    download_slot = col3.empty()
+    download_slot = col4.empty()
 
     st.write("---")
 
@@ -3320,6 +3332,132 @@ def _should_force_live_by_clock(last_trade_date) -> bool:
     return _delta >= 2
 
 
+_FORCE_LIVE_FLAG_KEY = "_force_live_bang_ts"
+_FORCE_LIVE_WINDOW_SEC = 5 * 60
+_GHA_WORKFLOW_FILE = "data-fetcher-15min.yml"
+_GHA_DEFAULT_BRANCH = "main"
+
+
+def _is_force_live_requested() -> bool:
+    try:
+        ts = st.session_state.get(_FORCE_LIVE_FLAG_KEY)
+        if not ts:
+            return False
+        try:
+            age = float(time.time()) - float(ts)
+        except Exception:
+            return False
+        return 0 <= age < _FORCE_LIVE_WINDOW_SEC
+    except Exception:
+        return False
+
+
+def _trigger_github_datafetcher_workflow(extra_symbols_csv: str = "") -> Tuple[bool, str]:
+    log = logging.getLogger(__name__)
+    gh_token = _a1_read_gh_token()
+    if not gh_token:
+        return False, "未設定 GH_PAT/GITHUB_TOKEN，無法觸發 GitHub Action。"
+    headers = {
+        "Authorization": f"Bearer {gh_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "hk-stock-sma-force-refresh/1.0",
+    }
+    url = (
+        f"https://api.github.com/repos/{_GH_OWNER}/{_GH_REPO}"
+        f"/actions/workflows/{requests.utils.quote(_GHA_WORKFLOW_FILE)}/dispatches"
+    )
+    payload = {
+        "ref": _GHA_DEFAULT_BRANCH,
+        "inputs": {
+            "extra_symbols": str(extra_symbols_csv or "").strip(),
+            "log_level": "INFO",
+        },
+    }
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=20, allow_redirects=True)
+    except Exception as e:
+        return False, f"網路錯誤：{type(e).__name__}"
+    if r.status_code in (201, 202, 204):
+        try:
+            run_url = ""
+            try:
+                list_runs_url = (
+                    f"https://api.github.com/repos/{_GH_OWNER}/{_GH_REPO}/actions/runs"
+                    f"?per_page=1"
+                )
+                r2 = requests.get(list_runs_url, headers=headers, timeout=15, allow_redirects=True)
+                if r2.status_code == 200:
+                    j2 = r2.json()
+                    runs = j2.get("workflow_runs") or []
+                    if runs:
+                        run_url = runs[0].get("html_url") or ""
+            except Exception:
+                pass
+            msg = "已觸發 GitHub Action 背景重新抓取數據。"
+            if run_url:
+                msg += f" 進度：{run_url}"
+            return True, msg
+        except Exception:
+            return True, "已觸發 GitHub Action 背景重新抓取數據。"
+    msg = f"觸發失敗 HTTP {r.status_code}"
+    try:
+        j = r.json()
+        if isinstance(j, dict):
+            m = j.get("message") or ""
+            if m:
+                msg += f"：{str(m)[:120]}"
+    except Exception:
+        pass
+    log.warning("GHA dispatch failed: %s | body=%s", msg, (r.text or "")[:300])
+    return False, msg
+
+
+def _perform_force_refresh_bang(extra_symbols_list: Optional[List[str]] = None) -> Tuple[bool, str]:
+    try:
+        try:
+            get_home_watchlist_snapshot.clear()
+        except Exception:
+            pass
+        try:
+            get_data_v7.clear()
+        except Exception:
+            pass
+        try:
+            _a1_fetch_latest_artifact_cached.clear()
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        st.session_state[_FORCE_LIVE_FLAG_KEY] = float(time.time())
+    except Exception:
+        pass
+    try:
+        if st.session_state.get("_wl_cache_ts_v2"):
+            st.session_state["_wl_cache_ts_v2"] = 0.0
+    except Exception:
+        pass
+    syms_csv = ""
+    if extra_symbols_list:
+        cleaned = []
+        seen = set()
+        for s in extra_symbols_list:
+            cs = clean_ticker_input(s)
+            if not cs:
+                continue
+            if cs in seen:
+                continue
+            seen.add(cs)
+            cleaned.append(cs)
+        syms_csv = ",".join(cleaned)
+    ok_gha, msg_gha = _trigger_github_datafetcher_workflow(syms_csv)
+    live_note = "已清除本機所有數據快取，並要求當前頁面直接從 yfinance 重新抓取。"
+    if ok_gha:
+        return True, f"{live_note}\n{msg_gha}"
+    return False, f"{live_note}\n⚠️ {msg_gha}"
+
+
 def _persist_last_error(symbol: str, route: str, detail: str):
     try:
         _YF_LAST_ERROR[symbol] = {
@@ -3666,12 +3804,19 @@ def _native_sina_download(symbol: str, timeout: int = 25):
 def get_data_v7(symbol, end_date):
     sym_upper = str(symbol).strip().upper()
 
+    _force_live = False
+    try:
+        _force_live = _is_force_live_requested()
+    except Exception:
+        _force_live = False
+
     # Step A: prefer SQLite persistent cache (daemon pre-fetched).
     # Freshness guard: if last_trade_date is more than 3 calendar days before today
     # (covers weekends Fri→Mon = 2 trading days / 3 calendar days), force StepB live-fetch
     # so that stale SQLite (last_refresh old) won't lock the baseline date forever.
+    # User-initiated "Force Refresh Bang" also skips Step A entirely for immediate live pull.
     is_cached = False
-    if _CACHE_LAYER_OK and _get_cached_ohlcv is not None:
+    if (not _force_live) and _CACHE_LAYER_OK and _get_cached_ohlcv is not None:
         try:
             df_cache, sb_cache, cache_status = _get_cached_ohlcv(sym_upper, end_date=end_date, max_age_sec=10*60, bump_stats=True)
             if df_cache is not None and len(df_cache) > 10 and (cache_status in ("HIT", "STALE")):
@@ -4279,6 +4424,31 @@ PMAX_20_FIXED_INDICES: list = [
     0.313, 0.292, 0.271, 0.250, 0.229, 0.208, 0.188, 0.167, 0.146, 0.125,
 ]
 
+PMAX_23_FIXED_INDICES: list = PMAX_20_FIXED_INDICES + [0.104, 0.083, 0.063]
+
+_F2_CSS_TABLE_INJECTED_KEY = "__f2_23x6_table_css_injected_20260907__"
+_F2_GLOBAL_CSS = """
+<style>
+.f2_wrap { width: 100%; margin: 6px 0 10px 0; }
+.f2_title { font-weight: 600; margin: 2px 0 6px 0; }
+.f2_note { color: #666; font-size: 12px; margin: 2px 0 6px 0; }
+.f2_tbl { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 13px; }
+.f2_tbl th, .f2_tbl td {
+    border: 1px solid #ddd; padding: 6px 8px; text-align: right; vertical-align: middle;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.f2_tbl th { background: #f2f5fa; text-align: center; font-weight: 600; }
+.f2_tbl .idx-cell { text-align: center; background: #fafafa; width: 44px; }
+.f2_tbl .factor-cell { text-align: right; background: #f7f7f7; width: 80px; }
+.f2_tbl .pmf-cell { text-align: right; background: #fdf6e3; font-weight: 600; width: 96px; }
+.f2_tbl .date-cell { text-align: center; width: 108px; }
+.f2_tbl .cp-cell { text-align: right; width: 96px; }
+.f2_tbl .tur-cell { text-align: right; width: 88px; }
+.f2_tbl .amp-cell { text-align: right; width: 88px; }
+.f2_tbl .row-alt td { background: #fafbfc; }
+</style>
+"""
+
 CAL_TARGET_RED_VALUE: float = 3.5197
 
 _PMAX_INDEX6_CSS_DESKTOP_INJECTED_FLAG_KEY = "__p6index6_css_desktop_injected_20260829__"
@@ -4392,6 +4562,8 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
         "time_rows": [],
         "dev_offsets": list(dev_offsets),
         "cal_match": {"date": None, "k": None, "value": None, "abs_err": None},
+        "index_rows_23": [],
+        "cp_rows": [],
     }
     if df is None or df.empty:
         res["reason"] = "df empty"
@@ -4443,6 +4615,16 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
         for i, v in enumerate(PMAX_20_FIXED_INDICES):
             idx_rows.append({"idx": i, "index": float(v), "pm_x_index": float(Pm * float(v))})
         res["index_rows"] = idx_rows
+
+        idx_23 = []
+        for i, v in enumerate(PMAX_23_FIXED_INDICES):
+            fv = float(v)
+            idx_23.append({
+                "idx": i,
+                "index": fv,
+                "pm_x_index": float(Pm * fv),
+            })
+        res["index_rows_23"] = idx_23
 
         avg3 = close_s.rolling(window=avg_window, min_periods=avg_window).mean()
         dates_idx = pd.to_datetime(df.index)
@@ -4534,12 +4716,166 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
         res["time_rows"] = t_rows
         if best_meta.get("date") is not None:
             res["cal_match"] = best_meta
+        cp_rows_23_cols = []
+        for tr in t_rows:
+            try:
+                raw_cp = tr.get("close")
+                if raw_cp is None:
+                    cp_v = None
+                else:
+                    x = float(raw_cp)
+                    cp_v = x if np.isfinite(x) else None
+            except Exception:
+                cp_v = None
+            cp_rows_23_cols.append({
+                "date": tr.get("date") or "",
+                "cp": cp_v,
+                "tur": tr.get("tur"),
+                "amp": tr.get("amp"),
+            })
+        res["cp_rows"] = cp_rows_23_cols
         res["ok"] = True
         return res
     except Exception as exc:
         res["ok"] = False
         res["reason"] = f"{type(exc).__name__}: {str(exc)[:160]}"
         return res
+
+
+def _f2_ensure_global_css():
+    try:
+        if st.session_state.get(_F2_CSS_TABLE_INJECTED_KEY):
+            return
+    except Exception:
+        pass
+    try:
+        st.markdown(_F2_GLOBAL_CSS, unsafe_allow_html=True)
+    except Exception:
+        pass
+    try:
+        st.session_state[_F2_CSS_TABLE_INJECTED_KEY] = True
+    except Exception:
+        pass
+
+
+def _f2_fmt_num(v, digits, fallback: str = "-") -> str:
+    try:
+        if v is None:
+            return fallback
+        x = float(v)
+        if not np.isfinite(x):
+            return fallback
+        return f"{x:.{int(digits)}f}"
+    except Exception:
+        return fallback
+
+
+def render_f2_23x6_matrix(matrix, expand_rows: int = 23, expand_cols: int = 20,
+                         prefix: str = "f2_", title_extra: str = ""):
+    """23 行 × 6 欄矩陣：左 #/Index/Pmac 固定；右 Date/CP/TUR/Amp 依選定矩陣時序滾動顯示 expand_cols 行。
+    每行（# 1..23）固定 6 欄（# Index Pm×Index Date CP TUR Amp）。"""
+    if matrix is None:
+        st.info("F2 23×6 矩陣：未產生數據")
+        return
+    if not matrix.get("ok"):
+        st.info(f"F2 23×6 矩陣未產生：{matrix.get('reason') or ''}")
+        return
+    idx_rows = list(matrix.get("index_rows_23") or [])
+    cp_rows = list(matrix.get("cp_rows") or [])
+    if not idx_rows:
+        st.info("F2 23×6 矩陣：缺少 Index 列")
+        return
+    try:
+        expand_rows_i = max(1, min(int(expand_rows or 23), 100))
+    except Exception:
+        expand_rows_i = 23
+    try:
+        expand_cols_i = max(1, min(int(expand_cols or 20), 40))
+    except Exception:
+        expand_cols_i = 20
+    # 為了讓 23 行「固定位置」：如果 Index 列不足，補空。
+    if len(idx_rows) < expand_rows_i:
+        pad = expand_rows_i - len(idx_rows)
+        last_idx = list(idx_rows)
+        extra = []
+        base_factor = float(last_idx[-1].get("index") or 0.0) if last_idx else 0.0
+        step = 0.021
+        pm_v = float(matrix.get("pm") or 0.0)
+        for i in range(pad):
+            nf = max(0.0, base_factor - step * (i + 1))
+            extra.append({
+                "idx": len(last_idx) + i,
+                "index": nf,
+                "pm_x_index": float(pm_v * nf) if pm_v > 0 else 0.0,
+                "_pad": True,
+            })
+        idx_rows = last_idx + extra
+    elif len(idx_rows) > expand_rows_i:
+        idx_rows = list(idx_rows[:expand_rows_i])
+
+    date_cols = list(cp_rows[-expand_cols_i:]) if len(cp_rows) > expand_cols_i else list(cp_rows)
+
+    _f2_ensure_global_css()
+    pm_v = matrix.get("pm")
+    title = f"📋 F2 23×6 矩陣（左 23 行固定，右 {len(date_cols)} 欄依日期滾動）"
+    if title_extra:
+        title += f" · {title_extra}"
+    st.markdown(f'<div class="{prefix}wrap"><div class="{prefix}title">{title}</div>', unsafe_allow_html=True)
+    try:
+        note = ""
+        if pm_v is not None:
+            try:
+                note += f"Pmax(106)={float(pm_v):.2f} · Index/Pm×Index 固定不變"
+            except Exception:
+                pass
+        if note:
+            st.markdown(f'<div class="{prefix}note">{note}</div>', unsafe_allow_html=True)
+    except Exception:
+        pass
+    parts = []
+    parts.append(f'<table class="{prefix}tbl">')
+    head = [
+        "<th class='idx-cell'>#</th>",
+        "<th class='factor-cell'>Factor(係數)</th>",
+        "<th class='pmf-cell'>Pm × Factor</th>",
+        "<th>Date</th>",
+        "<th>Close price (CP)</th>",
+        "<th>TUR</th>",
+        "<th>Amp(%)</th>",
+    ]
+    parts.append(f"<thead><tr>{''.join(head)}</tr></thead><tbody>")
+    n = expand_rows_i
+    for i in range(n):
+        r = idx_rows[i] if i < len(idx_rows) else None
+        if r is None:
+            cells = [f"<td class='idx-cell'>{i + 1}</td>",
+                     "<td class='factor-cell'>-</td>",
+                     "<td class='pmf-cell'>-</td>"]
+        else:
+            cells = [
+                f"<td class='idx-cell'>{int(r.get('idx', i)) + 1}</td>",
+                f"<td class='factor-cell'>{_f2_fmt_num(r.get('index'), 3)}</td>",
+                f"<td class='pmf-cell'>{_f2_fmt_num(r.get('pm_x_index'), 2)}</td>",
+            ]
+        # 右側四欄：每一行都顯示「第 i 個時序行」（若時序不足則空）
+        d = date_cols[i] if i < len(date_cols) else None
+        if d is not None:
+            cells += [
+                f"<td class='date-cell'>{d.get('date') or ''}</td>",
+                f"<td class='cp-cell'>{_f2_fmt_num(d.get('cp'), 2)}</td>",
+                f"<td class='tur-cell'>{_f2_fmt_num(d.get('tur'), 4)}</td>",
+                f"<td class='amp-cell'>{_f2_fmt_num(d.get('amp'), 2)}</td>",
+            ]
+        else:
+            cells += ["<td class='date-cell'></td>",
+                      "<td class='cp-cell'></td>",
+                      "<td class='tur-cell'></td>",
+                      "<td class='amp-cell'></td>"]
+        row_cls = "" if (i % 2 == 0) else "row-alt"
+        parts.append(f"<tr class='{row_cls}'>{''.join(cells)}</tr>")
+    parts.append("</tbody></table>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_pmax_index6_panel(matrix, prefix: str = "p6d_"):
@@ -5219,6 +5555,56 @@ def render_top_navigation():
         if st.button("🧪 回測", key="quick_nav_backtest", use_container_width=True, type="primary" if current_page == "backtest" else "secondary"):
             set_current_page("backtest")
             st.rerun()
+
+    st.caption("數據工具")
+    tool_cols = st.columns([2, 1, 1])
+    with tool_cols[0]:
+        _bang_label = "🛠️ 強制更新數據（防呆）"
+        if st.button(_bang_label, key="top_nav_force_bang", use_container_width=True, type="secondary"):
+            _wl = []
+            try:
+                _wl = list(st.session_state.get("watchlist_list") or [])
+            except Exception:
+                _wl = []
+            try:
+                _cc = st.session_state.get("current_view") or ""
+                if _cc:
+                    _wl2 = list(_wl)
+                    if str(_cc).strip() not in _wl2:
+                        _wl2.insert(0, str(_cc).strip())
+                    _wl = _wl2
+            except Exception:
+                pass
+            _bang_ok, _bang_msg = _perform_force_refresh_bang(_wl)
+            try:
+                if _bang_ok:
+                    st.success(_bang_msg)
+                else:
+                    st.warning(_bang_msg)
+            except Exception:
+                pass
+            st.rerun()
+    with tool_cols[1]:
+        try:
+            _fl_ts = st.session_state.get(_FORCE_LIVE_FLAG_KEY)
+            if _fl_ts and _is_force_live_requested():
+                _remain = int(max(0, _FORCE_LIVE_WINDOW_SEC - (time.time() - float(_fl_ts))))
+                st.caption(f"⚡ 強制模式 {_remain//60:02d}:{_remain%60:02d}")
+            else:
+                st.caption("📦 一般模式")
+        except Exception:
+            st.caption("📦 一般模式")
+    with tool_cols[2]:
+        if st.button("🧹 只清 RAM 快取", key="top_nav_clear_ram", use_container_width=True):
+            try:
+                get_home_watchlist_snapshot.clear()
+            except Exception:
+                pass
+            try:
+                get_data_v7.clear()
+            except Exception:
+                pass
+            st.rerun()
     st.write("---")
 
 def render_bottom_navigation():
@@ -5722,10 +6108,28 @@ elif current_page == "home":
         summary_rows = snapshot.get("summaries", [])
         diagnostic = snapshot.get("diagnostic", {}) or {}
 
-        c_btn_1, c_btn_2 = st.columns(2)
+        c_btn_1, c_btn_2, c_btn_3 = st.columns([1, 1, 1.2])
         with c_btn_1:
-            if st.button("🔄 刷新所有數據", use_container_width=True):
+            if st.button("🔄 刷新所有數據", use_container_width=True, key="home_refresh_soft"):
                 get_home_watchlist_snapshot.clear()
+                st.rerun()
+        with c_btn_3:
+            if st.button("🛠️ 強制更新數據（防呆）", use_container_width=True, key="home_force_bang"):
+                _wls = list(watchlist_list or [])
+                try:
+                    _cc2 = st.session_state.get("current_view") or ""
+                    if _cc2 and str(_cc2).strip() not in _wls:
+                        _wls.insert(0, str(_cc2).strip())
+                except Exception:
+                    pass
+                _bok, _bmsg = _perform_force_refresh_bang(_wls)
+                try:
+                    if _bok:
+                        st.success(_bmsg)
+                    else:
+                        st.warning(_bmsg)
+                except Exception:
+                    pass
                 st.rerun()
         with c_btn_2:
             if st.button("📊 比較模式", use_container_width=True, type="primary"):
@@ -6078,13 +6482,30 @@ elif current_page == "stock":
         st.write("")
         is_in_watchlist = current_code in watchlist_list
         if is_in_watchlist:
-            if st.button("★ 已收藏", type="primary", use_container_width=True):
+            if st.button("★ 已收藏", type="primary", use_container_width=True, key="stock_toggle_wl"):
                 if remove_stock_from_db(current_code):
                     st.rerun()
         else:
-            if st.button("☆ 加入", use_container_width=True):
+            if st.button("☆ 加入", use_container_width=True, key="stock_toggle_wl"):
                 if update_stock_in_db(current_code):
                     st.rerun()
+        if st.button("🛠️ 強制更新此股", use_container_width=True, key="stock_force_bang_this"):
+            _wl_this = [current_code]
+            _bok_t, _bmsg_t = _perform_force_refresh_bang(_wl_this)
+            try:
+                if _bok_t:
+                    st.success(_bmsg_t)
+                else:
+                    st.warning(_bmsg_t)
+            except Exception:
+                pass
+            st.rerun()
+        if st.button("🔄 刷新", use_container_width=True, key="stock_soft_refresh"):
+            try:
+                get_data_v7.clear()
+            except Exception:
+                pass
+            st.rerun()
 
     df_share = get_data_v7(yahoo_ticker, st.session_state.ref_date)
     df = df_share[0] if isinstance(df_share, tuple) else df_share
@@ -6410,6 +6831,16 @@ elif current_page == "stock":
                         render_pmax_dev_table(pmax_dev_matrix, prefix=f"d2desk_old_{current_code}_")
                     except Exception as exc_d2:
                         st.info(f"Sn 三元組 Dev 矩陣暫時無法計算：{type(exc_d2).__name__}: {str(exc_d2)[:120]}")
+                st.write("")
+
+                # ---- L4 第 2.5 塊：F2 23×6 矩陣（左 23 行 Index/Pm×Factor 固定；右 Date/CP/TUR/Amp 依日期滾動）
+                st.write("")
+                try:
+                    render_f2_23x6_matrix(pm6_matrix, expand_rows=23, expand_cols=20,
+                                         prefix=f"f2desk_{current_code.replace('.', '_')}_",
+                                         title_extra=display_ticker)
+                except Exception as exc_f2:
+                    st.info(f"F2 23×6 矩陣暫時無法渲染：{type(exc_f2).__name__}: {str(exc_f2)[:160]}")
                 st.write("")
 
                 # ---- L4 第 3 塊：原始數據列表（最近 60 日；2026-09-02 格式校準：YYMMDD；Close→CP；TUR3小數；Amp→Amp 2小數）

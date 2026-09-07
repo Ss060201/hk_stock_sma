@@ -246,6 +246,110 @@ def _a1_fetch_latest_artifact_cached_m(gh_token: str):
     return _a1_fetch_latest_artifact_impl_m(gh_token)
 
 
+_FORCE_LIVE_FLAG_KEY_M = "_force_live_bang_ts_m"
+_FORCE_LIVE_WINDOW_SEC_M = 5 * 60
+_GHA_WORKFLOW_FILE_M = "data-fetcher-15min.yml"
+_GHA_DEFAULT_BRANCH_M = "main"
+
+
+def _is_force_live_requested_m() -> bool:
+    try:
+        ts = st.session_state.get(_FORCE_LIVE_FLAG_KEY_M)
+        if not ts:
+            return False
+        try:
+            age = float(_time_mod.time()) - float(ts)
+        except Exception:
+            return False
+        return 0 <= age < _FORCE_LIVE_WINDOW_SEC_M
+    except Exception:
+        return False
+
+
+def _trigger_github_datafetcher_workflow_m(extra_symbols_csv: str = "") -> Tuple[bool, str]:
+    log = logging.getLogger(__name__)
+    gh_token = _a1_read_gh_token_m()
+    if not gh_token:
+        return False, "未設定 GH_PAT/GITHUB_TOKEN，無法觸發 GitHub Action。"
+    headers = {
+        "Authorization": f"Bearer {gh_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "hk-stock-sma-force-refresh-m/1.0",
+    }
+    url = (
+        f"https://api.github.com/repos/{_GH_OWNER_M}/{_GH_REPO_M}"
+        f"/actions/workflows/{requests.utils.quote(_GHA_WORKFLOW_FILE_M)}/dispatches"
+    )
+    payload = {
+        "ref": _GHA_DEFAULT_BRANCH_M,
+        "inputs": {
+            "extra_symbols": str(extra_symbols_csv or "").strip(),
+            "log_level": "INFO",
+        },
+    }
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=20, allow_redirects=True)
+    except Exception as e:
+        return False, f"網路錯誤：{type(e).__name__}"
+    if r.status_code in (201, 202, 204):
+        return True, "已觸發 GitHub Action 背景重新抓取數據。"
+    msg = f"觸發失敗 HTTP {r.status_code}"
+    try:
+        j = r.json()
+        if isinstance(j, dict):
+            m = j.get("message") or ""
+            if m:
+                msg += f"：{str(m)[:120]}"
+    except Exception:
+        pass
+    log.warning("GHA dispatch failed (mobile): %s", msg)
+    return False, msg
+
+
+def _perform_force_refresh_bang_m(extra_symbols_list: Optional[List[str]] = None, gv7_ref=None, ghws_ref=None, a1_cached_ref=None) -> Tuple[bool, str]:
+    try:
+        if ghws_ref is not None:
+            try:
+                ghws_ref.clear()
+            except Exception:
+                pass
+        if gv7_ref is not None:
+            try:
+                gv7_ref.clear()
+            except Exception:
+                pass
+        if a1_cached_ref is not None:
+            try:
+                a1_cached_ref.clear()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        st.session_state[_FORCE_LIVE_FLAG_KEY_M] = float(_time_mod.time())
+    except Exception:
+        pass
+    syms_csv = ""
+    if extra_symbols_list:
+        cleaned = []
+        seen = set()
+        for s in extra_symbols_list:
+            cs = clean_ticker_input(s)
+            if not cs:
+                continue
+            if cs in seen:
+                continue
+            seen.add(cs)
+            cleaned.append(cs)
+        syms_csv = ",".join(cleaned)
+    ok_gha, msg_gha = _trigger_github_datafetcher_workflow_m(syms_csv)
+    live_note = "已清除本機所有數據快取，並要求當前頁面直接從 yfinance 重新抓取。"
+    if ok_gha:
+        return True, f"{live_note}\n{msg_gha}"
+    return False, f"{live_note}\n⚠️ {msg_gha}"
+
+
 try:
     from cache_layer import (
         ensure_schema as _ensure_cache_schema_m,
@@ -970,7 +1074,31 @@ PMAX_20_FIXED_INDICES_M: list = [
     0.625, 0.583, 0.542, 0.500, 0.458, 0.417, 0.396, 0.375, 0.354, 0.333,
     0.313, 0.292, 0.271, 0.250, 0.229, 0.208, 0.188, 0.167, 0.146, 0.125,
 ]
+PMAX_23_FIXED_INDICES_M: list = PMAX_20_FIXED_INDICES_M + [0.104, 0.083, 0.063]
 CAL_TARGET_RED_VALUE_M: float = 3.5197
+
+_F2_CSS_TABLE_INJECTED_KEY_M = "__f2_23x6_table_css_injected_m_20260907__"
+_F2_GLOBAL_CSS_M = """
+<style>
+.f2m_wrap { width: 100%; margin: 4px 0 8px 0; }
+.f2m_title { font-weight: 700; margin: 2px 0 4px 0; font-size: 13px; }
+.f2m_note { color: #666; font-size: 11px; margin: 2px 0 4px 0; }
+.f2m_tbl { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 11px; }
+.f2m_tbl th, .f2m_tbl td {
+    border: 1px solid #cdd6d5; padding: 4px 6px; text-align: right; vertical-align: middle;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.f2m_tbl th { background: #eff4fb; text-align: center; font-weight: 700; }
+.f2m_tbl .idx-cell { text-align: center; background: #f5f6f7; width: 36px; }
+.f2m_tbl .factor-cell { text-align: right; background: #f2f5f4; width: 60px; }
+.f2m_tbl .pmf-cell { text-align: right; background: #fff6df; font-weight: 700; width: 72px; }
+.f2m_tbl .date-cell { text-align: center; width: 88px; }
+.f2m_tbl .cp-cell { width: 76px; }
+.f2m_tbl .tur-cell { width: 70px; }
+.f2m_tbl .amp-cell { width: 70px; }
+.f2m_tbl .row-alt td { background: #fbfcfb; }
+</style>
+"""
 
 _PMAX_INDEX6_CSS_MOBILE_FLAG = "__p6m_css_mobile_injected_20260829__"
 _PMAX_INDEX6_CSS_MOBILE = """
@@ -1044,6 +1172,8 @@ def calc_pmax_index6_matrix_m(df: pd.DataFrame,
         "time_rows": [],
         "dev_offsets": list(dev_offsets),
         "cal_match": {"date": None, "k": None, "value": None, "abs_err": None},
+        "index_rows_23": [],
+        "cp_rows": [],
     }
     if df is None or df.empty:
         res["reason"] = "df empty"
@@ -1091,6 +1221,16 @@ def calc_pmax_index6_matrix_m(df: pd.DataFrame,
         for i, v in enumerate(PMAX_20_FIXED_INDICES_M):
             idx_rows.append({"idx": i, "index": float(v), "pm_x_index": float(Pm * float(v))})
         res["index_rows"] = idx_rows
+
+        idx_23 = []
+        for i, v in enumerate(PMAX_23_FIXED_INDICES_M):
+            fv = float(v)
+            idx_23.append({
+                "idx": i,
+                "index": fv,
+                "pm_x_index": float(Pm * fv),
+            })
+        res["index_rows_23"] = idx_23
 
         avg3 = close_s.rolling(window=avg_window, min_periods=avg_window).mean()
         dates_idx = pd.to_datetime(df.index)
@@ -1174,6 +1314,24 @@ def calc_pmax_index6_matrix_m(df: pd.DataFrame,
         res["time_rows"] = t_rows
         if best_meta.get("date") is not None:
             res["cal_match"] = best_meta
+        cp_rows_out = []
+        for tr in t_rows:
+            try:
+                raw_cp = tr.get("close")
+                if raw_cp is None:
+                    cp_v = None
+                else:
+                    x = float(raw_cp)
+                    cp_v = x if np.isfinite(x) else None
+            except Exception:
+                cp_v = None
+            cp_rows_out.append({
+                "date": tr.get("date") or "",
+                "cp": cp_v,
+                "tur": tr.get("tur"),
+                "amp": tr.get("amp"),
+            })
+        res["cp_rows"] = cp_rows_out
         res["ok"] = True
         return res
     except Exception as exc:
@@ -1414,6 +1572,132 @@ def render_cot_2blocks_m(cot_matrix, prefix: str = "cotm_"):
     parts.append("</tbody></table></div>")
     parts.append("</div>")
     st.markdown("".join(parts), unsafe_allow_html=True)
+
+
+def _f2_ensure_global_css_m():
+    try:
+        if st.session_state.get(_F2_CSS_TABLE_INJECTED_KEY_M):
+            return
+    except Exception:
+        pass
+    try:
+        st.markdown(_F2_GLOBAL_CSS_M, unsafe_allow_html=True)
+    except Exception:
+        pass
+    try:
+        st.session_state[_F2_CSS_TABLE_INJECTED_KEY_M] = True
+    except Exception:
+        pass
+
+
+def _f2_fmt_num_m(v, digits, fallback: str = "-") -> str:
+    try:
+        if v is None:
+            return fallback
+        x = float(v)
+        if not np.isfinite(x):
+            return fallback
+        return f"{x:.{int(digits)}f}"
+    except Exception:
+        return fallback
+
+
+def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20,
+                            prefix: str = "f2m_", title_extra: str = ""):
+    if matrix is None:
+        st.info("F2 23×6 矩陣：未產生數據")
+        return
+    if not matrix.get("ok"):
+        st.info(f"F2 23×6 矩陣未產生：{matrix.get('reason') or ''}")
+        return
+    idx_rows = list(matrix.get("index_rows_23") or [])
+    cp_rows = list(matrix.get("cp_rows") or [])
+    if not idx_rows:
+        st.info("F2 23×6 矩陣：缺少 Index 列")
+        return
+    try:
+        expand_rows_i = max(1, min(int(expand_rows or 23), 100))
+    except Exception:
+        expand_rows_i = 23
+    try:
+        expand_cols_i = max(1, min(int(expand_cols or 20), 40))
+    except Exception:
+        expand_cols_i = 20
+    if len(idx_rows) < expand_rows_i:
+        pad = expand_rows_i - len(idx_rows)
+        last_idx = list(idx_rows)
+        extra = []
+        base_factor = float(last_idx[-1].get("index") or 0.0) if last_idx else 0.0
+        step = 0.021
+        pm_v = float(matrix.get("pm") or 0.0)
+        for i in range(pad):
+            nf = max(0.0, base_factor - step * (i + 1))
+            extra.append({
+                "idx": len(last_idx) + i,
+                "index": nf,
+                "pm_x_index": float(pm_v * nf) if pm_v > 0 else 0.0,
+            })
+        idx_rows = last_idx + extra
+    elif len(idx_rows) > expand_rows_i:
+        idx_rows = list(idx_rows[:expand_rows_i])
+    date_cols = list(cp_rows[-expand_cols_i:]) if len(cp_rows) > expand_cols_i else list(cp_rows)
+    _f2_ensure_global_css_m()
+    pm_v = matrix.get("pm")
+    title = f"📋 F2 23×6 矩陣（左 23 行固定，右 {len(date_cols)} 日期滾動）"
+    if title_extra:
+        title += f" · {title_extra}"
+    st.markdown(f'<div class="{prefix}wrap"><div class="{prefix}title">{title}</div>', unsafe_allow_html=True)
+    try:
+        if pm_v is not None:
+            try:
+                st.markdown(f'<div class="{prefix}note">Pmax(106)={float(pm_v):.2f} · Index/Pm×Index 固定不變</div>', unsafe_allow_html=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    parts = []
+    parts.append(f'<table class="{prefix}tbl">')
+    head = [
+        "<th class='idx-cell'>#</th>",
+        "<th class='factor-cell'>Factor</th>",
+        "<th class='pmf-cell'>Pm×Factor</th>",
+        "<th>Date</th>",
+        "<th>CP</th>",
+        "<th>TUR</th>",
+        "<th>Amp</th>",
+    ]
+    parts.append(f"<thead><tr>{''.join(head)}</tr></thead><tbody>")
+    n = expand_rows_i
+    for i in range(n):
+        r = idx_rows[i] if i < len(idx_rows) else None
+        if r is None:
+            cells = [f"<td class='idx-cell'>{i + 1}</td>",
+                     "<td class='factor-cell'>-</td>",
+                     "<td class='pmf-cell'>-</td>"]
+        else:
+            cells = [
+                f"<td class='idx-cell'>{int(r.get('idx', i)) + 1}</td>",
+                f"<td class='factor-cell'>{_f2_fmt_num_m(r.get('index'), 3)}</td>",
+                f"<td class='pmf-cell'>{_f2_fmt_num_m(r.get('pm_x_index'), 2)}</td>",
+            ]
+        d = date_cols[i] if i < len(date_cols) else None
+        if d is not None:
+            cells += [
+                f"<td class='date-cell'>{d.get('date') or ''}</td>",
+                f"<td class='cp-cell'>{_f2_fmt_num_m(d.get('cp'), 2)}</td>",
+                f"<td class='tur-cell'>{_f2_fmt_num_m(d.get('tur'), 4)}</td>",
+                f"<td class='amp-cell'>{_f2_fmt_num_m(d.get('amp'), 2)}</td>",
+            ]
+        else:
+            cells += ["<td class='date-cell'></td>",
+                      "<td class='cp-cell'></td>",
+                      "<td class='tur-cell'></td>",
+                      "<td class='amp-cell'></td>"]
+        row_cls = "" if (i % 2 == 0) else "row-alt"
+        parts.append(f"<tr class='{row_cls}'>{''.join(cells)}</tr>")
+    parts.append("</tbody></table>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_pmax_index6_panel_m(matrix, prefix: str = "p6m_"):
@@ -1717,6 +2001,7 @@ if not current_code:
         # ===== [改动5.1] 响应式按钮 =====
         buttons = [
             {"label": "🔄 刷新所有數據", "key": "refresh"},
+            {"label": "🛠️ 強制更新數據", "key": "force_bang"},
             {"label": "📊 比較模式", "key": "compare", "type": "primary"},
         ]
         
@@ -1724,6 +2009,30 @@ if not current_code:
         
         if clicked == "refresh":
             st.cache_clear()
+            st.rerun()
+        elif clicked == "force_bang":
+            _wls_m = list(watchlist_list or [])
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
+            try:
+                _a1_fetch_latest_artifact_cached_m.clear()
+            except Exception:
+                pass
+            _bok_m, _bmsg_m = _perform_force_refresh_bang_m(
+                _wls_m,
+                gv7_ref=None,
+                ghws_ref=None,
+                a1_cached_ref=_a1_fetch_latest_artifact_cached_m,
+            )
+            try:
+                if _bok_m:
+                    st.success(_bmsg_m)
+                else:
+                    st.warning(_bmsg_m)
+            except Exception:
+                pass
             st.rerun()
         elif clicked == "compare":
             st.info("📊 比較模式功能開發中...")
@@ -1845,6 +2154,12 @@ else:
             if st.button("◀", use_container_width=True, key="mobile_back"):
                 st.session_state.current_view = ""
                 st.rerun()
+            if st.button("🔄", use_container_width=True, key="mobile_soft_refresh"):
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
+                st.rerun()
         with col2:
             st.markdown(f"<h3 style='text-align: center; margin: 0;'>{display_ticker}</h3>", unsafe_allow_html=True)
         with col3:
@@ -1857,6 +2172,30 @@ else:
                     action_ok = update_stock_in_db(current_code)
                 if action_ok:
                     st.rerun()
+            if st.button("🛠️", use_container_width=True, key="mobile_force_bang"):
+                _wl_m_this = [current_code]
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
+                try:
+                    _a1_fetch_latest_artifact_cached_m.clear()
+                except Exception:
+                    pass
+                _bok_mt, _bmsg_mt = _perform_force_refresh_bang_m(
+                    _wl_m_this,
+                    gv7_ref=None,
+                    ghws_ref=None,
+                    a1_cached_ref=_a1_fetch_latest_artifact_cached_m,
+                )
+                try:
+                    if _bok_mt:
+                        st.success(_bmsg_mt)
+                    else:
+                        st.warning(_bmsg_mt)
+                except Exception:
+                    pass
+                st.rerun()
     else:
         # 桌面版头部
         col_t, col_b = st.columns([0.85, 0.15])
@@ -1866,13 +2205,43 @@ else:
             st.write("")
             is_in_watchlist = current_code in watchlist_list
             if is_in_watchlist:
-                if st.button("★ 已收藏", type="primary", use_container_width=True):
+                if st.button("★ 已收藏", type="primary", use_container_width=True, key="stock_d_wl"):
                     if remove_stock_from_db(current_code):
                         st.rerun()
             else:
-                if st.button("☆ 加入", use_container_width=True):
+                if st.button("☆ 加入", use_container_width=True, key="stock_d_wl"):
                     if update_stock_in_db(current_code):
                         st.rerun()
+            if st.button("🛠️ 強制更新此股", use_container_width=True, key="stock_d_force"):
+                _wl_mt2 = [current_code]
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
+                try:
+                    _a1_fetch_latest_artifact_cached_m.clear()
+                except Exception:
+                    pass
+                _bok_mt2, _bmsg_mt2 = _perform_force_refresh_bang_m(
+                    _wl_mt2,
+                    gv7_ref=None,
+                    ghws_ref=None,
+                    a1_cached_ref=_a1_fetch_latest_artifact_cached_m,
+                )
+                try:
+                    if _bok_mt2:
+                        st.success(_bmsg_mt2)
+                    else:
+                        st.warning(_bmsg_mt2)
+                except Exception:
+                    pass
+                st.rerun()
+            if st.button("🔄 刷新", use_container_width=True, key="stock_d_refresh"):
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
+                st.rerun()
     
     _YF_LAST_ERROR_M: Dict[str, Any] = {}
     _NATIVE_DL_STATS_M = {"native_attempts": 0, "native_success": 0, "yf_attempts": 0, "yf_success": 0}
@@ -2237,11 +2606,18 @@ else:
     def get_data_v7(symbol, end_date):
         sym_upper_m = str(symbol).strip().upper()
 
+        _force_live_m = False
+        try:
+            _force_live_m = _is_force_live_requested_m()
+        except Exception:
+            _force_live_m = False
+
         # Step A: prefer SQLite persistent cache (daemon pre-fetched).
         # Freshness guard: if last_trade_date > 3 calendar days before today,
         # force StepB live-fetch (avoids stale SQLite locking baseline forever).
+        # User-initiated "Force Refresh Bang" also skips Step A entirely for immediate live pull.
         is_cached = False
-        if _CACHE_LAYER_OK_M and _get_cached_ohlcv_m is not None:
+        if (not _force_live_m) and _CACHE_LAYER_OK_M and _get_cached_ohlcv_m is not None:
             try:
                 df_cache_m, sb_cache_m, cs_m = _get_cached_ohlcv_m(sym_upper_m, end_date=end_date, max_age_sec=10*60, bump_stats=True)
                 if df_cache_m is not None and len(df_cache_m) > 10 and (cs_m in ("HIT", "STALE")):
@@ -2643,6 +3019,16 @@ else:
                 render_pmax_dev_table_m(m_d2, prefix=f"d2m_old_{current_code}_")
             except Exception as exc_d2:
                 st.info(f"Sn 三元組無法計算：{type(exc_d2).__name__}: {str(exc_d2)[:120]}")
+        st.write("")
+
+        # ---- L4 第 2.5 塊：F2 23×6 矩陣（左 23 行固定 Factor/Pm×Factor；右 Date/CP/TUR/Amp 依日期滾動）
+        try:
+            _ttl_extra = str(current_code or "").strip() or ""
+            render_f2_23x6_matrix_m(pm6m, expand_rows=23, expand_cols=20,
+                                    prefix=f"f2m_{current_code.replace('.','_')}_",
+                                    title_extra=_ttl_extra)
+        except Exception as exc_f2:
+            st.info(f"F2 23×6 矩陣暫時無法渲染：{type(exc_f2).__name__}: {str(exc_f2)[:160]}")
         st.write("")
 
         # ---- L4 第 3 塊：最近 40 日數據列表（2026-09-02 格式校準：YYMMDD；Close→CP；TUR3；Amp2）
