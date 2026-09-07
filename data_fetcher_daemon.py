@@ -28,6 +28,57 @@ _GLOBAL_PAUSE_SEC_ON_RISK = int(os.environ.get("GLOBAL_PAUSE_SEC_ON_RISK", "600"
 _BOOTSTRAP_EXTRA_SYMBOLS = [s.strip() for s in os.environ.get("BOOTSTRAP_EXTRA_SYMBOLS", "0700,0005,0388,2318,0027,0011,1299,0823,0001").split(",") if s.strip()]
 
 
+def _get_hk_index_constituents_seed() -> List[str]:
+    """Deduplicated HSI + HSCEI + HSTECH 2026Q3 constituents.
+
+    Mirrors scripts/tur_amp_health_scan.py:HK_COMMON_LIQUID_CODES (~200 core liquid names).
+    NOTE: we import lazily from scanner so the list is a single source of truth
+    and we never need to maintain two copies.
+    """
+    try:
+        import importlib.util as _ilu
+        from pathlib import Path as _Path
+        _p = _Path(__file__).resolve().parent / "scripts" / "tur_amp_health_scan.py"
+        _spec = _ilu.spec_from_file_location("_tur_scan_codes", _p)
+        if _spec is None or _spec.loader is None:
+            raise ImportError("tur scanner module not loadable")
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        codes = list(getattr(_mod, "HK_COMMON_LIQUID_CODES", set()))
+        return sorted(set(codes))
+    except Exception:
+        # Fallback: embedded compact core list (never crash the daemon if scanner missing)
+        return sorted(set([
+            "0001","0002","0003","0005","0006","0011","0012","0016","0017","0019",
+            "0027","0066","0083","0101","0104","0116","0127","0151","0168","0175",
+            "0241","0267","0285","0288","0291","0293","0316","0322","0347","0358",
+            "0368","0386","0388","0392","0398","0460","0480","0489","0522","0525",
+            "0548","0669","0688","0691","0700","0753","0762","0788","0811","0813",
+            "0823","0853","0857","0867","0868","0881","0883","0909","0914","0934",
+            "0939","0941","0945","0960","0966","0968","0981","0984","0992","0995",
+            "0998","1024","1038","1044","1066","1088","1093","1097","1109","1112",
+            "1113","1127","1171","1177","1186","1193","1208","1211","1299","1310",
+            "1313","1316","1336","1339","1347","1371","1382","1395","1398","1402",
+            "1548","1772","1776","1787","1801","1806","1810","1813","1818","1876",
+            "1883","1898","1919","1928","1929","1966","1994","1997","2007","2015",
+            "2018","2020","2127","2128","2129","2138","2180","2196","2238","2269",
+            "2313","2314","2318","2328","2331","2333","2338","2359","2368","2382",
+            "2388","2399","2401","2413","2422","2423","2433","2456","2468","2488",
+            "2518","2520","2588","2601","2607","2611","2618","2628","2660","2666",
+            "2688","2689","2696","2707","2722","2753","2768","2777","2778","2788",
+            "2799","2800","2801","2808","2812","2822","2828","2848","2857","2858",
+            "2866","2877","2878","2888","2899","2907","2924","2929","2934","2939",
+            "2981","2984","2992","2993","3024","3035","3189","3309","3311","3319",
+            "3323","3328","3331","3333","3347","3360","3368","3382","3388","3401",
+            "3419","3427","3435","3442","3443","3475","3476","3544","3579","3585",
+            "3590","3594","3606","3610","3631","3636","3662","3663","3668","3669",
+            "3690","3692","3693","3694","3719","3734","3738","3772","3773","3788",
+            "3799","3800","3808","3813","3818","3828","3836","3848","3866","3868",
+            "3888","3898","3899","3900","3908","3918","3927","3933","3939","3948",
+            "3968","3969","3983","3988","3993","3996","3997","3998","3999","4009",
+        ]))
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -303,6 +354,14 @@ def scheduled_refresh_thread(state: DaemonState) -> None:
                 pass
             # Bootstrap default
             for s in _BOOTSTRAP_EXTRA_SYMBOLS:
+                try:
+                    from data_ingest_stack import get_yahoo_ticker
+                    targets.add(str(get_yahoo_ticker(s)).strip().upper())
+                except Exception:
+                    continue
+            # HSI / HSCEI / HSTECH core constituents (~200) — so cache grows beyond the
+            # 9-symbol bootstrap list, and TUR/Amp scanner has data to validate.
+            for s in _get_hk_index_constituents_seed():
                 try:
                     from data_ingest_stack import get_yahoo_ticker
                     targets.add(str(get_yahoo_ticker(s)).strip().upper())
@@ -646,6 +705,13 @@ def scheduled_refresh_thread_once(state: DaemonState) -> None:
     except Exception:
         pass
     for s in _BOOTSTRAP_EXTRA_SYMBOLS:
+        try:
+            from data_ingest_stack import get_yahoo_ticker
+            targets.add(str(get_yahoo_ticker(s)).strip().upper())
+        except Exception:
+            continue
+    # HSI / HSCEI / HSTECH core constituents (~200)
+    for s in _get_hk_index_constituents_seed():
         try:
             from data_ingest_stack import get_yahoo_ticker
             targets.add(str(get_yahoo_ticker(s)).strip().upper())
