@@ -41,7 +41,12 @@ env:
 jobs:
   fetch-and-archive:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    # NOTE: first ever "cold" run has to download ~270 tickers of 5Y daily OHLCV
+    # from Yahoo Finance, which can easily exceed the default 55m. Incremental
+    # runs (with cache artifact restored) finish in ~5-15m. If you want to be
+    # safe only for incremental runs, set this back to 60 after the first full
+    # cache is built successfully.
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
@@ -98,6 +103,15 @@ jobs:
         id: run-daemon
         shell: bash
         continue-on-error: false
+        env:
+          # Faster cold-start cache build (~270 tickers):
+          #   ONCE_MODE_WORKERS = 2  -> cuts wall time by ~2x (default 1x)
+          #   FETCH_INTERVAL_*      -> reduce per-symbol jitter by half (no 429 = ~30m faster)
+          #   MAX_429_15MIN         -> tolerate a few more 429s before global pause
+          ONCE_MODE_WORKERS: 2
+          FETCH_INTERVAL_MIN_SEC: 0.4
+          FETCH_INTERVAL_MAX_SEC: 0.9
+          MAX_429_15MIN: 8
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/logs"
@@ -112,9 +126,6 @@ jobs:
             done
           fi
           set -x
-          # --- G4 rc handling: disable pipefail + ignore exit during python|tee,
-          # then capture ONLY python's exit via PIPESTATUS[0]. This ensures
-          # SIGPIPE on tee/tail never masks the daemon exit code.
           set +e
           set +o pipefail
           python -u data_fetcher_daemon.py "${ARGS[@]}" 2>&1 | tee "$LOGFILE"
@@ -122,7 +133,6 @@ jobs:
           set -o pipefail
           set -e
           echo "daemon_exit_code=$DAEMON_RC" >> "$GITHUB_OUTPUT"
-          # Append last 60 lines of daemon log to GITHUB_STEP_SUMMARY for quick debug
           {
             echo ""
             echo "---"
@@ -135,8 +145,6 @@ jobs:
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "LOGFILE=$LOGFILE" >> "$GITHUB_ENV"
-          # Re-raise daemon exit code properly (but never fail on partial success:
-          # daemon's main() already returns 0 when processed_ok>=1, 1 only for 0011.HK-style single failures on a first run with 0 ok count -- that is still a legit failure.)
           exit "$DAEMON_RC"
 
       - name: Print final cache summary

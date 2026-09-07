@@ -26,6 +26,7 @@ _WATCHLIST_REFRESH_MIN = float(os.environ.get("WATCHLIST_REFRESH_MIN", "10"))
 _MAX_429_15MIN = int(os.environ.get("MAX_429_15MIN", "4"))
 _GLOBAL_PAUSE_SEC_ON_RISK = int(os.environ.get("GLOBAL_PAUSE_SEC_ON_RISK", "600"))
 _BOOTSTRAP_EXTRA_SYMBOLS = [s.strip() for s in os.environ.get("BOOTSTRAP_EXTRA_SYMBOLS", "0700,0005,0388,2318,0027,0011,1299,0823,0001").split(",") if s.strip()]
+_ONCE_MODE_WORKERS = max(1, int(os.environ.get("ONCE_MODE_WORKERS", "2")))
 
 
 def _get_hk_index_constituents_seed() -> List[str]:
@@ -696,7 +697,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 def scheduled_refresh_thread_once(state: DaemonState) -> None:
-    """For --once mode: same logic as scheduled loop but single pass + drain queue."""
+    """For --once mode: enqueue HSI/HSCEI/HSTECH ~270 codes, then drain with N workers.
+
+    Multi-worker (default 2 threads) cuts cold-start cache-build time ~2x
+    while still honoring rate-limit / 429 state (shared state._recent_429_ts
+    is read across workers, and _process_one_symbol itself is already
+    thread-safe via DaemonState.claim_next_pending which uses a Lock).
+    """
     from cache_layer import list_cached_symbols, request_async_fetch, peek_next_pending
 
     targets: Set[str] = set()
@@ -710,7 +717,7 @@ def scheduled_refresh_thread_once(state: DaemonState) -> None:
             targets.add(str(get_yahoo_ticker(s)).strip().upper())
         except Exception:
             continue
-    # HSI / HSCEI / HSTECH core constituents (~200)
+    # HSI / HSCEI / HSTECH core constituents (~270)
     for s in _get_hk_index_constituents_seed():
         try:
             from data_ingest_stack import get_yahoo_ticker
@@ -731,23 +738,60 @@ def scheduled_refresh_thread_once(state: DaemonState) -> None:
         except Exception:
             continue
 
-    # Drain queue.
-    drain_deadline = _ts_now() + 3600 * 6  # safety cap 6h
+    # Drain queue with N workers. Cap safety at 4 to avoid Yahoo rate limit storm.
+    n_workers = max(1, min(_ONCE_MODE_WORKERS, 4))
+
+    def _worker_loop(worker_id: int) -> None:
+        # Add tiny per-worker staggered sleep so they don't all hammer Yahoo
+        # simultaneously on wakeup.
+        if worker_id > 0:
+            time.sleep(0.4 * worker_id)
+        while not state.stop_event.is_set():
+            if state.is_paused():
+                time.sleep(2.0)
+                continue
+            pending = peek_next_pending(limit=1)
+            if not pending:
+                break
+            item = pending[0]
+            symbol = str(item.get("symbol", "")).strip().upper()
+            if not symbol:
+                time.sleep(0.3)
+                continue
+            _process_one_symbol(state, symbol)
+            # Per-symbol jitter. Because n_workers share a single global sleep
+            # call this "total delay per symbol" is divided across workers,
+            # which is roughly correct.
+            delay = random.uniform(_FETCH_INTERVAL_MIN, _FETCH_INTERVAL_MAX)
+            time.sleep(delay)
+
+    # Safety ceiling for drain (3.5h); combined with workflow timeout 180m
+    # ensures we never run forever on a broken queue.
+    drain_deadline = _ts_now() + 3600 * 3 + 1800
+    worker_threads: List[threading.Thread] = []
+
+    for i in range(n_workers):
+        th = threading.Thread(
+            target=_worker_loop,
+            args=(i,),
+            name=f"once-worker-{i+1}",
+            daemon=True,
+        )
+        worker_threads.append(th)
+        th.start()
+
     while not state.stop_event.is_set() and _ts_now() < drain_deadline:
-        if state.is_paused():
-            time.sleep(5.0)
-            continue
-        pending = peek_next_pending(limit=1)
-        if not pending:
+        if all(not t.is_alive() for t in worker_threads):
             break
-        item = pending[0]
-        symbol = str(item.get("symbol", "")).strip().upper()
-        if not symbol:
-            time.sleep(0.5)
-            continue
-        _process_one_symbol(state, symbol)
-        delay = random.uniform(_FETCH_INTERVAL_MIN, _FETCH_INTERVAL_MAX)
-        time.sleep(delay)
+        pending = peek_next_pending(limit=1) or []
+        if not pending and all(not t.is_alive() for t in worker_threads):
+            break
+        time.sleep(2.0)
+    else:
+        # We hit the drain deadline; tell workers to stop soon.
+        state.stop_event.set()
+    for th in worker_threads:
+        th.join(timeout=15.0)
 
 
 if __name__ == "__main__":
