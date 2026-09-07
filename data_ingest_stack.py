@@ -237,15 +237,27 @@ def _resolve_share_base_post(df: pd.DataFrame, symbol: str,
     try:
         t_obj = yf.Ticker(symbol)
         try:
-            from providers.share_base_provider import get_share_base_provider  # type: ignore
-            provider = get_share_base_provider()
+            from providers import build_default_share_base_provider
+            provider = build_default_share_base_provider()
             ticker_raw = clean_ticker_input(getattr(t_obj, "ticker", symbol))
-            from providers.base_share_provider import Ticker as _BTicker  # type: ignore
-            lookup_obj = _BTicker(ticker=ticker_raw, yahoo_symbol=symbol, market="HK")
-            res = provider.get_share_base(lookup_obj)
-            val = getattr(res, "share_base", None)
-            if val is not None and pd.notna(val) and float(val) > 0:
-                return float(val), None
+            lookup_obj = t_obj
+            try:
+                res = provider.get_share_base(lookup_obj)
+                val = getattr(res, "share_base", None)
+                if val is not None and pd.notna(val) and float(val) > 0:
+                    return float(val), None
+            except Exception:
+                pass
+            # --- fallback: use yfinance Ticker.info directly if provider chain failed
+            info = getattr(t_obj, "info", None) or {}
+            if info:
+                import sys as _sys
+                from providers.yfinance_share_base_provider import YahooShareBaseProvider
+                yf_provider = YahooShareBaseProvider()
+                res2 = yf_provider.get_share_base(t_obj)
+                val2 = getattr(res2, "share_base", None)
+                if val2 is not None and pd.notna(val2) and float(val2) > 0:
+                    return float(val2), getattr(res2, "warning", None)
         except Exception:
             pass
     except Exception:

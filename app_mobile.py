@@ -21,8 +21,11 @@ from tempfile import gettempdir
 from typing import Dict, Any, Optional, List, Tuple
 from firebase_admin.exceptions import FirebaseError
 from streamlit.errors import StreamlitSecretNotFoundError
-from providers import CSVShareBaseProvider, CompositeShareBaseProvider, YahooShareBaseProvider
-from turnover_utils import TURNOVER_STATUS_CALCULATED, apply_turnover_rate
+from providers import (
+    build_default_share_base_provider,
+    FloatProviderAsShareProvider,
+)
+from turnover_utils import TURNOVER_STATUS_CALCULATED, apply_turnover_rate, compute_safe_amplitude
 from watchlist_storage import (
     delete_watchlist_symbol,
     get_watchlist_from_firestore,
@@ -769,14 +772,9 @@ def get_yahoo_ticker(symbol):
 
 
 @st.cache_resource(show_spinner=False)
-def get_share_base_provider() -> CompositeShareBaseProvider:
-    metadata_dir = Path(__file__).resolve().parent / "metadata"
-    return CompositeShareBaseProvider(
-        [
-            CSVShareBaseProvider(metadata_dir / "share_base.csv"),
-            YahooShareBaseProvider(),
-        ]
-    )
+def get_share_base_provider():
+    """Return the cached standard 3-tier provider chain (AASTOCKS TUR 優先流通股)."""
+    return build_default_share_base_provider()
 
 
 def get_turnover_share_base(ticker_obj):
@@ -2836,7 +2834,7 @@ else:
             df = simulate_bs_data(df, share_base)
         
         prev_close_series = df['Close'].shift(1).replace(0, np.nan)
-        df['AMP'] = (df['High'] - df['Low']) / prev_close_series * 100
+        df['AMP'] = compute_safe_amplitude(df)
         
         for p in periods_sma: 
             df[f'Sum_{p}'] = df['Volume'].rolling(p).sum()

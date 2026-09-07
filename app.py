@@ -22,15 +22,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from tempfile import gettempdir
 from streamlit.errors import StreamlitSecretNotFoundError
 from providers import (
-    CSVFloatProvider,
-    CSVShareBaseProvider,
-    CompositeShareBaseProvider,
+    build_default_share_base_provider,
+    FloatProviderAsShareProvider,
     ShareBaseLookupResult,
-    YahooShareBaseProvider,
 )
 from turnover_utils import (
     TURNOVER_STATUS_CALCULATED,
     apply_turnover_rate,
+    compute_safe_amplitude,
 )
 from watchlist_storage import (
     delete_watchlist_symbol,
@@ -3169,15 +3168,9 @@ def get_float_provider() -> CSVFloatProvider:
     return CSVFloatProvider(csv_path)
 
 @st.cache_resource(show_spinner=False)
-def get_share_base_provider() -> CompositeShareBaseProvider:
-    """Return the cached provider chain for turnover share-base lookups."""
-    metadata_dir = Path(__file__).resolve().parent / "metadata"
-    return CompositeShareBaseProvider(
-        [
-            CSVShareBaseProvider(metadata_dir / "share_base.csv"),
-            YahooShareBaseProvider(),
-        ]
-    )
+def get_share_base_provider():
+    """Return the cached standard 3-tier provider chain (AASTOCKS TUR 優先流通股)."""
+    return build_default_share_base_provider()
 
 def get_turnover_share_lookup(ticker_obj) -> ShareBaseLookupResult:
     """Resolve turnover denominator with override-first share-base behavior."""
@@ -3996,9 +3989,7 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
 
     prev_close_series = close.shift(1).replace(0, float("nan"))
     if "High" in work_df.columns and "Low" in work_df.columns:
-        work_high = pd.to_numeric(work_df["High"], errors="coerce").astype(float)
-        work_low = pd.to_numeric(work_df["Low"], errors="coerce").astype(float)
-        work_df["AMP"] = (work_high - work_low) / prev_close_series * 100
+        work_df["AMP"] = compute_safe_amplitude(work_df)
     else:
         work_df["AMP"] = float("nan")
     amp_last = work_df["AMP"].iloc[-1]
@@ -4586,10 +4577,7 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
         if "AMP" in df.columns:
             amp_s = pd.to_numeric(df["AMP"], errors="coerce")
         elif "High" in df.columns and "Low" in df.columns and "Close" in df.columns:
-            prev_close = close_s.shift(1).replace(0, np.nan)
-            hi = pd.to_numeric(df["High"], errors="coerce")
-            lo = pd.to_numeric(df["Low"], errors="coerce")
-            amp_s = (hi - lo) / prev_close * 100.0
+            amp_s = compute_safe_amplitude(df)
         else:
             amp_s = pd.Series(np.nan, index=df.index)
 
@@ -6609,7 +6597,7 @@ elif current_page == "stock":
             df = simulate_bs_data(df, share_base)
 
         prev_close_series = df['Close'].shift(1).replace(0, np.nan)
-        df['AMP'] = (df['High'] - df['Low']) / prev_close_series * 100
+        df['AMP'] = compute_safe_amplitude(df)
 
         for p in periods_sma: df[f'Sum_{p}'] = df['Volume'].rolling(p).sum()
         df['R1'] = df['Sum_7'] / df['Sum_14']
