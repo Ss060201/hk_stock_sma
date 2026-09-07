@@ -35,6 +35,8 @@ env:
   OHLCV_CACHE_DB: ${{ github.workspace }}/artifacts/ohlcv_cache.sqlite
   # Artifact name suffix for v5 workflow (v4 uploads are NOT compatible with v5 download toolkit)
   ARTIFACT_NAME: ohlcv-cache-artifact-v5
+  TUR_AMP_ARTIFACT_NAME: tur-amp-health-report-v1
+  TUR_AMP_REPORT_DIR: ${{ github.workspace }}/artifacts/tur_amp
 
 jobs:
   fetch-and-archive:
@@ -188,5 +190,92 @@ jobs:
           path: |
             ${{ github.workspace }}/artifacts/ohlcv_cache.sqlite
           retention-days: 30
+          if-no-files-found: ignore
+          overwrite: true
+
+      - name: Run TUR/Amp health scan (5-layer ticker union)
+        id: tur-amp-scan
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          # Override report paths so scanner writes to a dedicated artifact folder
+          # (scanner defaults to repo/data/...; we set env for clarity & portability)
+          INPUT_EXTRA: ${{ inputs.extra_symbols }}
+        run: |
+          set +euo pipefail
+          mkdir -p "${{ env.TUR_AMP_REPORT_DIR }}"
+          # The scanner uses env OHLCV_CACHE_DB (already set at workflow level),
+          # so it reads fresh cache directly. Copy float.csv if present so
+          # CSVFloatProvider overrides still apply inside runner.
+          EXTRA_ARG=""
+          if [[ -n "${INPUT_EXTRA:-}" ]]; then
+            EXTRA_ARG="--extra-symbols ${INPUT_EXTRA}"
+          fi
+          set -x
+          python scripts/tur_amp_health_scan.py \
+            --top 800 \
+            --min-days 3 \
+            $EXTRA_ARG
+          SCAN_RC=$?
+          set +x
+          # Copy generated reports into the artifact directory
+          if [[ -f data/tur_amp_health_report.csv ]]; then
+            cp data/tur_amp_health_report.csv "${{ env.TUR_AMP_REPORT_DIR }}/"
+          fi
+          if [[ -f data/tur_amp_health_summary.json ]]; then
+            cp data/tur_amp_health_summary.json "${{ env.TUR_AMP_REPORT_DIR }}/"
+          fi
+          # Emit a nice job summary section for 1-click review
+          SUMMARY="${{ env.TUR_AMP_REPORT_DIR }}/tur_amp_health_summary.json"
+          {
+            echo ""
+            echo "---"
+            echo "<details><summary>🩺 TUR/Amp Health Scan Summary (rc=$SCAN_RC)</summary>"
+            echo ""
+            if [[ -f "$SUMMARY" ]]; then
+              SUMMARY_PATH="$SUMMARY" python - <<'PY'
+          import json, os
+          p = os.environ["SUMMARY_PATH"]
+          try:
+              s = json.load(open(p, encoding="utf-8"))
+              c = s.get("counts", {})
+              print(f"- Scanned tickers with data: **{s.get('scanned_tickers_count','?')}**")
+              print(f"- Union pool (5-layer): **{s.get('union_pool_count','?')}**")
+              print(f"- Status counts: OK=`{c.get('OK',0)}`  WARN=`{c.get('WARN',0)}`  FATAL=`{c.get('FATAL',0)}`")
+              top = s.get("fatal_and_warn_top10") or []
+              if top:
+                  print("")
+                  print("#### Top FATAL/WARN")
+                  print("| Ticker | Status | TUR days out | Amp stale | Last TUR% | Suggested | SB method |")
+                  print("|---|---|---:|---:|---:|---|---|")
+                  for r in top:
+                      last = r.get("tur_last_pct")
+                      last_s = f"{last:.4f}" if isinstance(last,(int,float)) else "-"
+                      print(f"| {r.get('ticker','')} | `{r.get('status','')}` | {r.get('tur_days_out',0)} | {r.get('amp_stale_hits',0)} | {last_s} | {r.get('suggested_factor') or '-'} | {r.get('sb_method','')} |")
+          except Exception as exc:
+              print(f"Summary JSON parse failed: {type(exc).__name__}: {exc}")
+          PY
+              RC_PY=$?
+            else
+              echo "_No summary JSON produced (scanner may have exited early with rc=$SCAN_RC)._"
+            fi
+            echo ""
+            echo "_Artifact: `tur-amp-health-report-v1` (CSV + JSON)._"
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "scan_exit_code=$SCAN_RC" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload TUR/Amp health report artifact (CSV + JSON, retention 90 days)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TUR_AMP_ARTIFACT_NAME }}
+          path: |
+            ${{ env.TUR_AMP_REPORT_DIR }}/tur_amp_health_report.csv
+            ${{ env.TUR_AMP_REPORT_DIR }}/tur_amp_health_summary.json
+          retention-days: 90
           if-no-files-found: ignore
           overwrite: true
