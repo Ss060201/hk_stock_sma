@@ -21,10 +21,7 @@ from tempfile import gettempdir
 from typing import Dict, Any, Optional, List, Tuple
 from firebase_admin.exceptions import FirebaseError
 from streamlit.errors import StreamlitSecretNotFoundError
-from providers import (
-    build_default_share_base_provider,
-    FloatProviderAsShareProvider,
-)
+from providers import build_default_share_base_provider
 from turnover_utils import TURNOVER_STATUS_CALCULATED, apply_turnover_rate, compute_safe_amplitude
 from watchlist_storage import (
     delete_watchlist_symbol,

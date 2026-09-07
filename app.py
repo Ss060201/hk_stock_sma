@@ -23,6 +23,7 @@ from tempfile import gettempdir
 from streamlit.errors import StreamlitSecretNotFoundError
 from providers import (
     build_default_share_base_provider,
+    CSVFloatProvider,
     FloatProviderAsShareProvider,
     ShareBaseLookupResult,
 )
