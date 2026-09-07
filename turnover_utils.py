@@ -81,7 +81,8 @@ def compute_safe_amplitude(
 
     amp_raw = (safe_high - safe_low) / prev_close * 100.0
     amp_raw = np.where(np.isfinite(amp_raw), amp_raw, np.nan)
-    result = pd.Series(amp_raw, index=index or close.index)
+    out_index = index if index is not None else close.index
+    result = pd.Series(amp_raw, index=out_index)
     return result
 
 
