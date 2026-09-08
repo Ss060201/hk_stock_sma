@@ -1,5 +1,14 @@
 name: HK Stock SMA Data Fetcher (15min cron + daemon --once)
 
+# NOTE: `download-artifact@v4` needs actions:read to search across ALL previous
+# workflow runs (not just the current run). This is how 229 cached tickers survive
+# across runs -- otherwise every cron would start with an empty DB and re-download
+# everything from Yahoo (~60 min cold start instead of ~15 min incremental).
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
 on:
   schedule:
     # every 15 minutes (UTC) — roughly aligns with HK market refresh interval
@@ -82,6 +91,18 @@ jobs:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ github.workspace }}/artifacts
           merge-multiple: false
+          # --- Critical fix for actions/download-artifact@v4 ---
+          # Default behavior searches ONLY the CURRENT workflow run. Since the
+          # artifact is UPLOADED AT THE END of the run, the current run never
+          # has it on step 7. We must ask v4 to find the LATEST previous run
+          # that produced this artifact name. `github-token` with actions:read
+          # permission (declared at workflow top) is required for cross-run lookup.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ~
+          find-by: LatestWorkflowRun
+          repository: ${{ github.repository }}
+          # First run will have no artifact -- that is 100% expected, never fail.
+          fail-on-error: false
 
       - name: (Optional) Write Firebase admin cred from secret if provided
         shell: bash

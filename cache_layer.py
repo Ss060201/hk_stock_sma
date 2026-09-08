@@ -289,6 +289,7 @@ def request_async_fetch(
     ensure_schema(db_path)
     symbol = str(symbol).strip().upper()
     now = _utc_now_ts()
+    ttl_sec = max(60, int(_DEFAULT_CACHE_TTL_SEC))
     with get_db(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -297,6 +298,31 @@ def request_async_fetch(
                 (symbol,),
             ).fetchone()
             if row is None:
+                # --- SECONDARY FALLBACK: async_fetch_queue has no memory for this
+                # symbol (e.g. artifact download step had no previous run, so we
+                # started with an empty DB). But ohlcv_cache table might still
+                # have a very recent refresh (e.g. last run DID write to ohlcv_cache
+                # before artifact upload, but cross-run restore did not pick it up).
+                # Treat recent ohlcv_cache rows as DONE-equivalent to skip Yahoo
+                # re-downloads on every cron run.
+                recent_sec = max(60, int(ttl_sec * 0.5))
+                cached_row = conn.execute(
+                    "SELECT last_refresh_ts,rows FROM ohlcv_cache WHERE symbol=?",
+                    (symbol,),
+                ).fetchone()
+                if cached_row is not None:
+                    lr = int(cached_row["last_refresh_ts"] or 0)
+                    n_rows = int(cached_row["rows"] or 0)
+                    if n_rows >= 30 and lr > 0 and (now - lr) < recent_sec:
+                        # Synthesize a DONE row so future calls stay consistent
+                        completed_ts = lr
+                        conn.execute(
+                            "INSERT INTO async_fetch_queue(symbol,requested_ts,status,attempt,completed_ts) "
+                            "VALUES(?,?, 'DONE', 0, ?)",
+                            (symbol, now, completed_ts),
+                        )
+                        conn.execute("COMMIT")
+                        return "RECENTLY_DONE"
                 conn.execute(
                     "INSERT INTO async_fetch_queue(symbol,requested_ts,status,attempt) VALUES(?,?, 'PENDING',0)",
                     (symbol, now),
@@ -330,7 +356,19 @@ def request_async_fetch(
                 return "QUEUED"
             if st == "DONE":
                 ct = row["completed_ts"] or 0
-                if now - ct < max(60, int(_DEFAULT_CACHE_TTL_SEC * 0.5)):
+                # Also cross-check ohlcv_cache.last_refresh_ts in case completed_ts
+                # drifted / was written by an older version of the daemon.
+                try:
+                    c_row = conn.execute(
+                        "SELECT last_refresh_ts FROM ohlcv_cache WHERE symbol=?", (symbol,)
+                    ).fetchone()
+                    if c_row is not None:
+                        lr = int(c_row["last_refresh_ts"] or 0)
+                        if lr > ct:
+                            ct = lr
+                except Exception:
+                    pass
+                if now - ct < max(60, int(ttl_sec * 0.5)):
                     conn.execute("COMMIT")
                     return "RECENTLY_DONE"
                 conn.execute(
