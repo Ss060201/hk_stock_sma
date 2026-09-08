@@ -78,26 +78,50 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Restore previous ohlcv_cache.sqlite (best-effort; failure is harmless)
+      # --- CRITICAL FIX for cross-run artifact restore ---
+      # actions/download-artifact@v4 ONLY searches the CURRENT workflow run
+      # by design, so it can never find an artifact uploaded at the END of
+      # the PREVIOUS run (the source of our 5.66 MB ohlcv_cache with 229
+      # tickers). Using GitHub CLI `gh run download` instead: it natively
+      # searches for the MOST RECENT completed run (no run-id required) and
+      # downloads artifacts from that run -- exactly what we need to
+      # bootstrap the cache and skip ~60 min of Yahoo re-downloads.
+      - name: Restore previous ohlcv_cache.sqlite via gh run download (cross-run, best-effort)
         id: restore-cache-artifact
         continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ env.ARTIFACT_NAME }}
-          path: ${{ github.workspace }}/artifacts
-          merge-multiple: false
-          # --- Critical fix for actions/download-artifact@v4 ---
-          # Default behavior searches ONLY the CURRENT workflow run. Since the
-          # artifact is UPLOADED AT THE END of the run, the current run never
-          # has it on step 7. We must ask v4 to find the LATEST previous run
-          # that produced this artifact name. `github-token` with actions:read
-          # permission (declared at workflow top) is required for cross-run lookup.
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ~
-          find-by: LatestWorkflowRun
-          repository: ${{ github.repository }}
-          # First run will have no artifact -- that is 100% expected, never fail.
-          fail-on-error: false
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_NAME: ${{ env.ARTIFACT_NAME }}
+          REPO: ${{ github.repository }}
+          OUT_DIR: ${{ github.workspace }}/artifacts
+        run: |
+          set +euo pipefail
+          mkdir -p "${OUT_DIR}"
+          echo "--- Running gh run download (cross-run, most-recent run, no explicit run-id)"
+          echo "    REPO=${REPO}  ARTIFACT=${ARTIFACT_NAME}  OUT_DIR=${OUT_DIR}"
+          # NOTE: no --run-id = gh auto picks the LATEST workflow run in this
+          # repo that produced artifacts, matching our intent exactly.
+          gh run download \
+            --repo "${REPO}" \
+            --name "${ARTIFACT_NAME}" \
+            --dir "${OUT_DIR}"
+          RC=$?
+          echo "--- gh run download rc=${RC}"
+          if [[ -d "${OUT_DIR}" ]]; then
+            echo "--- Final artifact dir contents (top-most files + sizes):"
+            (ls -la "${OUT_DIR}" 2>/dev/null ; find "${OUT_DIR}" -maxdepth 3 -type f -exec ls -la {} \; 2>/dev/null) | head -40
+          fi
+          if [[ -f "${OUT_DIR}/ohlcv_cache.sqlite" ]]; then
+            du -h "${OUT_DIR}/ohlcv_cache.sqlite" || true
+            # Touch a marker env var so later steps can see restore worked.
+            echo "CACHE_RESTORED=yes" >> "$GITHUB_ENV"
+            echo "CACHE_RESTORED_SIZE=$(wc -c < '${OUT_DIR}/ohlcv_cache.sqlite')" >> "$GITHUB_ENV" || true
+          else
+            echo "CACHE_RESTORED=no" >> "$GITHUB_ENV"
+            echo "(INFO) No prior-run artifact available for this repo yet. That is 100% expected on the VERY FIRST run ever. All subsequent runs will use the artifact from the previous run to skip Yahoo cold start."
+          fi
+          exit 0
 
       - name: (Optional) Write Firebase admin cred from secret if provided
         shell: bash
