@@ -27,11 +27,6 @@ on:
         options: ["DEBUG", "INFO", "WARNING", "ERROR"]
         default: "INFO"
 
-permissions:
-  contents: read
-  actions: read
-  packages: none
-
 concurrency:
   group: data-fetcher-15min
   cancel-in-progress: false
