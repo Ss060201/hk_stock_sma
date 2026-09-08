@@ -331,12 +331,36 @@ def main() -> int:
         default=None,
         help="Comma-separated extra tickers (e.g. 0700,1371.HK,0005). Passed via GHA extra_symbols.",
     )
+    parser.add_argument(
+        "--report-csv",
+        type=str,
+        default=None,
+        help="Override CSV output path. Defaults to repo/data/tur_amp_health_report.csv. "
+             "Use absolute path for GHA artifact directory.",
+    )
+    parser.add_argument(
+        "--summary-json",
+        type=str,
+        default=None,
+        help="Override JSON summary output path. Defaults to repo/data/tur_amp_health_summary.json. "
+             "Use absolute path for GHA artifact directory.",
+    )
     args = parser.parse_args()
     min_obs = max(args.min_days, 5)
+
+    report_csv_path = Path(args.report_csv) if args.report_csv else REPORT_PATH
+    summary_json_path = Path(args.summary_json) if args.summary_json else JSON_REPORT_PATH
+    for p in (report_csv_path, summary_json_path):
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
 
     tickers_pool = fetch_tickers_union(extra_csv=args.extra_symbols)
     tickers = tickers_pool[: args.top]
     print(f"[info] union pool = {len(tickers_pool)} tickers (5 layers); scanning top {len(tickers)} (min {min_obs} rows each)")
+    print(f"[info] CSV report -> {report_csv_path}")
+    print(f"[info] JSON summary -> {summary_json_path}")
     provider = build_default_share_base_provider()
 
     results: list[TickHealth] = []
@@ -354,15 +378,19 @@ def main() -> int:
     scanned_total = len(results)
     print(f"[done] scanned {scanned_total} tickers with data. OK={counts['OK']} WARN={counts['WARN']} FATAL={counts['FATAL']}")
 
-    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     rows = [r.as_row for r in results]
     rows.sort(key=lambda r: ({"FATAL": 0, "WARN": 1, "OK": 2}[r["status"]], -int(r["tur_days_out"]), -int(r["amp_stale_0.10_hits"])))
-    pd.DataFrame(rows).to_csv(REPORT_PATH, index=False, encoding="utf-8-sig")
-    print(f"[report] wrote {REPORT_PATH}")
+    pd.DataFrame(rows).to_csv(report_csv_path, index=False, encoding="utf-8-sig")
+    print(f"[report] wrote {report_csv_path}")
 
     # === JSON summary (for GHA artifact quick glance) ===
     problems = [r for r in results if r.status in ("WARN", "FATAL")]
     problems_sorted = sorted(problems, key=lambda r: ({"FATAL": 0, "WARN": 1}[r.status], -r.tur_days_out, -r.amp_stale_hits))
+    sug_rows: List[str] = []
+    for r in [rr for rr in results if rr.suggested_factor]:
+        code = (r.ticker or "").replace(".HK", "")
+        shares = f"{r.suggested_shares:,.0f}".replace(",", "") if r.suggested_shares else "0"
+        sug_rows.append(f"{code},<VERIFY_AASTOCKS>,{shares},1.0,{shares},2026-09-08,verify_required,medium")
     summary = {
         "scanned_tickers_count": scanned_total,
         "union_pool_count": len(tickers_pool),
@@ -373,9 +401,10 @@ def main() -> int:
         },
         "fatal_and_warn_top10": [r.to_summary_dict() for r in problems_sorted[:10]],
         "tickers_with_suggested_factor": [r.to_summary_dict() for r in results if r.suggested_factor],
+        "suggested_factor_candidates": sug_rows,
     }
-    JSON_REPORT_PATH.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[report] wrote JSON summary -> {JSON_REPORT_PATH}")
+    summary_json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[report] wrote JSON summary -> {summary_json_path}")
 
     print()
     print("Top 10 issues (FATAL/WARN):")

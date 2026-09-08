@@ -104,14 +104,22 @@ jobs:
         shell: bash
         continue-on-error: false
         env:
-          # Faster cold-start cache build (~270 tickers):
-          #   ONCE_MODE_WORKERS = 2  -> cuts wall time by ~2x (default 1x)
-          #   FETCH_INTERVAL_*      -> reduce per-symbol jitter by half (no 429 = ~30m faster)
-          #   MAX_429_15MIN         -> tolerate a few more 429s before global pause
-          ONCE_MODE_WORKERS: 2
-          FETCH_INTERVAL_MIN_SEC: 0.4
-          FETCH_INTERVAL_MAX_SEC: 0.9
+          # --- Speed tuning ---
+          # ONCE_MODE_WORKERS=3: 3 parallel fetcher threads for cold/incremental
+          #   refresh. Safe cap inside daemon code is 4 to avoid Yahoo 429 storms.
+          # FETCH_INTERVAL: tighter jitter for incremental run.
+          # MAX_429_15MIN: tolerate more 429s before global pause.
+          # OHLCV_CACHE_TTL_SEC: critical for incremental speed-up.
+          #   Default 15 min = every run re-queues ALL tickers because the
+          #   previous run finished >15 min ago. Setting 75 min = within a
+          #   60-min window we SKIP the prior run's recently refreshed
+          #   tickers (230/270 of them), cutting wall time from ~60 min to
+          #   ~10-15 min on second and subsequent runs.
+          ONCE_MODE_WORKERS: 3
+          FETCH_INTERVAL_MIN_SEC: 0.35
+          FETCH_INTERVAL_MAX_SEC: 0.75
           MAX_429_15MIN: 8
+          OHLCV_CACHE_TTL_SEC: 4500
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/logs"
@@ -202,6 +210,8 @@ jobs:
         run: |
           set +euo pipefail
           mkdir -p "${{ env.TUR_AMP_REPORT_DIR }}"
+          REPORT_CSV="${{ env.TUR_AMP_REPORT_DIR }}/tur_amp_health_report.csv"
+          SUMMARY_JSON="${{ env.TUR_AMP_REPORT_DIR }}/tur_amp_health_summary.json"
           echo "--- PRE-SCAN DIAGNOSTICS"
           if [[ -f "${{ env.OHLCV_CACHE_DB }}" ]]; then
             ls -la "${{ env.OHLCV_CACHE_DB }}"
@@ -235,32 +245,25 @@ jobs:
           python -u scripts/tur_amp_health_scan.py \
             --top 800 \
             --min-days 3 \
+            --report-csv "$REPORT_CSV" \
+            --summary-json "$SUMMARY_JSON" \
             $EXTRA_ARG
           SCAN_RC=$?
           set +x
-          echo "--- POST-SCAN FILES (repo data/ dir):"
-          ls -la data/tur_amp_health_report.csv data/tur_amp_health_summary.json 2>/dev/null || echo "(no data/ files)"
-          if [[ -f data/tur_amp_health_report.csv ]]; then
-            cp data/tur_amp_health_report.csv "${{ env.TUR_AMP_REPORT_DIR }}/"
-          fi
-          if [[ -f data/tur_amp_health_summary.json ]]; then
-            cp data/tur_amp_health_summary.json "${{ env.TUR_AMP_REPORT_DIR }}/"
-          fi
-          SUMMARY="${{ env.TUR_AMP_REPORT_DIR }}/tur_amp_health_summary.json"
-          echo "--- ARTIFACT DIR CONTENT:"
-          ls -la "${{ env.TUR_AMP_REPORT_DIR }}/" 2>/dev/null || echo "(empty artifact dir)"
+          echo "--- POST-SCAN FILES (artifact dir):"
+          ls -la "$REPORT_CSV" "$SUMMARY_JSON" 2>/dev/null || echo "(missing artifact files)"
           {
             echo ""
             echo "---"
             echo "<details><summary>🩺 TUR/Amp Health Scan Summary (rc=$SCAN_RC)</summary>"
             echo ""
-            if [[ -f "$SUMMARY" ]]; then
+            if [[ -f "$SUMMARY_JSON" ]]; then
               echo "Raw JSON content:"
               echo '```json'
-              cat "$SUMMARY" || true
+              cat "$SUMMARY_JSON" || true
               echo '```'
               echo ""
-              SUMMARY_PATH="$SUMMARY" python - <<'PY'
+              SUMMARY_PATH="$SUMMARY_JSON" python - <<'PY'
           import json, os
           p = os.environ["SUMMARY_PATH"]
           try:

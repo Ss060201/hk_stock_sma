@@ -16,7 +16,7 @@ import pandas as pd
 _DEFAULT_DB_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "data", "ohlcv_cache.sqlite"
 )
-_DEFAULT_CACHE_TTL_SEC = 15 * 60
+_DEFAULT_CACHE_TTL_SEC = int(os.environ.get("OHLCV_CACHE_TTL_SEC", str(15 * 60)))
 _FETCH_TIMEOUT_SEC = 6 * 60
 _MAX_QUEUE_ATTEMPTS = 3
 
