@@ -4424,19 +4424,20 @@ _F2_GLOBAL_CSS = """
 .f2_wrap { width: 100%; margin: 6px 0 10px 0; }
 .f2_title { font-weight: 600; margin: 2px 0 6px 0; }
 .f2_note { color: #666; font-size: 12px; margin: 2px 0 6px 0; }
-.f2_tbl { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 13px; }
+.f2_tbl { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 12px; line-height: 1.2; }
 .f2_tbl th, .f2_tbl td {
-    border: 1px solid #ddd; padding: 6px 8px; text-align: right; vertical-align: middle;
+    border: 1px solid #ddd; padding: 4px 6px; text-align: right; vertical-align: middle;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    height: 24px; line-height: 16px;
 }
-.f2_tbl th { background: #f2f5fa; text-align: center; font-weight: 600; }
-.f2_tbl .idx-cell { text-align: center; background: #fafafa; width: 44px; }
-.f2_tbl .factor-cell { text-align: right; background: #f7f7f7; width: 80px; }
-.f2_tbl .pmf-cell { text-align: right; background: #fdf6e3; font-weight: 600; width: 96px; }
-.f2_tbl .date-cell { text-align: center; width: 108px; }
-.f2_tbl .cp-cell { text-align: right; width: 96px; }
-.f2_tbl .tur-cell { text-align: right; width: 88px; }
-.f2_tbl .amp-cell { text-align: right; width: 88px; }
+.f2_tbl th { background: #f2f5fa; text-align: center; font-weight: 600; height: 26px; }
+.f2_tbl .idx-cell { text-align: center; background: #fafafa; width: 40px; }
+.f2_tbl .factor-cell { text-align: right; background: #f7f7f7; width: 60px; }
+.f2_tbl .pmf-cell { text-align: right; background: #fdf6e3; font-weight: 600; width: 86px; }
+.f2_tbl .date-cell, .f2_tbl .date-col { text-align: center; width: 120px; }
+.f2_tbl .cp-cell, .f2_tbl .cp-col { text-align: right; width: 80px; }
+.f2_tbl .tur-cell, .f2_tbl .tur-col { text-align: right; width: 76px; }
+.f2_tbl .amp-cell, .f2_tbl .amp-col { text-align: right; width: 72px; }
 .f2_tbl .row-alt td { background: #fafbfc; }
 </style>
 """
@@ -4782,6 +4783,7 @@ def render_f2_23x6_matrix(matrix, expand_rows: int = 23, expand_cols: int = 20,
         expand_cols_i = max(1, min(int(expand_cols or 20), 40))
     except Exception:
         expand_cols_i = 20
+    render_rows_i = 21
     # 為了讓 23 行「固定位置」：如果 Index 列不足，補空。
     if len(idx_rows) < expand_rows_i:
         pad = expand_rows_i - len(idx_rows)
@@ -4789,24 +4791,24 @@ def render_f2_23x6_matrix(matrix, expand_rows: int = 23, expand_cols: int = 20,
         extra = []
         base_factor = float(last_idx[-1].get("index") or 0.0) if last_idx else 0.0
         step = 0.021
-        pm_v = float(matrix.get("pm") or 0.0)
+        pm_v_pad = float(matrix.get("pm") or 0.0)
         for i in range(pad):
             nf = max(0.0, base_factor - step * (i + 1))
             extra.append({
                 "idx": len(last_idx) + i,
                 "index": nf,
-                "pm_x_index": float(pm_v * nf) if pm_v > 0 else 0.0,
+                "pm_x_index": float(pm_v_pad * nf) if pm_v_pad > 0 else 0.0,
                 "_pad": True,
             })
         idx_rows = last_idx + extra
     elif len(idx_rows) > expand_rows_i:
         idx_rows = list(idx_rows[:expand_rows_i])
 
-    date_cols = list(cp_rows[-expand_cols_i:]) if len(cp_rows) > expand_cols_i else list(cp_rows)
+    date_cols = list(cp_rows[-20:]) if len(cp_rows) > 20 else list(cp_rows)
 
     _f2_ensure_global_css()
     pm_v = matrix.get("pm")
-    title = f"📋 F2 23×6 矩陣（左 23 行固定，右 {len(date_cols)} 欄依日期滾動）"
+    title = f"📋 F2 23×6 矩陣（顯示最近 {len(date_cols)} 交易日；資料列 {render_rows_i} 列，含表頭共 {render_rows_i+1} 列；7 欄完整橫向）"
     if title_extra:
         title += f" · {title_extra}"
     st.markdown(f'<div class="{prefix}wrap"><div class="{prefix}title">{title}</div>', unsafe_allow_html=True)
@@ -4825,15 +4827,15 @@ def render_f2_23x6_matrix(matrix, expand_rows: int = 23, expand_cols: int = 20,
     parts.append(f'<table class="{prefix}tbl">')
     head = [
         "<th class='idx-cell'>#</th>",
-        "<th class='factor-cell'>Factor(係數)</th>",
-        "<th class='pmf-cell'>Pm × Factor</th>",
-        "<th>Date</th>",
-        "<th>Close price (CP)</th>",
-        "<th>TUR</th>",
-        "<th>Amp(%)</th>",
+        "<th class='factor-cell'>Factor</th>",
+        "<th class='pmf-cell'>Pm×Factor</th>",
+        "<th class='date-col'>Date</th>",
+        "<th class='cp-col'>CP</th>",
+        "<th class='tur-col'>TUR</th>",
+        "<th class='amp-col'>Amp</th>",
     ]
     parts.append(f"<thead><tr>{''.join(head)}</tr></thead><tbody>")
-    n = expand_rows_i
+    n = render_rows_i
     for i in range(n):
         r = idx_rows[i] if i < len(idx_rows) else None
         if r is None:

@@ -1078,19 +1078,20 @@ _F2_GLOBAL_CSS_M = """
 .f2m_wrap { width: 100%; margin: 4px 0 8px 0; }
 .f2m_title { font-weight: 700; margin: 2px 0 4px 0; font-size: 13px; }
 .f2m_note { color: #666; font-size: 11px; margin: 2px 0 4px 0; }
-.f2m_tbl { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 11px; }
+.f2m_tbl { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 11px; line-height: 1.15; }
 .f2m_tbl th, .f2m_tbl td {
-    border: 1px solid #cdd6d5; padding: 4px 6px; text-align: right; vertical-align: middle;
+    border: 1px solid #cdd6d5; padding: 3px 4px; text-align: right; vertical-align: middle;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    height: 22px; line-height: 15px;
 }
-.f2m_tbl th { background: #eff4fb; text-align: center; font-weight: 700; }
-.f2m_tbl .idx-cell { text-align: center; background: #f5f6f7; width: 36px; }
-.f2m_tbl .factor-cell { text-align: right; background: #f2f5f4; width: 60px; }
-.f2m_tbl .pmf-cell { text-align: right; background: #fff6df; font-weight: 700; width: 72px; }
-.f2m_tbl .date-cell { text-align: center; width: 88px; }
-.f2m_tbl .cp-cell { width: 76px; }
-.f2m_tbl .tur-cell { width: 70px; }
-.f2m_tbl .amp-cell { width: 70px; }
+.f2m_tbl th { background: #eff4fb; text-align: center; font-weight: 700; height: 24px; }
+.f2m_tbl .idx-cell { text-align: center; background: #f5f6f7; width: 32px; }
+.f2m_tbl .factor-cell { text-align: right; background: #f2f5f4; width: 48px; }
+.f2m_tbl .pmf-cell { text-align: right; background: #fff6df; font-weight: 700; width: 60px; }
+.f2m_tbl .date-cell, .f2m_tbl th.date-col { text-align: center; width: 96px; }
+.f2m_tbl .cp-cell, .f2m_tbl th.cp-col { width: 64px; }
+.f2m_tbl .tur-cell, .f2m_tbl th.tur-col { width: 60px; }
+.f2m_tbl .amp-cell, .f2m_tbl th.amp-col { width: 60px; }
 .f2m_tbl .row-alt td { background: #fbfcfb; }
 </style>
 """
@@ -1618,27 +1619,28 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20
         expand_cols_i = max(1, min(int(expand_cols or 20), 40))
     except Exception:
         expand_cols_i = 20
+    render_rows_i = 21
     if len(idx_rows) < expand_rows_i:
         pad = expand_rows_i - len(idx_rows)
         last_idx = list(idx_rows)
         extra = []
         base_factor = float(last_idx[-1].get("index") or 0.0) if last_idx else 0.0
         step = 0.021
-        pm_v = float(matrix.get("pm") or 0.0)
+        pm_v_pad = float(matrix.get("pm") or 0.0)
         for i in range(pad):
             nf = max(0.0, base_factor - step * (i + 1))
             extra.append({
                 "idx": len(last_idx) + i,
                 "index": nf,
-                "pm_x_index": float(pm_v * nf) if pm_v > 0 else 0.0,
+                "pm_x_index": float(pm_v_pad * nf) if pm_v_pad > 0 else 0.0,
             })
         idx_rows = last_idx + extra
     elif len(idx_rows) > expand_rows_i:
         idx_rows = list(idx_rows[:expand_rows_i])
-    date_cols = list(cp_rows[-expand_cols_i:]) if len(cp_rows) > expand_cols_i else list(cp_rows)
+    date_cols = list(cp_rows[-20:]) if len(cp_rows) > 20 else list(cp_rows)
     _f2_ensure_global_css_m()
     pm_v = matrix.get("pm")
-    title = f"📋 F2 23×6 矩陣（左 23 行固定，右 {len(date_cols)} 日期滾動）"
+    title = f"📋 F2 23×6 矩陣（最近 {len(date_cols)} 交易日；顯示 {render_rows_i} 列含表頭；7 欄完整橫向）"
     if title_extra:
         title += f" · {title_extra}"
     st.markdown(f'<div class="{prefix}wrap"><div class="{prefix}title">{title}</div>', unsafe_allow_html=True)
@@ -1656,13 +1658,13 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20
         "<th class='idx-cell'>#</th>",
         "<th class='factor-cell'>Factor</th>",
         "<th class='pmf-cell'>Pm×Factor</th>",
-        "<th>Date</th>",
-        "<th>CP</th>",
-        "<th>TUR</th>",
-        "<th>Amp</th>",
+        "<th class='date-col'>Date</th>",
+        "<th class='cp-col'>CP</th>",
+        "<th class='tur-col'>TUR</th>",
+        "<th class='amp-col'>Amp</th>",
     ]
     parts.append(f"<thead><tr>{''.join(head)}</tr></thead><tbody>")
-    n = expand_rows_i
+    n = render_rows_i
     for i in range(n):
         r = idx_rows[i] if i < len(idx_rows) else None
         if r is None:
