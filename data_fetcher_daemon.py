@@ -27,6 +27,9 @@ _MAX_429_15MIN = int(os.environ.get("MAX_429_15MIN", "4"))
 _GLOBAL_PAUSE_SEC_ON_RISK = int(os.environ.get("GLOBAL_PAUSE_SEC_ON_RISK", "600"))
 _BOOTSTRAP_EXTRA_SYMBOLS = [s.strip() for s in os.environ.get("BOOTSTRAP_EXTRA_SYMBOLS", "0700,0005,0388,2318,0027,0011,1299,0823,0001").split(",") if s.strip()]
 _ONCE_MODE_WORKERS = max(1, int(os.environ.get("ONCE_MODE_WORKERS", "2")))
+_ONCE_SHUTDOWN_GRACE_SEC = max(1, int(os.environ.get("ONCE_SHUTDOWN_GRACE_SEC", "15")))
+_ONCE_EMPTY_QUEUE_POLLS = max(1, int(os.environ.get("ONCE_EMPTY_QUEUE_POLLS", "3")))
+_ONCE_QUEUE_POLL_SEC = max(0.2, float(os.environ.get("ONCE_QUEUE_POLL_SEC", "0.5")))
 
 
 def _get_hk_index_constituents_seed() -> List[str]:
@@ -740,6 +743,69 @@ def scheduled_refresh_thread_once(state: DaemonState) -> None:
 
     # Drain queue with N workers. Cap safety at 4 to avoid Yahoo rate limit storm.
     n_workers = max(1, min(_ONCE_MODE_WORKERS, 4))
+    skip_total = 0
+    skip_recent_done = 0
+    enqueued_total = 0
+    preload_fail_retryable = 0
+
+    def _request(sym: str) -> str:
+        try:
+            return str(request_async_fetch(sym) or "UNKNOWN").strip().upper()
+        except Exception:
+            return "ERROR"
+
+    # ---- Preflight: classify every target BEFORE starting workers. This lets us count
+    # RECENTLY_DONE / ALREADY_PENDING directly and record them as processed/OK so the
+    # GitHub step summary shows real numbers (otherwise it showed processed=1 when
+    # 229 tickers had no new enqueue.
+    for sym in sorted(targets):
+        res = _request(sym)
+        if res in {"RECENTLY_DONE", "RECENTLY_FAILED_OK"}:
+            skip_recent_done += 1
+            skip_total += 1
+            try:
+                _df_ok = None
+                _df_old, _sb_old, _st = (None, None, None)
+                try:
+                    from cache_layer import get_cached_ohlcv as _gco
+                    _df_old, _sb_old, _st = _gco(sym, max_age_sec=None, bump_stats=False)
+                except Exception:
+                    _df_old = None
+                if _df_old is not None and len(_df_old) >= 10:
+                    import numpy as np
+                    try:
+                        close_s = pd.to_numeric(_df_old["Close"], errors="coerce").replace(0, np.nan).dropna()
+                        last_close = float(close_s.iloc[-1]) if len(close_s) else None
+                    except Exception:
+                        last_close = None
+                    try:
+                        last_td = str(pd.to_datetime(_df_old.index[-1]).date()) if len(_df_old) else None
+                    except Exception:
+                        last_td = None
+                    with state._lock:
+                            state.per_symbol_results[sym] = {
+                                "ok": True,
+                                "error_msg": None,
+                                "source": "cache",
+                                "rows": int(len(_df_old)),
+                                "last_close": last_close,
+                                "last_trade_date": last_td,
+                                "ts": _ts_now(),
+                            }
+                            state.total_processed += 1
+                            state.total_ok += 1
+            except Exception:
+                pass
+        elif res in {"ALREADY_PENDING", "QUEUED"}:
+            enqueued_total += 1
+        elif res in {"RECENTLY_FAILED", "FETCHING_INFLIGHT"}:
+            preload_fail_retryable += 1
+        else:
+            enqueued_total += 1
+    LOGGER.info(
+        "--once preflight: targets=%d recently_done=%d enqueued_for_worker=%d other=%d",
+        len(targets), skip_recent_done, enqueued_total, preload_fail_retryable,
+    )
 
     def _worker_loop(worker_id: int) -> None:
         # Add tiny per-worker staggered sleep so they don't all hammer Yahoo
@@ -780,16 +846,52 @@ def scheduled_refresh_thread_once(state: DaemonState) -> None:
         worker_threads.append(th)
         th.start()
 
+    # ----------
+    # Aggressive once-mode drain monitoring.
+    # Background: previous daemon code polled every 2.0s until no worker alive AND
+    # no PENDING remained, but combined with per-symbol post-fetch jitter of 0.4-1.6s
+    # per-worker on >200 already-skipped tickers caused ~30-40m of dead idle even
+    # though zero Yahoo API calls were needed.
+    # Solution:
+    #   1. Fast poll interval (default 0.5s instead of 2.0s)
+    #   2. Consecutive-empty-polls shutdown after 3 empty polls (default),
+    #      honoring the ONCE_SHUTDOWN_GRACE_SEC envelope.
+    #   3. Hard safety deadline still enforced.
+    # ----------
+    empty_polls_in_row = 0
     while not state.stop_event.is_set() and _ts_now() < drain_deadline:
-        if all(not t.is_alive() for t in worker_threads):
-            break
         pending = peek_next_pending(limit=1) or []
-        if not pending and all(not t.is_alive() for t in worker_threads):
-            break
-        time.sleep(2.0)
+        alive_workers = [t for t in worker_threads if t.is_alive()]
+        if not pending:
+            empty_polls_in_row += 1
+        else:
+            empty_polls_in_row = 0
+        if not alive_workers and empty_polls_in_row >= _ONCE_EMPTY_QUEUE_POLLS:
+            # --- shutdown guard: give a final short grace window just in case a
+            # slow worker is about to re-enqueue something (rare on --once).
+            grace_until = _ts_now() + _ONCE_SHUTDOWN_GRACE_SEC
+            while not state.stop_event.is_set() and _ts_now() < grace_until:
+                if peek_next_pending(limit=1):
+                    empty_polls_in_row = 0
+                    break
+                time.sleep(0.3)
+            if empty_polls_in_row >= _ONCE_EMPTY_QUEUE_POLLS:
+                LOGGER.info(
+                    "--once drain finished: empty polls=%d workers_alive=0 grace=%ds "
+                    "processed_ok=%d fail=%d recently_done(preflight)=%d enqueued=%d",
+                    empty_polls_in_row,
+                    _ONCE_SHUTDOWN_GRACE_SEC,
+                    state.total_ok,
+                    state.total_fail,
+                    skip_recent_done,
+                    enqueued_total,
+                )
+                break
+        time.sleep(_ONCE_QUEUE_POLL_SEC)
     else:
         # We hit the drain deadline; tell workers to stop soon.
         state.stop_event.set()
+        LOGGER.warning("--once drain DEADLINE reached. ok=%d fail=%d", state.total_ok, state.total_fail)
     for th in worker_threads:
         th.join(timeout=15.0)
 

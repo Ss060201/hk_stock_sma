@@ -155,11 +155,19 @@ jobs:
           #   60-min window we SKIP the prior run's recently refreshed
           #   tickers (230/270 of them), cutting wall time from ~60 min to
           #   ~10-15 min on second and subsequent runs.
+          # ONCE_SHUTDOWN_GRACE_SEC / ONCE_EMPTY_QUEUE_POLLS: 
+          #   once-mode aggressive shutdown. 229 of 230 tickers skip Yahoo
+          #   via RECENTLY_DONE / ohlcv_cache TTL, but old drain loop still
+          #   waited 2-3s per ticker polling for ~40m. Now we finish ~15s
+          #   after last pending processed.
           ONCE_MODE_WORKERS: 3
           FETCH_INTERVAL_MIN_SEC: 0.35
           FETCH_INTERVAL_MAX_SEC: 0.75
           MAX_429_15MIN: 8
           OHLCV_CACHE_TTL_SEC: 4500
+          ONCE_SHUTDOWN_GRACE_SEC: 12
+          ONCE_EMPTY_QUEUE_POLLS: 3
+          ONCE_QUEUE_POLL_SEC: 0.4
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/logs"
