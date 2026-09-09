@@ -1598,6 +1598,26 @@ def _f2_fmt_num_m(v, digits, fallback: str = "-") -> str:
         return fallback
 
 
+def _f2_short_date_m(ds, fallback: str = "") -> str:
+    """Render 2026-09-09 -> 26/9/9  (yy/m/d, no leading zeros for mobile F2 tight layout)."""
+    try:
+        if ds is None:
+            return fallback
+        s = str(ds).strip()
+        if not s:
+            return fallback
+        parts = [p for p in s.replace("/", "-").split("-") if p != ""]
+        if len(parts) == 3:
+            y, m, d = parts
+            yy = y[-2:] if len(y) >= 2 else y
+            mm = m.lstrip("0") or "0"
+            dd = d.lstrip("0") or "0"
+            return f"{yy}/{mm}/{dd}"
+        return s
+    except Exception:
+        return fallback or str(ds or "")
+
+
 def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20,
                             prefix: str = "f2m_", title_extra: str = ""):
     if matrix is None:
@@ -1680,7 +1700,7 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20
         d = date_cols[i] if i < len(date_cols) else None
         if d is not None:
             cells += [
-                f"<td class='date-cell'>{d.get('date') or ''}</td>",
+                f"<td class='date-cell'>{_f2_short_date_m(d.get('date') or '')}</td>",
                 f"<td class='cp-cell'>{_f2_fmt_num_m(d.get('cp'), 2)}</td>",
                 f"<td class='tur-cell'>{_f2_fmt_num_m(d.get('tur'), 4)}</td>",
                 f"<td class='amp-cell'>{_f2_fmt_num_m(d.get('amp'), 2)}</td>",

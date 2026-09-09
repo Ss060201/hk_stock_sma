@@ -4760,6 +4760,27 @@ def _f2_fmt_num(v, digits, fallback: str = "-") -> str:
         return fallback
 
 
+def _f2_short_date(ds, fallback: str = "") -> str:
+    """Render 2026-09-09 -> 26/9/9  (yy/m/d, no leading zeros; HK F2 表格緊湊顯示)"""
+    try:
+        if ds is None:
+            return fallback
+        s = str(ds).strip()
+        if not s:
+            return fallback
+        sep = "-" if "-" in s else "/"
+        parts = [p for p in s.replace("/", "-").split("-") if p != ""]
+        if len(parts) == 3:
+            y, m, d = parts
+            yy = y[-2:] if len(y) >= 2 else y
+            mm = m.lstrip("0") or "0"
+            dd = d.lstrip("0") or "0"
+            return f"{yy}/{mm}/{dd}"
+        return s
+    except Exception:
+        return fallback or str(ds or "")
+
+
 def render_f2_23x6_matrix(matrix, expand_rows: int = 23, expand_cols: int = 20,
                          prefix: str = "f2_", title_extra: str = ""):
     """23 行 × 6 欄矩陣：左 #/Index/Pmac 固定；右 Date/CP/TUR/Amp 依選定矩陣時序滾動顯示 expand_cols 行。
@@ -4852,7 +4873,7 @@ def render_f2_23x6_matrix(matrix, expand_rows: int = 23, expand_cols: int = 20,
         d = date_cols[i] if i < len(date_cols) else None
         if d is not None:
             cells += [
-                f"<td class='date-cell'>{d.get('date') or ''}</td>",
+                f"<td class='date-cell'>{_f2_short_date(d.get('date') or '')}</td>",
                 f"<td class='cp-cell'>{_f2_fmt_num(d.get('cp'), 2)}</td>",
                 f"<td class='tur-cell'>{_f2_fmt_num(d.get('tur'), 4)}</td>",
                 f"<td class='amp-cell'>{_f2_fmt_num(d.get('amp'), 2)}</td>",
