@@ -1657,7 +1657,7 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20
         idx_rows = last_idx + extra
     elif len(idx_rows) > expand_rows_i:
         idx_rows = list(idx_rows[:expand_rows_i])
-    date_cols = list(cp_rows[-20:]) if len(cp_rows) > 20 else list(cp_rows)
+    date_cols = list(cp_rows[-21:]) if len(cp_rows) > 21 else list(cp_rows)
     _f2_ensure_global_css_m()
     pm_v = matrix.get("pm")
     title = f"📋 F2 23×6 矩陣（最近 {len(date_cols)} 交易日；顯示 {render_rows_i} 列含表頭；7 欄完整橫向）"
