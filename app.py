@@ -4562,6 +4562,14 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
         res["reason"] = "df empty"
         return res
     try:
+        # Step 0: 強制 df index = DatetimeIndex + ASC（舊→新），避免 df 是 DESC 或非單調時，tail(recent_rows) 抓錯方向導致「今天沒出現」
+        df = df.copy()
+        try:
+            df.index = pd.to_datetime(df.index, errors="coerce")
+            df = df.sort_index(ascending=True)
+            df = df[df.index.notna()]
+        except Exception:
+            pass
         cols_req = ["Close"]
         missing = [c for c in cols_req if c not in df.columns]
         if missing:
@@ -4835,9 +4843,21 @@ def render_f2_23x6_matrix(matrix, expand_rows: int = 23, expand_cols: int = 20,
 
     _f2_ensure_global_css()
     pm_v = matrix.get("pm")
+    try:
+        today_d = pd.Timestamp.today().strftime("%y/%m/%d")
+    except Exception:
+        today_d = ""
+    if len(date_cols) > 0:
+        try:
+            last_d = pd.Timestamp(date_cols[-1].get("date")).strftime("%y/%m/%d")
+        except Exception:
+            last_d = ""
+    else:
+        last_d = ""
     title = (
         f"📋 F2 23×6 矩陣（顯示最近 {len(date_cols)} 交易日；"
         f"右側 4 欄 21 列依日期先後排序；最末列 #21 = 當日最新參數；"
+        f"今日={today_d} / 資料最後日期={last_d}；"
         f"含表頭共 {render_rows_i+1} 列；7 欄完整橫向）"
     )
     if title_extra:

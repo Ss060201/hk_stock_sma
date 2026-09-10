@@ -1175,6 +1175,14 @@ def calc_pmax_index6_matrix_m(df: pd.DataFrame,
         res["reason"] = "df empty"
         return res
     try:
+        # Step 0: 強制 df index = DatetimeIndex + ASC（舊→新），避免 df 亂序或 DESC 時 tail(recent_rows) 抓錯 → 個股今天沒顯示
+        df = df.copy()
+        try:
+            df.index = pd.to_datetime(df.index, errors="coerce")
+            df = df.sort_index(ascending=True)
+            df = df[df.index.notna()]
+        except Exception:
+            pass
         if "Close" not in df.columns:
             res["reason"] = "missing Close column"
             return res
@@ -1414,6 +1422,14 @@ def calc_cot_ti5_vector_m(df: pd.DataFrame, ti_list: list = None):
         res["reason"] = "df empty"
         return res
     try:
+        # Step 0: 強制 df index = DatetimeIndex + ASC（舊→新），避免 df 亂序或 DESC 時 tail(recent_rows) 抓錯 → 個股今天沒顯示
+        df = df.copy()
+        try:
+            df.index = pd.to_datetime(df.index, errors="coerce")
+            df = df.sort_index(ascending=True)
+            df = df[df.index.notna()]
+        except Exception:
+            pass
         if "Close" not in df.columns:
             res["reason"] = "missing Close column"
             return res
@@ -1664,9 +1680,21 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20
     idx_disp = list(reversed(idx_disp))
     _f2_ensure_global_css_m()
     pm_v = matrix.get("pm")
+    try:
+        today_dm = pd.Timestamp.today().strftime("%y/%m/%d")
+    except Exception:
+        today_dm = ""
+    if len(date_cols) > 0:
+        try:
+            last_dm = pd.Timestamp(date_cols[-1].get("date")).strftime("%y/%m/%d")
+        except Exception:
+            last_dm = ""
+    else:
+        last_dm = ""
     title = (
         f"📋 F2 23×6 矩陣（最近 {len(date_cols)} 交易日；"
         f"右側 4 欄 21 列依日期先後排序；最末列 #21 = 當日最新參數；"
+        f"今日={today_dm} / 資料最後日期={last_dm}；"
         f"含表頭共 {render_rows_i+1} 列；7 欄完整橫向）"
     )
     if title_extra:
