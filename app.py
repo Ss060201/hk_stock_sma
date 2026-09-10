@@ -4825,12 +4825,21 @@ def render_f2_23x6_matrix(matrix, expand_rows: int = 23, expand_cols: int = 20,
     elif len(idx_rows) > expand_rows_i:
         idx_rows = list(idx_rows[:expand_rows_i])
 
-    date_cols_raw = list(cp_rows[-21:]) if len(cp_rows) > 21 else list(cp_rows)
-    date_cols = list(reversed(date_cols_raw))
+    # 右側 4 欄 × 21 列：依日期先後順序（舊→新 ASC），第 21 列（最末）= 最新/今日
+    date_cols = list(cp_rows[-21:]) if len(cp_rows) > 21 else list(cp_rows)
+
+    # 整體翻轉：左側 3 欄（#/Factor/Pm×Factor）同步倒序，與右側 4 欄一對一對齊，
+    #   最末列 (#21) = 最大 Factor + 今日參數，最上列 (#1) = 最小 Factor + 最舊日期
+    idx_disp = list(idx_rows[:render_rows_i])
+    idx_disp = list(reversed(idx_disp))
 
     _f2_ensure_global_css()
     pm_v = matrix.get("pm")
-    title = f"📋 F2 23×6 矩陣（顯示最近 {len(date_cols)} 交易日；資料列 {render_rows_i} 列，含表頭共 {render_rows_i+1} 列；7 欄完整橫向）"
+    title = (
+        f"📋 F2 23×6 矩陣（顯示最近 {len(date_cols)} 交易日；"
+        f"右側 4 欄 21 列依日期先後排序；最末列 #21 = 當日最新參數；"
+        f"含表頭共 {render_rows_i+1} 列；7 欄完整橫向）"
+    )
     if title_extra:
         title += f" · {title_extra}"
     st.markdown(f'<div class="{prefix}wrap"><div class="{prefix}title">{title}</div>', unsafe_allow_html=True)
@@ -4859,18 +4868,18 @@ def render_f2_23x6_matrix(matrix, expand_rows: int = 23, expand_cols: int = 20,
     parts.append(f"<thead><tr>{''.join(head)}</tr></thead><tbody>")
     n = render_rows_i
     for i in range(n):
-        r = idx_rows[i] if i < len(idx_rows) else None
+        r = idx_disp[i] if i < len(idx_disp) else None
         if r is None:
             cells = [f"<td class='idx-cell'>{i + 1}</td>",
                      "<td class='factor-cell'>-</td>",
                      "<td class='pmf-cell'>-</td>"]
         else:
             cells = [
-                f"<td class='idx-cell'>{int(r.get('idx', i)) + 1}</td>",
+                f"<td class='idx-cell'>{i + 1}</td>",
                 f"<td class='factor-cell'>{_f2_fmt_num(r.get('index'), 3)}</td>",
                 f"<td class='pmf-cell'>{_f2_fmt_num(r.get('pm_x_index'), 2)}</td>",
             ]
-        # 右側四欄：每一行都顯示「第 i 個時序行」（若時序不足則空）
+        # 右側四欄：每一行都顯示「第 i 個時序行」（依日期 ASC：最末列 i=20 → 最新/今日）
         d = date_cols[i] if i < len(date_cols) else None
         if d is not None:
             cells += [
