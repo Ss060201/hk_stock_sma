@@ -110,6 +110,8 @@ _YF_LAST_ERROR: Dict[str, Any] = {}
 _NATIVE_DOWNLOAD_STATS: Dict[str, Any] = {
     "native_attempts": 0, "native_success": 0,
     "yf_attempts": 0, "yf_success": 0,
+    "tencent_attempts": 0, "tencent_success": 0,
+    "eastmoney_attempts": 0, "eastmoney_success": 0,
     "stooq_attempts": 0, "stooq_success": 0,
     "sina_attempts": 0, "sina_success": 0,
 }
@@ -420,27 +422,39 @@ def _native_stooq_download(symbol: str, period_years: int = 5, timeout: int = 25
         uas_stooq = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18 Safari/605",
         ]
         hdrs = {
             "User-Agent": random.choice(uas_stooq),
-            "Accept": "text/csv,text/html,*/*;q=0.6",
+            "Accept": "text/csv,application/csv,text/html,*/*;q=0.6",
             "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.7",
+            "Upgrade-Insecure-Requests": "1",
         }
+        # 第一波：舊版 /q/d/l/ (容易被 bot challenge 回 HTML 帶 noindex)
+        # 第二波：備用 /db/d/?q= 匯出端點 (繞過前端 JS challenge)
         urls = [
             f"https://stooq.com/q/d/l/?s={stooq_sym}&d1={y1}{m1}{d1}&d2={y2}{m2}{d2}&i=d",
             f"https://stooq.pl/q/d/l/?s={stooq_sym}&d1={y1}{m1}{d1}&d2={y2}{m2}{d2}&i=d",
+            f"https://stooq.com/db/d/?q={stooq_sym}&d1={y1}{m1}{d1}&d2={y2}{m2}{d2}&i=d",
+            f"https://stooq.pl/db/d/?q={stooq_sym}&d1={y1}{m1}{d1}&d2={y2}{m2}{d2}&i=d",
         ]
         _yf_log_step(symbol, "stooq.urls", f"count={len(urls)} first_s={stooq_sym}")
         last_err = None
         for idx, url in enumerate(urls):
             try:
-                time.sleep(random.uniform(0.3, 0.8))
+                time.sleep(random.uniform(0.2, 0.7))
                 _yf_log_step(symbol, f"stooq.req[{idx}]", f"GET {url.split('//')[1].split('&')[0]}")
                 r = requests.get(url, headers=hdrs, timeout=timeout, allow_redirects=True)
                 body = r.text or ""
-                _yf_log_step(symbol, f"stooq.req[{idx}]", f"status={r.status_code} len={len(body)} snip={body[:120]}")
-                if r.status_code != 200 or "Date,Open,High,Low,Close,Volume" not in body:
-                    last_err = RuntimeError(f"Stooq[{idx}] invalid resp status={r.status_code} | head={body[:100]}")
+                snip = body[:160]
+                _yf_log_step(symbol, f"stooq.req[{idx}]", f"status={r.status_code} len={len(body)} snip={snip}")
+                html_captcha = (r.status_code == 200 and
+                                (("<html" in snip.lower()[:200] or "<!doctype" in snip.lower()[:200]
+                                  or "noindex,nofollow" in snip or "<noscript>" in snip)))
+                has_csv_header = "Date,Open,High,Low,Close,Volume" in body
+                if r.status_code != 200 or (not has_csv_header):
+                    diag = "CAPTCHA/html" if html_captcha and not has_csv_header else f"status={r.status_code}"
+                    last_err = RuntimeError(f"Stooq[{idx}] {diag} | head={body[:100]}")
                     _persist_last_error(symbol, f"stooq[{idx}]", str(last_err))
                     continue
                 try:
@@ -612,6 +626,235 @@ def _native_sina_download(symbol: str, timeout: int = 25):
 
 
 # ---------------------------------------------------------------------------
+# Route 0 (P0 priority — NO 429, NO CAPTCHA for HK): 騰訊 Tencent Finance qt.gtimg.cn
+#   Covers essentially ALL HK stocks (even 02xxx/08xxx small caps) with 1500+ day
+#   history. qfq = 前復權. JSON structure: data->{hk02586}->day|fqkday = list of 6-tuples.
+# ---------------------------------------------------------------------------
+def _native_tencent_download(symbol: str, timeout: int = 25):
+    _yf_log_step(symbol, "tencent.init", f"symbol={symbol}")
+    digits = re.findall(r"\d+", str(symbol))
+    if not digits:
+        raise RuntimeError("tencent: symbol has no digits")
+    dig = digits[0]
+    # Normalize to 5-digit HK code (Tencent likes 00700 → hk00700, 02586 → hk02586, 5 → hk00005)
+    try:
+        z = dig.zfill(5)
+    except Exception:
+        z = dig
+    syms = [f"hk{dig}", f"hk{z}"]
+    # De-duplicate but keep order
+    seen: set = set()
+    unique_syms = []
+    for s in syms:
+        if s not in seen:
+            unique_syms.append(s)
+            seen.add(s)
+    headers = {
+        "User-Agent": random.choice([
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18 Safari/605.1.15",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18 Mobile/15E148 Safari/604",
+        ]),
+        "Referer": "https://gu.qq.com/",
+    }
+    last_err: Optional[RuntimeError] = None
+    for t_sym in unique_syms:
+        urls = [
+            f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={t_sym},day,,,1500,qfq",
+            f"https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param={t_sym},day,,,1500,qfq",
+        ]
+        _yf_log_step(symbol, "tencent.urls", f"sym={t_sym} count={len(urls)}")
+        for idx, url in enumerate(urls):
+            try:
+                _yf_log_step(symbol, f"tencent.req[{idx}]", f"GET web.ifzq.gtimg.cn/… param={t_sym}")
+                s = _YF_SESS_MGR.get_session()
+                r = s.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+                raw = r.text or ""
+                snip = raw[:160].replace("\n", " ")
+                _yf_log_step(symbol, f"tencent.req[{idx}]", f"status={r.status_code} len={len(raw)} snip={snip}")
+                if r.status_code != 200 or len(raw) < 10:
+                    last_err = RuntimeError(f"tencent[{idx}] status={r.status_code} | head={raw[:100]}")
+                    _persist_last_error(symbol, f"tencent[{idx}]", str(last_err))
+                    continue
+                try:
+                    import json as _json
+                    payload = _json.loads(raw)
+                except Exception as je:
+                    last_err = RuntimeError(f"tencent[{idx}] JSON parse: {je} | head={raw[:120]}")
+                    _persist_last_error(symbol, f"tencent[{idx}]", str(last_err))
+                    continue
+                arr: list = []
+                # data->{t_sym}->{day|qfqday|fqkday}
+                data_blk = (payload or {}).get("data") or {}
+                sym_blk = data_blk.get(t_sym) or {}
+                for key in ("qfqday", "day", "fqkday"):
+                    cand = sym_blk.get(key) if isinstance(sym_blk, dict) else None
+                    if isinstance(cand, list) and len(cand) >= 5:
+                        arr = cand
+                        break
+                if not isinstance(arr, list) or len(arr) < 5:
+                    last_err = RuntimeError(f"tencent[{idx}] rows too few ({len(arr) if isinstance(arr, list) else type(arr)})")
+                    _persist_last_error(symbol, f"tencent[{idx}]", str(last_err))
+                    continue
+                dates: list = []
+                opens: list = []
+                closes: list = []
+                highs: list = []
+                lows: list = []
+                volumes: list = []
+                ok = 0
+                for row in arr:
+                    try:
+                        if not isinstance(row, (list, tuple)) or len(row) < 5:
+                            continue
+                        d_raw = str(row[0])
+                        o_ = float(row[1])
+                        c_ = float(row[2])
+                        h_ = float(row[3])
+                        l_ = float(row[4])
+                        v_ = float(row[5]) if len(row) > 5 else 0.0
+                        ts = pd.Timestamp(d_raw)
+                        if pd.isna(ts):
+                            continue
+                        dates.append(ts)
+                        opens.append(o_); closes.append(c_); highs.append(h_); lows.append(l_); volumes.append(v_)
+                        ok += 1
+                    except Exception:
+                        continue
+                if ok < 5:
+                    last_err = RuntimeError(f"tencent[{idx}] valid rows too few ({ok})")
+                    _persist_last_error(symbol, f"tencent[{idx}]", str(last_err))
+                    continue
+                df = pd.DataFrame({
+                    "Open": opens, "High": highs, "Low": lows,
+                    "Close": closes, "Volume": volumes,
+                }, index=dates)
+                df = df.sort_index()
+                _yf_log_step(symbol, f"tencent.req[{idx}]", f"SUCCESS rows={len(df)} close_last={float(df['Close'].iloc[-1])}")
+                return df, None
+            except Exception as e:
+                last_err = RuntimeError(f"tencent[{idx}] {type(e).__name__}: {str(e)[:160]}")
+                _persist_last_error(symbol, f"tencent[{idx}]", str(last_err))
+                _yf_log_step(symbol, f"tencent.req[{idx}]", f"EXCEPTION {type(e).__name__}: {str(e)[:120]}")
+                continue
+    raise RuntimeError(f"tencent all failed: {last_err}")
+
+
+# ---------------------------------------------------------------------------
+# Route 0.5 (P0.5 priority): 東方財富 Eastmoney push2his.eastmoney.com
+#   secid=116.{6-digit padded HK code}; klt=101 daily; fqt=1 前復權
+# ---------------------------------------------------------------------------
+def _native_eastmoney_download(symbol: str, timeout: int = 25):
+    _yf_log_step(symbol, "eastmoney.init", f"symbol={symbol}")
+    digits = re.findall(r"\d+", str(symbol))
+    if not digits:
+        raise RuntimeError("eastmoney: symbol has no digits")
+    dig = digits[0]
+    # Eastmoney HK secid = 116.000700 (6 digit zero-padded)
+    variants = []
+    try:
+        variants.append(dig.zfill(6))
+    except Exception:
+        pass
+    variants.append(dig)
+    try:
+        variants.append(dig.zfill(5))
+    except Exception:
+        pass
+    seen: set = set()
+    uni_v = []
+    for v in variants:
+        if v not in seen:
+            uni_v.append(v)
+            seen.add(v)
+    headers = {
+        "User-Agent": random.choice([
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18 Safari/605",
+        ]),
+        "Referer": "https://quote.eastmoney.com/",
+    }
+    last_err: Optional[RuntimeError] = None
+    for code in uni_v:
+        secid = f"116.{code}"
+        urls = [
+            (
+                f"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={secid}"
+                f"&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
+                f"&klt=101&fqt=1&end=20500101&lmt=1500"
+            ),
+        ]
+        _yf_log_step(symbol, "eastmoney.urls", f"secid={secid} count={len(urls)}")
+        for idx, url in enumerate(urls):
+            try:
+                _yf_log_step(symbol, f"eastmoney.req[{idx}]", f"GET push2his… secid={secid}")
+                s = _YF_SESS_MGR.get_session()
+                r = s.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+                raw = r.text or ""
+                snip = raw[:160].replace("\n", " ")
+                _yf_log_step(symbol, f"eastmoney.req[{idx}]", f"status={r.status_code} len={len(raw)} snip={snip}")
+                if r.status_code != 200 or len(raw) < 20:
+                    last_err = RuntimeError(f"eastmoney[{idx}] status={r.status_code} | head={raw[:100]}")
+                    _persist_last_error(symbol, f"eastmoney[{idx}]", str(last_err))
+                    continue
+                try:
+                    import json as _json
+                    payload = _json.loads(raw)
+                except Exception as je:
+                    last_err = RuntimeError(f"eastmoney[{idx}] JSON parse: {je} | head={raw[:120]}")
+                    _persist_last_error(symbol, f"eastmoney[{idx}]", str(last_err))
+                    continue
+                data = (payload or {}).get("data")
+                klines = data.get("klines") if isinstance(data, dict) else None
+                if not isinstance(klines, list) or len(klines) < 5:
+                    last_err = RuntimeError(f"eastmoney[{idx}] rows too few ({len(klines) if isinstance(klines, list) else type(klines)})")
+                    _persist_last_error(symbol, f"eastmoney[{idx}]", str(last_err))
+                    continue
+                dates: list = []
+                opens: list = []
+                closes: list = []
+                highs: list = []
+                lows: list = []
+                volumes: list = []
+                ok = 0
+                for line in klines:
+                    try:
+                        parts = str(line).split(",")
+                        if len(parts) < 6:
+                            continue
+                        ts = pd.Timestamp(parts[0])
+                        if pd.isna(ts):
+                            continue
+                        o_ = float(parts[1])
+                        c_ = float(parts[2])
+                        h_ = float(parts[3])
+                        l_ = float(parts[4])
+                        v_ = float(parts[5])
+                        dates.append(ts)
+                        opens.append(o_); closes.append(c_); highs.append(h_); lows.append(l_); volumes.append(v_)
+                        ok += 1
+                    except Exception:
+                        continue
+                if ok < 5:
+                    last_err = RuntimeError(f"eastmoney[{idx}] valid rows too few ({ok})")
+                    _persist_last_error(symbol, f"eastmoney[{idx}]", str(last_err))
+                    continue
+                df = pd.DataFrame({
+                    "Open": opens, "High": highs, "Low": lows,
+                    "Close": closes, "Volume": volumes,
+                }, index=dates)
+                df = df.sort_index()
+                _yf_log_step(symbol, f"eastmoney.req[{idx}]", f"SUCCESS rows={len(df)} close_last={float(df['Close'].iloc[-1])}")
+                return df, None
+            except Exception as e:
+                last_err = RuntimeError(f"eastmoney[{idx}] {type(e).__name__}: {str(e)[:160]}")
+                _persist_last_error(symbol, f"eastmoney[{idx}]", str(last_err))
+                _yf_log_step(symbol, f"eastmoney.req[{idx}]", f"EXCEPTION {type(e).__name__}: {str(e)[:120]}")
+                continue
+    raise RuntimeError(f"eastmoney all failed: {last_err}")
+
+
+# ---------------------------------------------------------------------------
 # Master stack: 4-route get_data (mirror app.py get_data_v7, NO st.cache_data)
 # ---------------------------------------------------------------------------
 def _finalize_df_and_return(df: pd.DataFrame, sym_used: str, orig_symbol: str,
@@ -662,8 +905,34 @@ def get_data_stack(symbol, end_date=None) -> Tuple[Optional[pd.DataFrame], Any]:
     stooq_aliases = aliases[:6]
     # Sina extracts digits internally; try the original+canonical aliases for its digit parser
     sina_aliases = aliases[:3] + [str(symbol).strip()]
+    # Tencent/Eastmoney: digit-based lookup (hkXXXX / 116.00XXXX), accept all aliases for coverage
+    cn_aliases = aliases[:6] + [str(symbol).strip()]
 
     for attempt in range(3):
+        # --- Route 0 (P0 FIRST, 無 429 無 CAPTCHA, 港股最穩定): 騰訊 Tencent Finance ---
+        _NATIVE_DOWNLOAD_STATS["tencent_attempts"] = _NATIVE_DOWNLOAD_STATS.get("tencent_attempts", 0) + 1
+        for alias in cn_aliases:
+            try:
+                df, _sb = _native_tencent_download(alias, timeout=25)
+                if df is not None and len(df) > 5:
+                    ret = _finalize_df_and_return(df, alias, symbol, end_date, "tencent")
+                    if ret is not None:
+                        return ret
+            except Exception as exc_tc:
+                last_err = exc_tc
+
+        # --- Route 0.5 (P0.5, 大陸次穩定): 東方財富 Eastmoney push2his ---
+        _NATIVE_DOWNLOAD_STATS["eastmoney_attempts"] = _NATIVE_DOWNLOAD_STATS.get("eastmoney_attempts", 0) + 1
+        for alias in cn_aliases:
+            try:
+                df, _sb = _native_eastmoney_download(alias, timeout=25)
+                if df is not None and len(df) > 5:
+                    ret = _finalize_df_and_return(df, alias, symbol, end_date, "eastmoney")
+                    if ret is not None:
+                        return ret
+            except Exception as exc_em:
+                last_err = exc_em
+
         # --- Route 1: native yahoo (try yahoo aliases) ---
         _NATIVE_DOWNLOAD_STATS["native_attempts"] = _NATIVE_DOWNLOAD_STATS.get("native_attempts", 0) + 1
         for alias in yahoo_aliases:
@@ -716,7 +985,7 @@ def get_data_stack(symbol, end_date=None) -> Tuple[Optional[pd.DataFrame], Any]:
         name = type(last_err).__name__
         if attempt < 2 and ("Invalid Crumb" in msg or "Unauthorized" in msg or "RateLimit" in name
                             or "Too Many Requests" in msg or "HTTP 40" in msg or "HTTP 5" in msg
-                            or "empty" in msg.lower()):
+                            or "empty" in msg.lower() or "rows too few" in msg.lower()):
             backoff = (2 ** attempt) * (1.0 + random.random())
             time.sleep(backoff)
             continue
