@@ -1673,11 +1673,11 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20
         idx_rows = last_idx + extra
     elif len(idx_rows) > expand_rows_i:
         idx_rows = list(idx_rows[:expand_rows_i])
-    # 右側 4 欄 × 21 列：依日期先後順序（舊→新 ASC），第 21 列（最末）= 最新/今日
-    date_cols = list(cp_rows[-21:]) if len(cp_rows) > 21 else list(cp_rows)
-    # 整體翻轉：左側 3 欄同步倒序，與右側 4 欄一對一對齊
+    # 右側 4 欄 × 21 列：依日期 DESC（新→舊），#1 = 最新/今日（搭配 Factor 遞降最上方 = 最大 Factor）
+    date_cols_asc = list(cp_rows[-21:]) if len(cp_rows) > 21 else list(cp_rows)
+    date_cols = list(reversed(date_cols_asc))
+    # Factor 遞降排列：#1 最大 Factor → #21 最小 Factor，搭配 date_cols DESC 一對一對齊
     idx_disp = list(idx_rows[:render_rows_i])
-    idx_disp = list(reversed(idx_disp))
     _f2_ensure_global_css_m()
     pm_v = matrix.get("pm")
     try:
@@ -1686,14 +1686,15 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20
         today_dm = ""
     if len(date_cols) > 0:
         try:
-            last_dm = pd.Timestamp(date_cols[-1].get("date")).strftime("%y/%m/%d")
+            last_dm = pd.Timestamp(date_cols[0].get("date")).strftime("%y/%m/%d")
         except Exception:
             last_dm = ""
     else:
         last_dm = ""
     title = (
         f"📋 F2 23×6 矩陣（最近 {len(date_cols)} 交易日；"
-        f"右側 4 欄 21 列依日期先後排序；最末列 #21 = 當日最新參數；"
+        f"Factor 遞降排列（#1 最大 → #21 最小）；"
+        f"右側 4 欄 21 列依日期 DESC（新→舊）；最上列 #1 = 最大 Factor + 當日最新參數；"
         f"今日={today_dm} / 資料最後日期={last_dm}；"
         f"含表頭共 {render_rows_i+1} 列；7 欄完整橫向）"
     )
