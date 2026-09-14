@@ -4470,23 +4470,43 @@ _PMAX_INDEX6_CSS_DESKTOP = """
 table.p6d_tbl {
     width: 100%;
     border-collapse: collapse;
+    table-layout: fixed;
     font-family: Arial, Helvetica, sans-serif;
     font-size: 13px;
+    line-height: 1.2;
     color: #0f172a;
 }
 table.p6d_tbl th, table.p6d_tbl td {
     border: 1px solid #6cbf4b;
-    padding: 6px 8px;
+    padding: 4px 6px;
+    height: 24px;
+    line-height: 16px;
     text-align: right;
     background: #a3d977;
     vertical-align: middle;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 table.p6d_tbl th {
     background: #7fbf5a;
     font-weight: 800;
     text-align: left;
+    height: 26px;
+    white-space: nowrap;
 }
-table.p6d_tbl td.date-cell,
+table.p6d_tbl th.p6d-date-col,
+table.p6d_tbl td.date-cell {
+    width: 130px;
+    background: #7fbf5a;
+    font-weight: 700;
+    text-align: center;
+    white-space: nowrap;
+}
+table.p6d_tbl th.p6d-close-col, table.p6d_tbl td:nth-child(2) { width: 80px; }
+table.p6d_tbl th.p6d-tur-col,   table.p6d_tbl td:nth-child(3) { width: 82px; }
+table.p6d_tbl th.p6d-amp-col,   table.p6d_tbl td:nth-child(4) { width: 74px; }
+table.p6d_tbl th.p6d-avg-col,   table.p6d_tbl td:nth-child(5) { width: 84px; }
+table.p6d_tbl th.p6d-dev-col,   table.p6d_tbl td:nth-child(n+6) { width: 76px; }
 table.p6d_tbl td.base-cell {
     background: #7fbf5a;
     font-weight: 700;
@@ -4966,9 +4986,9 @@ def render_pmax_index6_panel(matrix, prefix: str = "p6d_"):
     else:
         parts.append(f'<div class="{prefix}note">Devk[t]=(Close[t]-Avg3[t−k])/Avg3[t−k]·100%（M1 向歷史偏移 k）｜🎯 未命中校準點 {CAL_TARGET_RED_VALUE}（若有 8/11 數據會自動畫紅框）</div>')
     parts.append(f'<table class="{prefix}tbl">')
-    head_row = ["<th>Date</th><th>Close</th><th>TUR</th><th>Amp(%)</th><th>AvgDev</th>"]
+    head_row = ["<th class='p6d-date-col'>Date</th><th class='p6d-close-col'>Close</th><th class='p6d-tur-col'>TUR</th><th class='p6d-amp-col'>Amp(%)</th><th class='p6d-avg-col'>AvgDev</th>"]
     for k in offsets:
-        head_row.append(f"<th>Dev{k}</th>")
+        head_row.append(f"<th class='p6d-dev-col'>Dev{k}</th>")
     parts.append(f"<thead><tr>{''.join(head_row)}</tr></thead><tbody>")
     for r in t_rows:
         ds = r.get("date") or ""
@@ -4976,7 +4996,7 @@ def render_pmax_index6_panel(matrix, prefix: str = "p6d_"):
         dev = r.get("dev") or {}
         avg_dev_v = r.get("avg_dev")
         cells = [
-            f"<td class='date-cell'>{ds}</td>",
+            f"<td class='date-cell'>{_f2_short_date(ds)}</td>",
             f"<td>{_fmt(r.get('close'), 2)}</td>",
             f"<td>{_fmt(r.get('tur'), 4)}</td>",
             f"<td>{_fmt(r.get('amp'), 2)}</td>",
