@@ -29,6 +29,36 @@ from watchlist_storage import (
     save_watchlist_symbol,
 )
 
+# ===== [改动1] 移动端优化工具提前导入 + 立刻 setup_page（解决全黑卡頓：先顯示頁面骨架，再背景加載數據）=====
+try:
+    from mobile_optimizer import (
+        setup_page,
+        action_buttons,
+        responsive_cols,
+        responsive_table,
+        responsive_chart,
+        init_mobile_optimizer,
+    )
+
+    setup_page(
+        title="港股 SMA 矩陣 v9.7",
+        icon="📈",
+        layout="auto",
+        initial_sidebar_state="auto",
+    )
+    optimizer = init_mobile_optimizer()
+    is_mobile = st.session_state.get("is_mobile", False)
+except Exception as _mobile_opt_exc:
+    import logging as _l_mob
+    _l_mob.getLogger(__name__).warning("mobile_optimizer import/setup failed, fallback native: %s", _mobile_opt_exc)
+    setup_page = None
+    optimizer = None
+    is_mobile = False
+    try:
+        st.set_page_config(page_title="港股 SMA 矩陣 v9.7", page_icon="📈", layout="centered", initial_sidebar_state="auto")
+    except Exception:
+        pass
+
 # --- Optional async SQLite cache layer (graceful degrade if module missing) ---
 _CACHE_LAYER_OK_M = False
 _get_cached_ohlcv_m = None
@@ -89,7 +119,7 @@ def _a1_fetch_latest_artifact_impl_m(gh_token: str) -> Tuple[bool, str, int, str
             f"https://api.github.com/repos/{_GH_OWNER_M}/{_GH_REPO_M}/actions/artifacts"
             f"?name={requests.utils.quote(_GH_ARTIFACT_NAME_M)}&per_page=1"
         )
-        r1 = requests.get(list_url, headers=headers, timeout=30, allow_redirects=True)
+        r1 = requests.get(list_url, headers=headers, timeout=12, allow_redirects=True)
         if r1.status_code != 200:
             return False, "", 0, f"artifact_list HTTP {r1.status_code}"
         try:
@@ -102,7 +132,7 @@ def _a1_fetch_latest_artifact_impl_m(gh_token: str) -> Tuple[bool, str, int, str
         dl_url = arts[0].get("archive_download_url")
         if not dl_url:
             return False, "", 0, "missing archive_download_url"
-        r2 = requests.get(dl_url, headers=headers, timeout=120, allow_redirects=True, stream=True)
+        r2 = requests.get(dl_url, headers=headers, timeout=25, allow_redirects=True, stream=True)
         if r2.status_code != 200:
             return False, "", 0, f"artifact_download HTTP {r2.status_code}"
         zip_path = os.path.join(tmp_dir, "a1m_artifact.zip")
@@ -366,60 +396,108 @@ try:
         delete_watchlist_symbol as _delete_watchlist_symbol_m,
         list_watchlist_symbols as _list_watchlist_symbols_m,
     )
-    try:
-        _a1_sync_artifact_v5_m()
-    except Exception as _exc_a1_m:
-        _ARTIFACT_SYNC_OK_M = False
-        _ARTIFACT_LAST_ERROR_M = f"a1_sync_exception: {type(_exc_a1_m).__name__}"
+    # ⛔ 舊 L370 移除全域同步 A1 artifact（會在 GitHub API 120s timeout 卡死）→ 改下面 _bootstrap_background_init_m() 背景 thread 非同步
     try:
         _ensure_cache_schema_m(None)
         _CACHE_LAYER_OK_M = True
-        try:
-            if _list_watchlist_symbols_m is not None and _upsert_watchlist_symbol_m is not None:
-                _db_mig_m = get_db()
-                if _db_mig_m is not None:
-                    _wl_mig_m = get_watchlist_from_firestore(_db_mig_m) or {}
-                    _sqlite_syms_m = {r["symbol"] for r in _list_watchlist_symbols_m(limit=5000)}
-                    _mig_count_m = 0
-                    for _sym_m, _par_m in _wl_mig_m.items():
-                        if str(_sym_m).strip().upper() not in _sqlite_syms_m:
-                            try:
-                                _upsert_watchlist_symbol_m(_sym_m, params=_par_m if isinstance(_par_m, dict) else None, source="firestore_migrate_m")
-                                _mig_count_m += 1
-                            except Exception:
-                                pass
-                    if _mig_count_m:
-                        import logging as _logging_mig
-                        _logging_mig.getLogger(__name__).info("Mobile Firestore→SQLite watchlist migration: %d symbols copied.", _mig_count_m)
-        except Exception as _exc_mig_m:
-            import logging as _logging_mig_skip
-            _logging_mig_skip.getLogger(__name__).info("Mobile Firestore→SQLite migration skipped: %s", _exc_mig_m)
     except Exception as _exc_cache_init_m:
         import logging as _logging_m
         _logging_m.getLogger(__name__).warning("SQLite cache init failed (mobile): %s", _exc_cache_init_m)
 except Exception:
     _CACHE_LAYER_OK_M = False
 
-# ===== [改动1] 导入移动端优化工具 =====
-from mobile_optimizer import (
-    setup_page, 
-    action_buttons, 
-    responsive_cols, 
-    responsive_table,
-    responsive_chart,
-    init_mobile_optimizer
-)
 
-# ===== [改动2] 页面初始化 (替代 st.set_page_config) =====
-setup_page(
-    title="港股 SMA 矩陣 v9.7",
-    icon="📈",
-    layout="auto",
-    initial_sidebar_state="auto"
-)
+# ===== 背景非同步初始化：A1 artifact sync + Firestore migration（不阻塞頁面渲染）=====
+_A1_BOOTSTRAP_DONE_KEY_M = "_a1_bootstrap_done_m_v97"
 
-optimizer = init_mobile_optimizer()
-is_mobile = st.session_state.get('is_mobile', False)
+
+def _run_firestore_migrate_in_bg_m() -> int:
+    if (
+        _list_watchlist_symbols_m is None
+        or _upsert_watchlist_symbol_m is None
+    ):
+        return 0
+    try:
+        from watchlist_storage import get_db as _get_db_bg_m
+        _db_mig_m = _get_db_bg_m()
+        if _db_mig_m is None:
+            return 0
+        _wl_mig_m = get_watchlist_from_firestore(_db_mig_m) or {}
+        _sqlite_syms_m = {r["symbol"] for r in _list_watchlist_symbols_m(limit=5000)}
+        _mig_count_m = 0
+        for _sym_m, _par_m in _wl_mig_m.items():
+            if str(_sym_m).strip().upper() not in _sqlite_syms_m:
+                try:
+                    _upsert_watchlist_symbol_m(
+                        _sym_m,
+                        params=_par_m if isinstance(_par_m, dict) else None,
+                        source="firestore_migrate_m",
+                    )
+                    _mig_count_m += 1
+                except Exception:
+                    pass
+        if _mig_count_m:
+            logging.getLogger(__name__).info("Mobile Firestore→SQLite watchlist migration: %d symbols copied.", _mig_count_m)
+        return int(_mig_count_m)
+    except Exception as _exc_mig_bg_m:
+        logging.getLogger(__name__).info("Mobile Firestore→SQLite migration bg skipped: %s", _exc_mig_bg_m)
+        return 0
+
+
+def _bootstrap_background_init_m() -> None:
+    """背景 thread 執行：A1 artifact 同步 + Firestore migration，不阻塞頁面首屏渲染（<1s 看到骨架）。"""
+    try:
+        # Step 1: 先做本地 mtime fastpath — 如果本地 DB < 9 分鐘，直接跳過 A1 sync，不打 GitHub API（避免 GH 限流卡死）
+        _skip_a1 = False
+        if _get_cache_db_path_m is not None and _get_stat_m is not None:
+            try:
+                dbp = _get_cache_db_path_m()
+                if dbp and os.path.exists(dbp):
+                    try:
+                        cached_ts = _get_stat_m("a1_last_sync_ts", None, db_path=dbp)
+                        if cached_ts:
+                            try:
+                                dt = datetime.strptime(str(cached_ts), "%Y-%m-%d %H:%M")
+                                age = (datetime.now() - dt).total_seconds()
+                                if age < _A1_SYNC_TTL_SEC_M:
+                                    try:
+                                        valid_n = int(_get_stat_m("a1_last_valid_n", 0, db_path=dbp) or 0)
+                                    except Exception:
+                                        valid_n = 0
+                                    if valid_n >= _A1_MIN_VALID_CACHED_M:
+                                        global _ARTIFACT_SYNC_OK_M, _ARTIFACT_LAST_SYNC_TS_M, _ARTIFACT_CACHED_N_M
+                                        _ARTIFACT_SYNC_OK_M = True
+                                        _ARTIFACT_LAST_SYNC_TS_M = str(cached_ts)
+                                        _ARTIFACT_CACHED_N_M = valid_n
+                                        _skip_a1 = True
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        if not _skip_a1:
+            _a1_sync_artifact_v5_m()
+    except Exception as _exc_a1_bg_m:
+        logging.getLogger(__name__).warning("A1 artifact sync bg failed (mobile): %s", _exc_a1_bg_m)
+    try:
+        _run_firestore_migrate_in_bg_m()
+    except Exception:
+        pass
+
+
+# 只在當前 session 第一次 rerun 才啟動背景 thread（避免點按鈕 rerun 重複啟動）
+if _A1_BOOTSTRAP_DONE_KEY_M not in st.session_state:
+    try:
+        import threading as _th_m
+        st.session_state[_A1_BOOTSTRAP_DONE_KEY_M] = True
+        _th_m.Thread(target=_bootstrap_background_init_m, daemon=True).start()
+    except Exception:
+        # Thread 啟動失敗 → 直接同步呼叫（但機率很低）
+        try:
+            _bootstrap_background_init_m()
+        except Exception:
+            pass
 
 # yfinance crumb 穩定化：指定 TZ cache 到可寫 temp 目錄 + 升級 session UA
 try:

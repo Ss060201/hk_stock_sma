@@ -38,7 +38,12 @@ from watchlist_storage import (
     save_watchlist_symbol,
 )
 
-# Pre-init logger (before LOGGER assignment below for cache init except branches)
+# ===== [桌面優化] 立刻 st.set_page_config 放在最前面（解決全黑頁：先顯示頁面骨架，再背景加載數據/A1/Firebase）=====
+try:
+    st.set_page_config(page_title="港股 SMA 矩陣", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
+except Exception:
+    pass
+
 _LOG_CACHE_INIT = logging.getLogger(__name__)
 
 # --- Optional async SQLite cache layer (graceful degrade if module missing) ---
@@ -101,7 +106,7 @@ def _a1_fetch_latest_artifact_impl(gh_token: str) -> Tuple[bool, str, int, str]:
             f"https://api.github.com/repos/{_GH_OWNER}/{_GH_REPO}/actions/artifacts"
             f"?name={requests.utils.quote(_GH_ARTIFACT_NAME)}&per_page=1"
         )
-        r1 = requests.get(list_url, headers=headers, timeout=30, allow_redirects=True)
+        r1 = requests.get(list_url, headers=headers, timeout=12, allow_redirects=True)
         if r1.status_code != 200:
             return False, "", 0, f"artifact_list HTTP {r1.status_code}"
         try:
@@ -114,7 +119,7 @@ def _a1_fetch_latest_artifact_impl(gh_token: str) -> Tuple[bool, str, int, str]:
         dl_url = arts[0].get("archive_download_url")
         if not dl_url:
             return False, "", 0, "missing archive_download_url"
-        r2 = requests.get(dl_url, headers=headers, timeout=120, allow_redirects=True, stream=True)
+        r2 = requests.get(dl_url, headers=headers, timeout=25, allow_redirects=True, stream=True)
         if r2.status_code != 200:
             return False, "", 0, f"artifact_download HTTP {r2.status_code}"
         zip_path = os.path.join(tmp_dir, "a1_artifact.zip")
@@ -274,32 +279,10 @@ try:
         delete_watchlist_symbol as _delete_watchlist_symbol,
         list_watchlist_symbols as _list_watchlist_symbols,
     )
-    try:
-        _a1_sync_artifact_v5()
-    except Exception as _exc_a1:
-        _ARTIFACT_SYNC_OK = False
-        _ARTIFACT_LAST_ERROR = f"a1_sync_exception: {type(_exc_a1).__name__}"
+    # ⛔ 舊 L278 移除全域 _a1_sync_artifact_v5()（會在 GitHub API 120s timeout 卡死全黑頁）→ 改背景 thread 非同步
     try:
         _ensure_cache_schema(None)
         _CACHE_LAYER_OK = True
-        try:
-            if _list_watchlist_symbols is not None and _upsert_watchlist_symbol is not None:
-                _db_mig = get_db()
-                if _db_mig is not None:
-                    _wl_mig = get_watchlist_from_firestore(_db_mig) or {}
-                    _sqlite_syms = {r["symbol"] for r in _list_watchlist_symbols(limit=5000)}
-                    _mig_count = 0
-                    for _sym, _par in _wl_mig.items():
-                        if str(_sym).strip().upper() not in _sqlite_syms:
-                            try:
-                                _upsert_watchlist_symbol(_sym, params=_par if isinstance(_par, dict) else None, source="firestore_migrate")
-                                _mig_count += 1
-                            except Exception:
-                                pass
-                    if _mig_count:
-                        _LOG_CACHE_INIT.info("One-time Firestore→SQLite watchlist migration: %d symbols copied.", _mig_count)
-        except Exception as _exc_mig:
-            _LOG_CACHE_INIT.info("Firestore→SQLite watchlist migration skipped: %s", _exc_mig)
     except Exception as _exc_cache_init:
         _LOG_CACHE_INIT.warning("SQLite cache layer init failed (will use live fetch only): %s", _exc_cache_init)
         _CACHE_LAYER_OK = False
@@ -307,8 +290,91 @@ except Exception as _exc_cache_import:
     _LOG_CACHE_INIT.info("cache_layer module not found (daemon may not be installed): %s", _exc_cache_import)
     _CACHE_LAYER_OK = False
 
-# --- 1. 系統初始化 ---
-st.set_page_config(page_title="港股 SMA 矩陣", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
+
+# ===== 桌面版 背景非同步初始化：A1 artifact sync + Firestore migration（不阻塞頁面骨架 <1s 渲染）=====
+_A1_BOOTSTRAP_DONE_KEY_D = "_a1_bootstrap_done_d_v97"
+
+
+def _run_firestore_migrate_in_bg_d() -> int:
+    if _list_watchlist_symbols is None or _upsert_watchlist_symbol is None:
+        return 0
+    try:
+        from watchlist_storage import get_db as _get_db_bg_d
+        _db_mig = _get_db_bg_d()
+        if _db_mig is None:
+            return 0
+        _wl_mig = get_watchlist_from_firestore(_db_mig) or {}
+        _sqlite_syms = {r["symbol"] for r in _list_watchlist_symbols(limit=5000)}
+        _mig_count = 0
+        for _sym, _par in _wl_mig.items():
+            if str(_sym).strip().upper() not in _sqlite_syms:
+                try:
+                    _upsert_watchlist_symbol(
+                        _sym,
+                        params=_par if isinstance(_par, dict) else None,
+                        source="firestore_migrate",
+                    )
+                    _mig_count += 1
+                except Exception:
+                    pass
+        if _mig_count:
+            _LOG_CACHE_INIT.info("One-time Firestore→SQLite watchlist migration: %d symbols copied.", _mig_count)
+        return int(_mig_count)
+    except Exception as _exc_mig_bg:
+        _LOG_CACHE_INIT.info("Firestore→SQLite watchlist migration bg skipped: %s", _exc_mig_bg)
+        return 0
+
+
+def _bootstrap_background_init_d() -> None:
+    try:
+        _skip_a1 = False
+        if _get_cache_db_path is not None and _get_stat is not None:
+            try:
+                dbp = _get_cache_db_path()
+                if dbp and os.path.exists(dbp):
+                    try:
+                        cached_ts = _get_stat("a1_last_sync_ts", None, db_path=dbp)
+                        if cached_ts:
+                            try:
+                                dt = datetime.strptime(str(cached_ts), "%Y-%m-%d %H:%M")
+                                age = (datetime.now() - dt).total_seconds()
+                                if age < _A1_SYNC_TTL_SEC:
+                                    try:
+                                        valid_n = int(_get_stat("a1_last_valid_n", 0, db_path=dbp) or 0)
+                                    except Exception:
+                                        valid_n = 0
+                                    if valid_n >= _A1_MIN_VALID_CACHED:
+                                        global _ARTIFACT_SYNC_OK, _ARTIFACT_LAST_SYNC_TS, _ARTIFACT_CACHED_N
+                                        _ARTIFACT_SYNC_OK = True
+                                        _ARTIFACT_LAST_SYNC_TS = str(cached_ts)
+                                        _ARTIFACT_CACHED_N = valid_n
+                                        _skip_a1 = True
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        if not _skip_a1:
+            _a1_sync_artifact_v5()
+    except Exception as _exc_a1_bg:
+        _LOG_CACHE_INIT.warning("A1 artifact sync bg failed: %s", _exc_a1_bg)
+    try:
+        _run_firestore_migrate_in_bg_d()
+    except Exception:
+        pass
+
+
+if _A1_BOOTSTRAP_DONE_KEY_D not in st.session_state:
+    try:
+        import threading as _th_d
+        st.session_state[_A1_BOOTSTRAP_DONE_KEY_D] = True
+        _th_d.Thread(target=_bootstrap_background_init_d, daemon=True).start()
+    except Exception:
+        try:
+            _bootstrap_background_init_d()
+        except Exception:
+            pass
 
 LOGGER = logging.getLogger(__name__)
 
