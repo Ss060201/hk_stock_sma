@@ -2112,109 +2112,197 @@ if not current_code:
             st.info("📊 比較模式功能開發中...")
         
         st.divider()
-        
-        # ===== [改动5.2] 卡片式显示（A1 升級：優先讀 SQLite artifact 快取，全 HIT 零等待） =====
+
+        # ===== [改动5.2] 卡片式显示（A1 升級：優先讀 SQLite artifact 快取；4 線程並行抓；30 分鐘 cache；進度條避免卡頓假象） =====
         _ref_date_m = st.session_state.ref_date.strftime('%Y-%m-%d')
-        _prev_ok_m = False
-        for ticker in watchlist_list:
-            yt = get_yahoo_ticker(ticker)
-            df_w, sb_w, is_cached_w = None, None, False
-            try:
-                _r = get_data_v7(yt, _ref_date_m)
-                if isinstance(_r, tuple) and len(_r) >= 3:
-                    df_w, sb_w, is_cached_w = _r[0], _r[1], _r[2]
-                elif isinstance(_r, tuple):
-                    df_w, sb_w = _r[0], _r[1]
-                else:
-                    df_w = _r
-            except Exception as _e_load:
-                df_w = None
+        _total_m = len(watchlist_list)
+        _CHUNK_M = 12
+
+        @st.cache_data(ttl=1800, show_spinner=False)
+        def _load_watchlist_row_cached_m(ticker_sym: str, ref_d: str):
+            """單隻收藏股：快取 30 分鐘，返回卡片所需所有輕量數據（curr_p/prev_close/chg/pct/sma_vals）或 error"""
+            import concurrent.futures as _futures_m
+            _yt = get_yahoo_ticker(ticker_sym)
+            _df_w, _sb_w, _is_cached_w = None, None, False
+            _err_msg = ""
+            _s_w = _time_mod.time()
+
+            def _inner_load():
+                df_l, sb_l, cached_l = None, None, False
                 try:
-                    df_w = yf.download(yt, period="1y", progress=False, auto_adjust=False)
-                    if isinstance(df_w.columns, pd.MultiIndex):
-                        df_w.columns = df_w.columns.get_level_values(0)
-                    end_dt = pd.to_datetime(st.session_state.ref_date)
-                    df_w = df_w[df_w.index <= end_dt]
-                except Exception:
-                    df_w = None
-            try:
-                if df_w is not None and len(df_w) > 20:
-                    if isinstance(df_w.columns, pd.MultiIndex):
-                        df_w.columns = df_w.columns.get_level_values(0)
-                    end_dt = pd.to_datetime(st.session_state.ref_date)
-                    df_w = df_w[df_w.index <= end_dt]
-                    
-                    curr_p_s = pd.to_numeric(df_w['Close'], errors='coerce').replace(0, np.nan).dropna()
-                    if len(curr_p_s) == 0:
-                        raise RuntimeError("close all nan/0")
-                    curr_p = float(curr_p_s.iloc[-1])
-                    prev_close_w = curr_p_s.shift(1)
-                    prev_close_last = float(prev_close_w.iloc[-1]) if pd.notna(prev_close_w.iloc[-1]) else 0.0
-                    chg = (curr_p - prev_close_last) if prev_close_last else 0.0
-                    pct = (chg / prev_close_last * 100) if prev_close_last else 0.0
-                        
-                    if is_mobile:
-                        # ===== [改动5.3] 手机卡片UI =====
-                        with st.container():
-                            col1, col2 = st.columns([2, 1])
-                            with col1:
-                                st.markdown(f"""
-                                <div style="font-size: 18px; font-weight: bold;">
-                                    {ticker.upper()}
-                                </div>
-                                """, unsafe_allow_html=True)
-                                st.caption(f"Price: {curr_p:.2f}")
-                            
-                            with col2:
-                                chg_color = "🟢" if chg > 0 else "🔴" if chg < 0 else "⚪"
-                                color_text = "green" if chg > 0 else "red" if chg < 0 else "gray"
-                                st.markdown(f"""
-                                <div style="text-align: right; font-weight: bold; color: {color_text};">
-                                    {chg_color}<br/>{pct:+.2f}%
-                                </div>
-                                """, unsafe_allow_html=True)
-                            
-                            with st.expander(f"📊 詳細數據", expanded=False):
-                                intervals = [7, 14, 28, 57, 106, 212]
-                                avgp_vals = [curr_p]
-                                for p in intervals:
-                                    avgp_vals.append(curr_p_s.rolling(p).mean().iloc[-1] if len(curr_p_s)>=p else 0)
-                                
-                                valid_avgp = [v for v in avgp_vals if v > 0]
-                                avg_avgp = sum(valid_avgp) / len(valid_avgp) if valid_avgp else 0
-                                avgp_mr_vals = [((v / avg_avgp) - 1)*100 if avg_avgp else 0 for v in avgp_vals]
-                                
-                                st.write("**SMA 價格**")
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    st.metric("SMA7", f"{avgp_vals[1]:.2f}")
-                                with col2:
-                                    st.metric("SMA14", f"{avgp_vals[2]:.2f}")
-                                with col3:
-                                    st.metric("SMA28", f"{avgp_vals[3]:.2f}")
-                                
-                                st.write("**MR 偏差%**")
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    st.metric("MR7", f"{avgp_mr_vals[1]:.2f}%")
-                                with col2:
-                                    st.metric("MR14", f"{avgp_mr_vals[2]:.2f}%")
-                                with col3:
-                                    st.metric("MR28", f"{avgp_mr_vals[3]:.2f}%")
-                            
-                            st.divider()
+                    _r_l = get_data_v7(_yt, ref_d)
+                    if isinstance(_r_l, tuple) and len(_r_l) >= 3:
+                        df_l, sb_l, cached_l = _r_l[0], _r_l[1], _r_l[2]
+                    elif isinstance(_r_l, tuple):
+                        df_l, sb_l = _r_l[0], _r_l[1]
+                        cached_l = False
                     else:
-                        st.write(f"**{ticker}** | Price: {curr_p:.2f} | Change: {pct:+.2f}%")
-                        st.divider()
-                    _prev_ok_m = True
-            except Exception as e: 
-                st.error(f"Error {ticker}: {type(e).__name__}: {str(e)[:80]}")
-            # 只有 LIVE 抓數據才 sleep，避免全快取 HIT 時首頁 N 秒等待
-            if not is_cached_w:
-                try:
-                    _time_mod.sleep(_rand_mod.uniform(0.35, 0.85))
-                except Exception:
+                        df_l = _r_l
+                        cached_l = False
+                except Exception as _e_l:
+                    df_l = None
+                    try:
+                        df_l = yf.download(_yt, period="1y", progress=False, auto_adjust=False)
+                        if isinstance(df_l.columns, pd.MultiIndex):
+                            df_l.columns = df_l.columns.get_level_values(0)
+                        end_dt = pd.to_datetime(ref_d)
+                        df_l = df_l[df_l.index <= end_dt]
+                    except Exception:
+                        df_l = None
+                return df_l, sb_l, cached_l
+
+            try:
+                with _futures_m.ThreadPoolExecutor(max_workers=1) as _ex_l:
+                    _fut = _ex_l.submit(_inner_load)
+                    # 12s timeout per ticker (避免某 1 隻冷門股卡整個總覽)
+                    _df_w, _sb_w, _is_cached_w = _fut.result(timeout=12)
+            except Exception as _e_to:
+                _df_w, _sb_w, _is_cached_w = None, None, False
+                _err_msg = f"{type(_e_to).__name__}: {str(_e_to)[:80]}"
+            out = {
+                "ticker": ticker_sym,
+                "df": _df_w,
+                "sb": _sb_w,
+                "is_cached": bool(_is_cached_w),
+                "err": _err_msg,
+                "elapsed": _time_mod.time() - _s_w,
+            }
+            # 真實 live 請求（非 SQLite cache）才做 <100ms 短節流，避免被 429 也不卡總覽
+            if (not out["is_cached"]) and (out["elapsed"] < 1.5) and (out["err"] == ""):
+                _time_mod.sleep(_rand_mod.uniform(0.04, 0.12))
+            return out
+
+        # Step A：先批次並行加載所有 ticker 的數據輕量表（4 線程），最多 CHUNK=12 一批避免 iOS 卡
+        _rows_payload_m: list = []
+        _all_done_m = False
+        try:
+            import concurrent.futures as _cf_m
+            _max_workers_m = 4 if _total_m >= 8 else 2 if _total_m >= 3 else 1
+            with st.status(f"📡 加載收藏總覽（並行 {_max_workers_m} 線程，共 {_total_m} 支）…", expanded=False) as _stt_m:
+                _prog = st.progress(0.0, text=f"0/{_total_m}")
+                for _batch_start in range(0, _total_m, _CHUNK_M):
+                    _batch = watchlist_list[_batch_start:_batch_start + _CHUNK_M]
+                    _batch_results: dict = {}
+                    with _cf_m.ThreadPoolExecutor(max_workers=_max_workers_m) as _pool_m:
+                        _fut_to_tk = {_pool_m.submit(_load_watchlist_row_cached_m, tk, _ref_date_m): tk for tk in _batch}
+                        _done_count = 0
+                        for _f in _cf_m.as_completed(_fut_to_tk):
+                            tk = _fut_to_tk[_f]
+                            try:
+                                _batch_results[tk] = _f.result(timeout=14)
+                            except Exception as _e_f:
+                                _batch_results[tk] = {
+                                    "ticker": tk, "df": None, "sb": None, "is_cached": False,
+                                    "err": f"{type(_e_f).__name__}: {str(_e_f)[:80]}", "elapsed": 0.0,
+                                }
+                            _done_count += 1
+                            _total_done = min(_batch_start + _done_count, _total_m)
+                            _prog.progress(
+                                _total_done / max(_total_m, 1),
+                                text=f"{_total_done}/{_total_m} · 正在處理 {tk.upper()}",
+                            )
+                    # 批次結果按原 watchlist order 塞回
+                    for tk in _batch:
+                        _rows_payload_m.append(_batch_results.get(tk))
+                _stt_m.update(state="complete", label=f"✅ 加載完成（{len([r for r in _rows_payload_m if r and r.get('df') is not None])}/{_total_m} 支有數據）", expanded=False)
+                _prog.empty()
+            _all_done_m = True
+        except Exception as _e_ppl:
+            _rows_payload_m = [None] * _total_m
+            try:
+                st.toast(f"總覽並行加載異常（改串行降級）：{type(_e_ppl).__name__}", icon="⚠️")
+            except Exception:
+                pass
+
+        # Step B：串行渲染卡片（HTML DOM 必須主線程；若 Step A 失敗，串行降級也能正常出卡）
+        _prev_ok_m = False
+        for _idx_m in range(_total_m):
+            ticker = watchlist_list[_idx_m]
+            if _all_done_m and _idx_m < len(_rows_payload_m) and _rows_payload_m[_idx_m] is not None:
+                _payload = _rows_payload_m[_idx_m]
+                df_w = _payload.get("df")
+                sb_w = _payload.get("sb")
+                is_cached_w = bool(_payload.get("is_cached"))
+            else:
+                _load_res = _load_watchlist_row_cached_m(ticker, _ref_date_m)
+                df_w = _load_res.get("df")
+                sb_w = _load_res.get("sb")
+                is_cached_w = bool(_load_res.get("is_cached"))
+                if _load_res.get("err"):
                     pass
+            if df_w is None or (isinstance(df_w, pd.DataFrame) and len(df_w) <= 20):
+                continue
+            try:
+                if isinstance(df_w.columns, pd.MultiIndex):
+                    df_w.columns = df_w.columns.get_level_values(0)
+                end_dt = pd.to_datetime(st.session_state.ref_date)
+                df_w = df_w[df_w.index <= end_dt]
+
+                curr_p_s = pd.to_numeric(df_w['Close'], errors='coerce').replace(0, np.nan).dropna()
+                if len(curr_p_s) == 0:
+                    raise RuntimeError("close all nan/0")
+                curr_p = float(curr_p_s.iloc[-1])
+                prev_close_w = curr_p_s.shift(1)
+                prev_close_last = float(prev_close_w.iloc[-1]) if pd.notna(prev_close_w.iloc[-1]) else 0.0
+                chg = (curr_p - prev_close_last) if prev_close_last else 0.0
+                pct = (chg / prev_close_last * 100) if prev_close_last else 0.0
+
+                if is_mobile:
+                    # ===== [改动5.3] 手机卡片UI =====
+                    with st.container():
+                        col1, col2 = st.columns([2, 1])
+                        with col1:
+                            st.markdown(f"""
+                            <div style="font-size: 18px; font-weight: bold;">
+                                {ticker.upper()}
+                            </div>
+                            """, unsafe_allow_html=True)
+                            st.caption(f"Price: {curr_p:.2f}")
+
+                        with col2:
+                            chg_color = "🟢" if chg > 0 else "🔴" if chg < 0 else "⚪"
+                            color_text = "green" if chg > 0 else "red" if chg < 0 else "gray"
+                            st.markdown(f"""
+                            <div style="text-align: right; font-weight: bold; color: {color_text};">
+                                {chg_color}<br/>{pct:+.2f}%
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                        with st.expander(f"📊 詳細數據", expanded=False):
+                            intervals = [7, 14, 28, 57, 106, 212]
+                            avgp_vals = [curr_p]
+                            for p in intervals:
+                                avgp_vals.append(curr_p_s.rolling(p).mean().iloc[-1] if len(curr_p_s)>=p else 0)
+
+                            valid_avgp = [v for v in avgp_vals if v > 0]
+                            avg_avgp = sum(valid_avgp) / len(valid_avgp) if valid_avgp else 0
+                            avgp_mr_vals = [((v / avg_avgp) - 1)*100 if avg_avgp else 0 for v in avgp_vals]
+
+                            st.write("**SMA 價格**")
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("SMA7", f"{avgp_vals[1]:.2f}")
+                            with col2:
+                                st.metric("SMA14", f"{avgp_vals[2]:.2f}")
+                            with col3:
+                                st.metric("SMA28", f"{avgp_vals[3]:.2f}")
+
+                            st.write("**MR 偏差%**")
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("MR7", f"{avgp_mr_vals[1]:.2f}%")
+                            with col2:
+                                st.metric("MR14", f"{avgp_mr_vals[2]:.2f}%")
+                            with col3:
+                                st.metric("MR28", f"{avgp_mr_vals[3]:.2f}%")
+
+                        st.divider()
+                else:
+                    st.write(f"**{ticker}** | Price: {curr_p:.2f} | Change: {pct:+.2f}%")
+                    st.divider()
+                _prev_ok_m = True
+            except Exception as e:
+                st.error(f"Error {ticker}: {type(e).__name__}: {str(e)[:80]}")
 
 # ===== [改动6] 詳細模式 =====
 else:
