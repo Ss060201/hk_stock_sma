@@ -1,3 +1,12 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
+data/*.sqlite
+data/*.sqlite-journal
+data/*.sqlite-wal
+data/*.sqlite-shm
+data/tur_amp_health_report.csv
+data/tur_amp_health_summary.json
+.secrets/
+.env
+*.log
 
