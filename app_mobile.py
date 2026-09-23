@@ -1144,10 +1144,10 @@ def render_pmax_dev_table_m(matrix, prefix: str = "md2_"):
 
 
 PMAX_20_FIXED_INDICES_M: list = [
-    0.625, 0.583, 0.542, 0.500, 0.458, 0.417, 0.396, 0.375, 0.354, 0.333,
-    0.313, 0.292, 0.271, 0.250, 0.229, 0.208, 0.188, 0.167, 0.146, 0.125,
+    0.704, 0.667, 0.630, 0.593, 0.556, 0.519, 0.500, 0.481, 0.463, 0.444,
+    0.426, 0.407, 0.389, 0.370, 0.352, 0.333, 0.317, 0.302, 0.286, 0.270,
 ]
-PMAX_23_FIXED_INDICES_M: list = PMAX_20_FIXED_INDICES_M + [0.104, 0.083, 0.063]
+PMAX_23_FIXED_INDICES_M: list = PMAX_20_FIXED_INDICES_M + [0.254, 0.238, 0.198, 0.185, 0.173, 0.160, 0.148]
 CAL_TARGET_RED_VALUE_M: float = 3.5197
 
 _F2_CSS_TABLE_INJECTED_KEY_M = "__f2_23x6_table_css_injected_m_20260907__"
@@ -1261,6 +1261,8 @@ def calc_pmax_index6_matrix_m(df: pd.DataFrame,
         "reason": "",
         "pm": None,
         "pm_window": pmax_window,
+        "pm_date": None,
+        "pm_reverse_index": None,
         "index_rows": [],
         "time_rows": [],
         "dev_offsets": list(dev_offsets),
@@ -1318,6 +1320,14 @@ def calc_pmax_index6_matrix_m(df: pd.DataFrame,
             res["reason"] = f"Pm={Pm} 非合理正數"
             return res
         res["pm"] = Pm
+        try:
+            _pm_date_ts_m = daily_max.idxmax()
+            _pm_slice_idx_m = pmax_close.index.get_loc(_pm_date_ts_m) if hasattr(pmax_close.index, "get_loc") else (list(pmax_close.index).index(_pm_date_ts_m) if _pm_date_ts_m in list(pmax_close.index) else None)
+            res["pm_reverse_index"] = (top - 1 - int(_pm_slice_idx_m)) if (_pm_slice_idx_m is not None and isinstance(_pm_slice_idx_m, (int, np.integer))) else None
+            res["pm_date"] = pd.Timestamp(_pm_date_ts_m).strftime("%Y-%m-%d")
+        except Exception:
+            res["pm_date"] = None
+            res["pm_reverse_index"] = None
         idx_rows = []
         for i, v in enumerate(PMAX_20_FIXED_INDICES_M):
             idx_rows.append({"idx": i, "index": float(v), "pm_x_index": float(Pm * float(v))})

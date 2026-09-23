@@ -4035,6 +4035,46 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
             return float("nan")
         return (cv / bv - 1) * 100
 
+    Pm_window = min(len(work_df), 106)
+    if Pm_window < 30:
+        Pm = None
+        Pm_date = None
+        Pm_idx = None
+        interval_days = None
+    else:
+        _pm_df_slice = work_df.tail(Pm_window).copy()
+        _hi = pd.to_numeric(_pm_df_slice.get("High"), errors="coerce") if "High" in _pm_df_slice.columns else close
+        _cl = pd.to_numeric(_pm_df_slice["Close"], errors="coerce")
+        _comb = pd.concat([_cl, _hi], axis=1)
+        _daily_max = _comb.max(axis=1, skipna=True).replace(0, np.nan).dropna()
+        if _daily_max.empty:
+            Pm = None
+            Pm_date = None
+            Pm_idx = None
+            interval_days = None
+        else:
+            Pm = float(_daily_max.max())
+            Pm_date_ts = _daily_max.idxmax()
+            try:
+                Pm_idx_global = _pm_df_slice.index.get_loc(Pm_date_ts) if hasattr(_pm_df_slice.index, "get_loc") else (list(_pm_df_slice.index).index(Pm_date_ts) if Pm_date_ts in list(_pm_df_slice.index) else None)
+            except Exception:
+                Pm_idx_global = None
+            Pm_idx = (Pm_window - 1 - int(Pm_idx_global)) if (Pm_idx_global is not None and isinstance(Pm_idx_global, (int, np.integer))) else None
+            try:
+                Pm_date = pd.Timestamp(Pm_date_ts).strftime("%Y-%m-%d")
+                curr_date = pd.Timestamp(work_df.index[-1]).strftime("%Y-%m-%d")
+                interval_days = int((pd.Timestamp(curr_date) - pd.Timestamp(Pm_date)).days)
+            except Exception:
+                Pm_date = None
+                interval_days = None
+
+    devpc = None
+    if Pm is not None and np.isfinite(Pm) and Pm > 0 and np.isfinite(current_close):
+        try:
+            devpc = round(float(current_close) / float(Pm), 3)
+        except Exception:
+            devpc = None
+
     dev_periods = [3, 7, 14, 28, 57, 106]
     dev_values = {"Dev 0": pct_change(current_close, prev_close)}
     for p in dev_periods:
@@ -4104,6 +4144,8 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
         row_values = {
             "Code": ticker,
             "CPRD": row_prev,
+            "DEVpc": None,
+            "IIDpc": None,
             "Dev 0": pct_change(row_close, row_prev),
         }
         for p in dev_periods:
@@ -4120,6 +4162,8 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
         "summary": {
             "Code": ticker,
             "CPRD": prev_close,
+            "DEVpc": devpc,
+            "IIDpc": int(interval_days) if (interval_days is not None and isinstance(interval_days, (int, np.integer)) and int(interval_days) >= 0) else None,
             **dev_values,
         },
         "detail": {
@@ -4127,6 +4171,11 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
             "date": work_df.index[-1].strftime("%Y-%m-%d"),
             "current_price": current_close,
             "cp": prev_close,
+            "pm": float(Pm) if (Pm is not None and np.isfinite(Pm)) else None,
+            "pm_date": Pm_date,
+            "pm_reverse_index": int(Pm_idx) if (Pm_idx is not None and isinstance(Pm_idx, (int, np.integer))) else None,
+            "devpc": devpc,
+            "iidpc": int(interval_days) if (interval_days is not None and isinstance(interval_days, (int, np.integer)) and int(interval_days) >= 0) else None,
             "dev": dev_values,
             "dev_history": dev_history,
             "tor": tor_values,
@@ -4478,11 +4527,11 @@ def render_pmax_dev_table(matrix, prefix: str = ""):
 
 
 PMAX_20_FIXED_INDICES: list = [
-    0.625, 0.583, 0.542, 0.500, 0.458, 0.417, 0.396, 0.375, 0.354, 0.333,
-    0.313, 0.292, 0.271, 0.250, 0.229, 0.208, 0.188, 0.167, 0.146, 0.125,
+    0.704, 0.667, 0.630, 0.593, 0.556, 0.519, 0.500, 0.481, 0.463, 0.444,
+    0.426, 0.407, 0.389, 0.370, 0.352, 0.333, 0.317, 0.302, 0.286, 0.270,
 ]
 
-PMAX_23_FIXED_INDICES: list = PMAX_20_FIXED_INDICES + [0.104, 0.083, 0.063]
+PMAX_23_FIXED_INDICES: list = PMAX_20_FIXED_INDICES + [0.254, 0.238, 0.198, 0.185, 0.173, 0.160, 0.148]
 
 _F2_CSS_TABLE_INJECTED_KEY = "__f2_23x6_table_css_injected_20260907__"
 _F2_GLOBAL_CSS = """
@@ -4637,6 +4686,8 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
         "reason": "",
         "pm": None,
         "pm_window": pmax_window,
+        "pm_date": None,
+        "pm_reverse_index": None,
         "index_rows": [],
         "time_rows": [],
         "dev_offsets": list(dev_offsets),
@@ -4694,6 +4745,14 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
             res["reason"] = f"Pm={Pm} 非合理正數"
             return res
         res["pm"] = Pm
+        try:
+            _pm_date_ts = daily_max.idxmax()
+            _pm_slice_idx = pmax_close.index.get_loc(_pm_date_ts) if hasattr(pmax_close.index, "get_loc") else (list(pmax_close.index).index(_pm_date_ts) if _pm_date_ts in list(pmax_close.index) else None)
+            res["pm_reverse_index"] = (top - 1 - int(_pm_slice_idx)) if (_pm_slice_idx is not None and isinstance(_pm_slice_idx, (int, np.integer))) else None
+            res["pm_date"] = pd.Timestamp(_pm_date_ts).strftime("%Y-%m-%d")
+        except Exception:
+            res["pm_date"] = None
+            res["pm_reverse_index"] = None
 
         idx_rows = []
         for i, v in enumerate(PMAX_20_FIXED_INDICES):
@@ -6274,13 +6333,13 @@ elif current_page == "home":
             st.warning("目前沒有足夠數據可生成收藏股列表。請稍後再試，或檢查收藏清單中的股票代號是否正確。")
             sorted_rows = []
         else:
-            sort_options = ["Dev 3", "Dev 7", "Dev 14", "Dev 28"]
+            sort_options = ["DEVpc", "IIDpc", "Dev 3", "Dev 7", "Dev 14", "Dev 28"]
             if "home_sort_metric" not in st.session_state or st.session_state.home_sort_metric not in sort_options:
-                st.session_state.home_sort_metric = "Dev 3"
+                st.session_state.home_sort_metric = "DEVpc"
             if "home_sort_desc" not in st.session_state:
                 st.session_state.home_sort_desc = True
 
-            sort_cols = st.columns([1, 1, 1, 1, 1])
+            sort_cols = st.columns([1, 1, 1, 1, 1, 1, 1])
             for idx, option in enumerate(sort_options):
                 with sort_cols[idx]:
                     if st.button(
@@ -6291,9 +6350,9 @@ elif current_page == "home":
                     ):
                         st.session_state.home_sort_metric = option
                         st.rerun()
-            with sort_cols[4]:
+            with sort_cols[6]:
                 if st.button(
-                    "由高到低" if st.session_state.home_sort_desc else "由低到高",
+                    "遞減↓" if st.session_state.home_sort_desc else "遞增↑",
                     key="home_sort_toggle",
                     use_container_width=True,
                     type="secondary",
@@ -6302,11 +6361,15 @@ elif current_page == "home":
                     st.rerun()
 
             selected_sort = st.session_state.home_sort_metric
-            sorted_rows = sorted(
-                summary_rows,
-                key=lambda row: float(row.get(selected_sort)) if pd.notna(row.get(selected_sort)) else float("-inf"),
-                reverse=bool(st.session_state.home_sort_desc),
-            )
+            def _sort_key(row):
+                v = row.get(selected_sort)
+                if v is None or (isinstance(v, float) and not np.isfinite(v)) or pd.isna(v):
+                    return float("inf") if not st.session_state.home_sort_desc else float("-inf")
+                try:
+                    return float(v)
+                except Exception:
+                    return float("inf") if not st.session_state.home_sort_desc else float("-inf")
+            sorted_rows = sorted(summary_rows, key=_sort_key, reverse=bool(st.session_state.home_sort_desc))
             available_codes = [row["Code"] for row in sorted_rows]
             if st.session_state.get("home_selected_ticker") not in available_codes:
                 st.session_state.home_selected_ticker = available_codes[0]
@@ -6332,7 +6395,7 @@ elif current_page == "home":
                    Mobile: same 7 columns, horizontally scrollable. */
                 .home-stock-table-header {
                     display: grid;
-                    grid-template-columns: repeat(7, minmax(0, 1fr));
+                    grid-template-columns: repeat(9, minmax(0, 1fr));
                     width: 100%;
                     min-width: 0;
                     overflow-x: auto;
@@ -6457,9 +6520,9 @@ elif current_page == "home":
 
                 @media (max-width: 768px) {
                     .home-stock-table-header {
-                        grid-template-columns: repeat(7, 78px);
+                        grid-template-columns: repeat(9, 78px);
                         width: max-content;
-                        min-width: 546px;
+                        min-width: 702px;
                     }
 
                     .home-stock-table-header > div {
@@ -6513,6 +6576,8 @@ elif current_page == "home":
                 <div class="home-stock-table-header">
                     <div>Code</div>
                     <div>CPRD</div>
+                    <div>DEVpc</div>
+                    <div>IIDpc</div>
                     <div>Dev 0</div>
                     <div>Dev 3</div>
                     <div>Dev 7</div>
@@ -6530,7 +6595,7 @@ elif current_page == "home":
                 render_scroll_anchor(get_home_stock_anchor_id(ticker))
 
                 with st.container(key=f"home_stock_card_{safe_ticker}"):
-                    cols = st.columns([1, 1, 1, 1, 1, 1, 1])
+                    cols = st.columns([1, 1, 1, 1, 1, 1, 1, 1, 1])
 
                     # Hidden CSS hook inside this exact HorizontalBlock.
                     with cols[0]:
@@ -6557,30 +6622,50 @@ elif current_page == "home":
                         )
 
                     with cols[2]:
+                        _v_dpc = row.get("DEVpc", None)
+                        _s_dpc = "-"
+                        if _v_dpc is not None and isinstance(_v_dpc, (int, float, np.floating, np.integer)) and not pd.isna(_v_dpc):
+                            try:
+                                _s_dpc = f"{float(_v_dpc):.3f}"
+                            except Exception:
+                                _s_dpc = "-"
+                        st.markdown(f'<div class="stock-cell">{_s_dpc}</div>', unsafe_allow_html=True)
+
+                    with cols[3]:
+                        _v_idp = row.get("IIDpc", None)
+                        _s_idp = "-"
+                        if _v_idp is not None and isinstance(_v_idp, (int, float, np.floating, np.integer)) and not pd.isna(_v_idp):
+                            try:
+                                _s_idp = f"{int(_v_idp)}d"
+                            except Exception:
+                                _s_idp = "-"
+                        st.markdown(f'<div class="stock-cell">{_s_idp}</div>', unsafe_allow_html=True)
+
+                    with cols[4]:
                         st.markdown(
                             f'<div class="stock-cell">{_fmt_pct(row.get("Dev 0", None))}</div>',
                             unsafe_allow_html=True,
                         )
 
-                    with cols[3]:
+                    with cols[5]:
                         st.markdown(
                             f'<div class="stock-cell">{_fmt_pct(row.get("Dev 3", None))}</div>',
                             unsafe_allow_html=True,
                         )
 
-                    with cols[4]:
+                    with cols[6]:
                         st.markdown(
                             f'<div class="stock-cell">{_fmt_pct(row.get("Dev 7", None))}</div>',
                             unsafe_allow_html=True,
                         )
 
-                    with cols[5]:
+                    with cols[7]:
                         st.markdown(
                             f'<div class="stock-cell">{_fmt_pct(row.get("Dev 14", None))}</div>',
                             unsafe_allow_html=True,
                         )
 
-                    with cols[6]:
+                    with cols[8]:
                         st.markdown(
                             f'<div class="stock-cell">{_fmt_pct(row.get("Dev 28", None))}</div>',
                             unsafe_allow_html=True,
