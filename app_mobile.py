@@ -30,6 +30,7 @@ from watchlist_storage import (
 )
 
 # ===== [改动1] 移动端优化工具提前导入 + 立刻 setup_page（解决全黑卡頓：先顯示頁面骨架，再背景加載數據）=====
+_MOBILE_SETUP_OK_M = False
 try:
     from mobile_optimizer import (
         setup_page,
@@ -48,16 +49,20 @@ try:
     )
     optimizer = init_mobile_optimizer()
     is_mobile = st.session_state.get("is_mobile", False)
+    _MOBILE_SETUP_OK_M = True
 except Exception as _mobile_opt_exc:
     import logging as _l_mob
     _l_mob.getLogger(__name__).warning("mobile_optimizer import/setup failed, fallback native: %s", _mobile_opt_exc)
     setup_page = None
     optimizer = None
     is_mobile = False
+    # ☢️ 卡死修復 1：fallback 也不要再呼叫 st.set_page_config（如果 setup_page 內部已呼過，這裡重呼直接 exception → 黑頁 Stop 永遠亮）
     try:
         st.set_page_config(page_title="港股 SMA 矩陣 v9.7", page_icon="📈", layout="centered", initial_sidebar_state="auto")
-    except Exception:
-        pass
+        _MOBILE_SETUP_OK_M = True
+    except Exception as _e_spc:
+        _l_mob.getLogger(__name__).warning("st.set_page_config duplicate call skipped: %s", _e_spc)
+        _MOBILE_SETUP_OK_M = True  # 就算重覆呼叫也當成功（Streamlit 已有第一個 call 的 config）
 
 # --- Optional async SQLite cache layer (graceful degrade if module missing) ---
 _CACHE_LAYER_OK_M = False
@@ -492,10 +497,14 @@ if _A1_BOOTSTRAP_DONE_KEY_M not in st.session_state:
         import threading as _th_m
         st.session_state[_A1_BOOTSTRAP_DONE_KEY_M] = True
         _th_m.Thread(target=_bootstrap_background_init_m, daemon=True).start()
-    except Exception:
-        # Thread 啟動失敗 → 直接同步呼叫（但機率很低）
+    except Exception as _e_th_start:
+        # ☢️ 卡死修復 3：Thread 啟動失敗時 → 不再 fallback 同步呼叫（之前寫法會把同步做 A1 GH API 120s timeout → 直接黑頁卡到 timeout），改成直接跳過，下次 rerun 再重試
+        import logging as _lg_bg_fail
+        _lg_bg_fail.getLogger(__name__).warning(
+            "Mobile background thread launch failed, SKIP sync fallback (avoid blocking): %s", _e_th_start
+        )
         try:
-            _bootstrap_background_init_m()
+            _ARTIFACT_LAST_ERROR_M = f"bg_thread_launch: {type(_e_th_start).__name__}"
         except Exception:
             pass
 
@@ -538,6 +547,8 @@ class _YFSessionManager_M:
             self._lock.release()
 
     def _maybe_refresh_sessions(self):
+        # ☢️ 卡死修復 2：_YFSessionManager_M 全域初始化時 _maybe_refresh_sessions 第一次會真的建 3 個 requests.Session，
+        # 冷啟 Python 時 DNS lookup/conn pool 初始化可能 1~2s → 模組 import 卡死；改成 lazy，只有第一次真的 get_session() 才建。
         now = _time_mod.time()
         if self._sessions and (now - self._last_refresh) < 600:
             return
@@ -624,8 +635,18 @@ except Exception:
     _YF_VER_MAJOR_M = 0
 _YF_IS_BROKEN_V1_M = _YF_VER_MAJOR_M >= 1
 
-# --- CSS 樣式 ---
-st.markdown("""
+# ☢️ 卡死修復 4：全局 CSS st.markdown 移出頂層 → 放到 Session state 初始化後 main UI 內
+# （原因：頂層 import 階段呼叫 st.markdown 會讓 Streamlit 認為「使用者已開始輸出」，一旦 st.set_page_config 任何失敗或順序異常，
+#  就會進入 SetupPageAlreadyCalled/HeadAlreadyWritten 死狀態 → 全黑頁，只有 Stop 恆亮）
+# 舊 L627 全域樣式：改放到 L1430 main_if 區塊 _inject_global_css_once_m() 內，由 session_state flag 保護只注入一次
+_WL_INLINE_ROW_CSS_INJECTED_KEY_M = "_wl_inline_row_css_done_v97"
+_BIG_FONT_CSS_INJECTED_KEY_M = "_big_font_css_done_v97"
+
+def _inject_global_css_once_m():
+    """只在真正要渲染 UI 時才注入全局 CSS（session_state flag 避免每次 rerun 重複注入 ~1.2KB）。卡死修復 4"""
+    if st.session_state.get(_BIG_FONT_CSS_INJECTED_KEY_M):
+        return
+    st.markdown("""
 <style>
     /* 全局表格樣式 */
     .big-font-table { 
@@ -707,6 +728,10 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+    try:
+        st.session_state[_BIG_FONT_CSS_INJECTED_KEY_M] = True
+    except Exception:
+        pass
 
 # --- 數據庫連接 (Firebase) ---
 def get_secrets_dict() -> Dict[str, Any]:
@@ -1952,6 +1977,19 @@ if 'ref_date' not in st.session_state:
 if 'current_view' not in st.session_state:
     st.session_state.current_view = ""
 
+# ☢️ 卡死修復 5：Session 初始化後立即注入全局 CSS + 骨架標題（避免：st.set_page_config → 空 → Streamlit 前端以為還在 loading → Stop/Share 閃爍但沒骨架 → 全黑頁）
+# 同時把 CSS 從頂層移出（卡死修復 4），避免 import 階段開始輸出 head
+try:
+    _inject_global_css_once_m()
+except Exception as _e_css_inject:
+    import logging as _lg_css_inject
+    _lg_css_inject.getLogger(__name__).warning("Mobile global css inject failed: %s", _e_css_inject)
+# 先噴最小可見骨架（避免全黑）
+try:
+    st.caption(f"📈 港股 SMA v9.7 · 加載中...")
+except Exception:
+    pass
+
 # ===== [改动3] 侧边栏重构 =====
 if not is_mobile:
     # ===== 桌面端侧边栏 =====
@@ -2242,8 +2280,10 @@ if not current_code:
             try:
                 with _futures_m.ThreadPoolExecutor(max_workers=1) as _ex_l:
                     _fut = _ex_l.submit(_inner_load)
-                    # 12s timeout per ticker (避免某 1 隻冷門股卡整個總覽)
-                    _df_w, _sb_w, _is_cached_w = _fut.result(timeout=12)
+                    # ☢️ 卡死修復 6：總覽並行 ThreadPoolExecutor 每隻 ticker 原 timeout=12s → 砍到 8s，
+                    # 避免 20 隻 × 12s = 240s 前端 spinner 空轉 = 全黑「加載中」Stop 恆亮（使用者直覺卡死）。
+                    # 8s 內 SQLite cache-hit 99% 可回 (<0.5s)；Yahoo live 8s 不到直接跳過降級串行再抓。
+                    _df_w, _sb_w, _is_cached_w = _fut.result(timeout=8)
             except Exception as _e_to:
                 _df_w, _sb_w, _is_cached_w = None, None, False
                 _err_msg = f"{type(_e_to).__name__}: {str(_e_to)[:80]}"
@@ -2277,7 +2317,8 @@ if not current_code:
                         for _f in _cf_m.as_completed(_fut_to_tk):
                             tk = _fut_to_tk[_f]
                             try:
-                                _batch_results[tk] = _f.result(timeout=14)
+                                # ☢️ 卡死修復 6-2：並行總覽 as_completed 再補一層 10s 硬門檻（避免 _load_watchlist 內部 ThreadPool timeout 沒被觸發時整批卡死）
+                                _batch_results[tk] = _f.result(timeout=10)
                             except Exception as _e_f:
                                 _batch_results[tk] = {
                                     "ticker": tk, "df": None, "sb": None, "is_cached": False,
