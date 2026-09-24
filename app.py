@@ -44,6 +44,103 @@ try:
 except Exception:
     pass
 
+# ==================================== [桌面 L6256 KeyError 紅屏修復 #1] ====================================
+# ☢️ 根因：Streamlit Cloud 冷啟/Pod 重啟/Session 重新 hydrated 時 session_state 可能「部分還原」
+# (例如有 ref_date 但無 current_view / 只有舊 key「comparison_mode」但新 key 缺失)
+# 導致 L6256 `st.session_state.current_view` 直接屬性讀取 → KeyError
+# 且 set_current_page() 在 except handler 鏈中又被呼叫而形成「During handling KeyError -> another KeyError -> AttributeError 紅屏」
+# 修復：在 import 階段完結後的最早時間點（緊接 st.set_page_config 之後），用 try/except 三層保護 + 補缺所有需要的 key，
+# 再在 L6256 區用雙重 safe-read 做最後防線
+# ========================================================================================================
+import datetime as _ss_guard_dt_mod
+_SS_REQUIRED_DEFAULTS_D: dict = {
+    "ref_date": _ss_guard_dt_mod.date.today(),
+    "current_view": "",
+    "current_page": "home",
+    "comparison_mode": False,
+    "stock_section": "all",
+    "comparison_section": "trend",
+    "backtest_section": "settings",
+    "show_filter": False,
+    "comparison_filters": {},
+    "sma1": 20,
+    "sma2": 50,
+    "tg_token": "",
+    "tg_chat_id": "",
+    "home_sort_metric": "DEVpc",
+    "home_sort_desc": True,
+}
+try:
+    for _k_d, _v_d in _SS_REQUIRED_DEFAULTS_D.items():
+        try:
+            if _k_d not in st.session_state:
+                try:
+                    st.session_state[_k_d] = _v_d
+                except Exception:
+                    try:
+                        setattr(st.session_state, _k_d, _v_d)
+                    except Exception:
+                        pass
+        except Exception:
+            try:
+                _has_k = bool(_k_d in st.session_state)
+            except Exception:
+                _has_k = False
+            if not _has_k:
+                try:
+                    st.session_state[_k_d] = _v_d
+                except Exception:
+                    pass
+except Exception:
+    try:
+        import datetime as _dt2
+        # 極端防線：任何一個 key error → 暴力覆寫全部預設
+        for _k2, _v2 in _SS_REQUIRED_DEFAULTS_D.items():
+            try:
+                st.session_state[_k2] = _v2
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _ss_get_safe(key: str, default=None):
+    """桌面版 Session state 安全讀取守門員：避免 KeyError/AttributeError 紅屏（L6256 最後防線）。"""
+    try:
+        if key in st.session_state:
+            try:
+                v = st.session_state[key]
+            except Exception:
+                try:
+                    v = getattr(st.session_state, key, default)
+                except Exception:
+                    v = default
+            return default if (v is None and default is not None) else v
+    except Exception:
+        try:
+            return getattr(st.session_state, key, default)
+        except Exception:
+            return default
+
+
+def _ss_set_safe(key: str, value) -> bool:
+    """桌面版 Session state 安全寫入守門員：避免 Hydrated Session 唯獨某個 key 不能寫（TypeError/AttributeError）"""
+    ok = False
+    try:
+        try:
+            st.session_state[key] = value
+            ok = True
+        except Exception:
+            try:
+                setattr(st.session_state, key, value)
+                ok = True
+            except Exception:
+                ok = False
+    except Exception:
+        ok = False
+    return ok
+
+
 _LOG_CACHE_INIT = logging.getLogger(__name__)
 
 # --- Optional async SQLite cache layer (graceful degrade if module missing) ---
@@ -4243,12 +4340,47 @@ def get_home_watchlist_snapshot(watchlist_codes: List[str], ref_date: str) -> Di
     return {"summaries": summaries, "details": details, "diagnostic": diagnostic}
 
 def set_current_page(page: str, code: Optional[str] = None):
-    st.session_state.current_page = page
+    # ☢️ L6256 KeyError 紅屏修復 #2：set_current_page 可能在 Nav 點擊時被呼叫（L6250），當時 session_state 可能不完整
+    # → 先強制補齊所有 key 再寫入，任何異常都吞掉（使用者導航失敗也不紅屏，最多保持原位）
+    try:
+        for _k_dp, _v_dp in _SS_REQUIRED_DEFAULTS_D.items():
+            try:
+                if _k_dp not in st.session_state:
+                    st.session_state[_k_dp] = _v_dp
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        _ss_set_safe("current_page", page)
+    except Exception:
+        try:
+            st.session_state.current_page = page
+        except Exception:
+            pass
     if code is not None:
-        st.session_state.current_view = clean_ticker_input(code)
-    st.session_state.comparison_mode = (page == "comparison")
+        try:
+            _ss_set_safe("current_view", clean_ticker_input(code))
+        except Exception:
+            try:
+                st.session_state.current_view = clean_ticker_input(code)
+            except Exception:
+                pass
+    try:
+        _ss_set_safe("comparison_mode", bool(page == "comparison"))
+    except Exception:
+        try:
+            st.session_state.comparison_mode = bool(page == "comparison")
+        except Exception:
+            pass
     if page == "stock" and code is not None:
-        st.session_state.stock_section = "header"
+        try:
+            _ss_set_safe("stock_section", "header")
+        except Exception:
+            try:
+                st.session_state.stock_section = "header"
+            except Exception:
+                pass
 
 def is_home_context_page(page: str) -> bool:
     return page in {"home", "home_detail"}
@@ -6014,24 +6146,47 @@ def render_backtest_hub_page(current_code: str, watchlist_data: Dict[str, Any], 
     render_backtest_page(df, current_code, watchlist_data)
 
 # --- 5. 初始化 Session State ---
-if 'ref_date' not in st.session_state:
-    st.session_state.ref_date = datetime.now().date()
-if 'current_view' not in st.session_state:
-    st.session_state.current_view = ""
-if "current_page" not in st.session_state:
-    st.session_state.current_page = "home"
-if "comparison_mode" not in st.session_state:
-    st.session_state.comparison_mode = False
-if "stock_section" not in st.session_state:
-    st.session_state.stock_section = "all"
-if "comparison_section" not in st.session_state:
-    st.session_state.comparison_section = "trend"
-if "backtest_section" not in st.session_state:
-    st.session_state.backtest_section = "settings"
-if "show_filter" not in st.session_state:
-    st.session_state.show_filter = False
-if "comparison_filters" not in st.session_state:
-    st.session_state.comparison_filters = {}
+# ☢️ L6256 KeyError 紅屏修復 #3：原 L6148 這段只有 if-not-in 補缺，改成強制補缺 + 雙重保護
+# （即使上面 L47 啟動守門員已補過，這裡再做一次雙保險，避免中間 sidebar widget callback / rerun 時 session_state 被清空）
+import datetime as _ss_guard_dt2
+_ss_init_items = [
+    ("ref_date", _ss_guard_dt2.date.today()),
+    ("current_view", ""),
+    ("current_page", "home"),
+    ("comparison_mode", False),
+    ("stock_section", "all"),
+    ("comparison_section", "trend"),
+    ("backtest_section", "settings"),
+    ("show_filter", False),
+    ("comparison_filters", {}),
+    ("sma1", 20),
+    ("sma2", 50),
+]
+try:
+    for _k_i, _v_i in _ss_init_items:
+        try:
+            if _k_i not in st.session_state:
+                try:
+                    st.session_state[_k_i] = _v_i
+                except Exception:
+                    try:
+                        setattr(st.session_state, _k_i, _v_i)
+                    except Exception:
+                        pass
+        except Exception:
+            try:
+                st.session_state[_k_i] = _v_i
+            except Exception:
+                pass
+except Exception:
+    try:
+        for _k2, _v2 in _SS_REQUIRED_DEFAULTS_D.items():
+            try:
+                st.session_state[_k2] = _v2
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 def handle_sidebar_search():
     search_input = st.session_state.get("search_bar", "")
@@ -6253,11 +6408,21 @@ if _qp:
             if remove_stock_from_db(_tick):
                 st.rerun()
 
-current_code = st.session_state.current_view
-current_page = st.session_state.current_page
-ref_date_str = st.session_state.ref_date.strftime('%Y-%m-%d')
-sma1 = int(st.session_state.get("sma1", 20))
-sma2 = int(st.session_state.get("sma2", 50))
+current_code = _ss_get_safe("current_view", "")
+current_page = _ss_get_safe("current_page", "home")
+try:
+    _rd_obj = _ss_get_safe("ref_date", None)
+    if _rd_obj is None:
+        _rd_obj = _ss_guard_dt_mod.date.today()
+        try:
+            _ss_set_safe("ref_date", _rd_obj)
+        except Exception:
+            pass
+    ref_date_str = _rd_obj.strftime('%Y-%m-%d')
+except Exception:
+    ref_date_str = _ss_guard_dt_mod.date.today().strftime('%Y-%m-%d')
+sma1 = int(_ss_get_safe("sma1", 20) or 20)
+sma2 = int(_ss_get_safe("sma2", 50) or 50)
 
 if current_page != "home_detail":
     render_top_navigation()

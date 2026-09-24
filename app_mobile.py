@@ -111,6 +111,80 @@ _GH_ARTIFACT_NAME_M = "ohlcv-cache-artifact-v5"
 _A1_SYNC_TTL_SEC_M = 9 * 60
 _A1_MIN_VALID_CACHED_M = 5
 
+# ==================================== [手機 Session KeyError 鏡像修復（桌面 L6256 同款防線）] ====================================
+# 手機版目前載入流程 L1995 init → L2211 current_code 直接 attribute 讀取 → 和桌面 L6256 完全同樣死法
+# → 直接鏡像桌面：① setup_page 後立即全域補 key；② _ss_get_safe_m / _ss_set_safe_m 守門員；③ L2211 區 safe-read
+import datetime as _ss_guard_dt_mod_m
+_SS_REQUIRED_DEFAULTS_M: dict = {
+    "ref_date": _ss_guard_dt_mod_m.date.today(),
+    "current_view": "",
+}
+try:
+    for _k_m, _v_m in _SS_REQUIRED_DEFAULTS_M.items():
+        try:
+            if _k_m not in st.session_state:
+                try:
+                    st.session_state[_k_m] = _v_m
+                except Exception:
+                    try:
+                        setattr(st.session_state, _k_m, _v_m)
+                    except Exception:
+                        pass
+        except Exception:
+            try:
+                _has_k_m = bool(_k_m in st.session_state)
+            except Exception:
+                _has_k_m = False
+            if not _has_k_m:
+                try:
+                    st.session_state[_k_m] = _v_m
+                except Exception:
+                    pass
+except Exception:
+    try:
+        for _k2_m, _v2_m in _SS_REQUIRED_DEFAULTS_M.items():
+            try:
+                st.session_state[_k2_m] = _v2_m
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _ss_get_safe_m(key: str, default=None):
+    try:
+        if key in st.session_state:
+            try:
+                v = st.session_state[key]
+            except Exception:
+                try:
+                    v = getattr(st.session_state, key, default)
+                except Exception:
+                    v = default
+            return default if (v is None and default is not None) else v
+    except Exception:
+        try:
+            return getattr(st.session_state, key, default)
+        except Exception:
+            return default
+
+
+def _ss_set_safe_m(key: str, value) -> bool:
+    ok = False
+    try:
+        try:
+            st.session_state[key] = value
+            ok = True
+        except Exception:
+            try:
+                setattr(st.session_state, key, value)
+                ok = True
+            except Exception:
+                ok = False
+    except Exception:
+        ok = False
+    return ok
+
 
 def _a1_read_gh_token_m() -> Optional[str]:
     for k in ("GH_PAT", "GITHUB_TOKEN"):
@@ -1992,10 +2066,37 @@ def render_pmax_index6_panel_m(matrix, prefix: str = "p6m_"):
 
 
 # --- Session State 初始化 ---
-if 'ref_date' not in st.session_state:
-    st.session_state.ref_date = datetime.now().date()
-if 'current_view' not in st.session_state:
-    st.session_state.current_view = ""
+# ☢️ 手機 Session KeyError 修復 #3：同桌面，雙重強制補缺
+import datetime as _ss_guard_dt_m2
+_ss_mobile_items = [
+    ("ref_date", _ss_guard_dt_m2.date.today()),
+    ("current_view", ""),
+]
+try:
+    for _k_mi, _v_mi in _ss_mobile_items:
+        try:
+            if _k_mi not in st.session_state:
+                try:
+                    st.session_state[_k_mi] = _v_mi
+                except Exception:
+                    try:
+                        setattr(st.session_state, _k_mi, _v_mi)
+                    except Exception:
+                        pass
+        except Exception:
+            try:
+                st.session_state[_k_mi] = _v_mi
+            except Exception:
+                pass
+except Exception:
+    try:
+        for _km2, _vm2 in _SS_REQUIRED_DEFAULTS_M.items():
+            try:
+                st.session_state[_km2] = _vm2
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 # ☢️ 卡死修復 5：Session 初始化後立即注入全局 CSS + 骨架標題（避免：st.set_page_config → 空 → Streamlit 前端以為還在 loading → Stop/Share 閃爍但沒骨架 → 全黑頁）
 # 同時把 CSS 從頂層移出（卡死修復 4），避免 import 階段開始輸出 head
@@ -2208,8 +2309,18 @@ if _qp_m:
             if remove_stock_from_db(_t):
                 st.rerun()
 
-current_code = st.session_state.current_view
-ref_date_str = st.session_state.ref_date.strftime('%Y-%m-%d')
+current_code = _ss_get_safe_m("current_view", "")
+try:
+    _rd_m_obj = _ss_get_safe_m("ref_date", None)
+    if _rd_m_obj is None:
+        _rd_m_obj = _ss_guard_dt_mod_m.date.today()
+        try:
+            _ss_set_safe_m("ref_date", _rd_m_obj)
+        except Exception:
+            pass
+    ref_date_str = _rd_m_obj.strftime('%Y-%m-%d')
+except Exception:
+    ref_date_str = _ss_guard_dt_mod_m.date.today().strftime('%Y-%m-%d')
 
 # ===== [改动5] 总覽模式 =====
 if not current_code:
