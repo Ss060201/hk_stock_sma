@@ -899,10 +899,20 @@ def get_watchlist_local_sqlite_fallback_m() -> Dict[str, Any]:
         if _CACHE_LAYER_OK_M and _list_watchlist_symbols_m is not None:
             rows = _list_watchlist_symbols_m(limit=5000, include_params=True) or []
             for r in rows:
-                sym = str(r.get("symbol") or "").strip().upper()
-                if not sym:
+                sym_raw = str(r.get("symbol") or "").strip().upper()
+                if not sym_raw:
                     continue
-                out[sym] = dict(r.get("params") or {}) if isinstance(r.get("params"), dict) else {}
+                sym = get_yahoo_ticker(sym_raw)
+                params = dict(r.get("params") or {}) if isinstance(r.get("params"), dict) else {}
+                if sym in out:
+                    try:
+                        _m = dict(out[sym])
+                        _m.update(params)
+                        out[sym] = _m
+                    except Exception:
+                        out[sym] = params
+                else:
+                    out[sym] = params
     except Exception:
         pass
     return out
@@ -942,15 +952,26 @@ def get_watchlist_from_db():
             fb_wl = _fb_future_m[0] if isinstance(_fb_future_m[0], dict) else None
             if fb_wl:
                 for k, v in fb_wl.items():
-                    kk = str(k).strip().upper()
-                    if not kk:
+                    kk_raw = str(k).strip().upper()
+                    if not kk_raw:
                         continue
-                    wl[kk] = dict(v) if isinstance(v, dict) else wl.get(kk, {})
+                    kk = get_yahoo_ticker(kk_raw)
+                    v_dict = dict(v) if isinstance(v, dict) else {}
+                    if kk in wl:
+                        try:
+                            _m = dict(wl[kk])
+                            _m.update(v_dict)
+                            wl[kk] = _m
+                        except Exception:
+                            wl[kk] = v_dict
+                    else:
+                        wl[kk] = v_dict
                 if _CACHE_LAYER_OK_M and _upsert_watchlist_symbol_m is not None:
                     for k, v in fb_wl.items():
-                        kk = str(k).strip().upper()
-                        if not kk:
+                        kk_raw = str(k).strip().upper()
+                        if not kk_raw:
                             continue
+                        kk = get_yahoo_ticker(kk_raw)
                         try:
                             _upsert_watchlist_symbol_m(kk, params=dict(v) if isinstance(v, dict) else None, source="firestore_sync_bg")
                         except Exception:

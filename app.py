@@ -1178,10 +1178,20 @@ def get_watchlist_local_sqlite_fallback_d() -> Dict[str, Any]:
         if _CACHE_LAYER_OK and _list_watchlist_symbols is not None:
             rows = _list_watchlist_symbols(limit=5000, include_params=True) or []
             for r in rows:
-                sym = str(r.get("symbol") or "").strip().upper()
-                if not sym:
+                sym_raw = str(r.get("symbol") or "").strip().upper()
+                if not sym_raw:
                     continue
-                out[sym] = dict(r.get("params") or {}) if isinstance(r.get("params"), dict) else {}
+                sym = get_yahoo_ticker(sym_raw)
+                params = dict(r.get("params") or {}) if isinstance(r.get("params"), dict) else {}
+                if sym in out:
+                    try:
+                        _merged = dict(out[sym])
+                        _merged.update(params)
+                        out[sym] = _merged
+                    except Exception:
+                        out[sym] = params
+                else:
+                    out[sym] = params
     except Exception:
         pass
     return out
@@ -1221,15 +1231,26 @@ def get_watchlist_from_db():
             fb_wl = _fb_future[0] if isinstance(_fb_future[0], dict) else None
             if fb_wl:
                 for k, v in fb_wl.items():
-                    kk = str(k).strip().upper()
-                    if not kk:
+                    kk_raw = str(k).strip().upper()
+                    if not kk_raw:
                         continue
-                    wl[kk] = dict(v) if isinstance(v, dict) else wl.get(kk, {})
+                    kk = get_yahoo_ticker(kk_raw)
+                    v_dict = dict(v) if isinstance(v, dict) else {}
+                    if kk in wl:
+                        try:
+                            _m = dict(wl[kk])
+                            _m.update(v_dict)
+                            wl[kk] = _m
+                        except Exception:
+                            wl[kk] = v_dict
+                    else:
+                        wl[kk] = v_dict
                 if _CACHE_LAYER_OK and _upsert_watchlist_symbol is not None:
                     for k, v in fb_wl.items():
-                        kk = str(k).strip().upper()
-                        if not kk:
+                        kk_raw = str(k).strip().upper()
+                        if not kk_raw:
                             continue
+                        kk = get_yahoo_ticker(kk_raw)
                         try:
                             _upsert_watchlist_symbol(kk, params=dict(v) if isinstance(v, dict) else None, source="firestore_sync_bg")
                         except Exception:
@@ -4444,6 +4465,20 @@ def get_home_watchlist_snapshot(watchlist_codes: List[str], ref_date: str) -> Di
     if not watchlist_codes:
         return {"summaries": summaries, "details": details, "diagnostic": diagnostic}
 
+    prefetched_status: Dict[str, str] = {}
+    try:
+        if _CACHE_LAYER_OK:
+            from cache_layer import get_cached_ohlcv as _pref_get_cached
+            for code in watchlist_codes:
+                try:
+                    _yt_p = get_yahoo_ticker(code)
+                    _, _, _cs = _pref_get_cached(_yt_p, max_age_sec=3*60*60, bump_stats=False)
+                    prefetched_status[str(code)] = str(_cs or "UNKNOWN")
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
     for ticker in watchlist_codes:
         yt = get_yahoo_ticker(ticker)
         try:
@@ -4462,21 +4497,22 @@ def get_home_watchlist_snapshot(watchlist_codes: List[str], ref_date: str) -> Di
             elif "Invalid Crumb" in exc_msg or "Unauthorized" in exc_msg:
                 diagnostic[ticker] = "Yahoo 暫時拒絕連線（Invalid Crumb/Unauthorized）：約 5-10 分鐘後再試"
             elif "delisted" in exc_msg.lower():
-                diagnostic[ticker] = f"Yahoo 回傳 possibly delisted：請確認 {ticker} 代號是否正確"
+                diagnostic[ticker] = f"Yahoo 回傳 possibly delisted：請確認 {ticker} 代號是否正確（Yahoo sent: {yt}，SQLite pre: {prefetched_status.get(str(ticker), 'N/A')}）"
             else:
-                diagnostic[ticker] = f"{exc_name}：{exc_msg[:80]}"
+                diagnostic[ticker] = f"{exc_name}：{exc_msg[:80]}（Yahoo: {yt}，SQLite pre: {prefetched_status.get(str(ticker), 'N/A')}）"
             # Error occurred (tried live and failed): backoff to avoid hammering Yahoo on next ticker.
             time.sleep(random.uniform(0.8, 1.8))
             continue
         if df is None:
-            diagnostic[ticker] = "數據載入失敗（Yahoo 可能暫不可用）"
+            _prev_cache = prefetched_status.get(str(ticker), "N/A")
+            diagnostic[ticker] = f"數據載入失敗（Yahoo 可能暫不可用）。送出 ticker: {yt}，SQLite pre-check: {_prev_cache}"
             if not is_cached:
                 time.sleep(random.uniform(0.5, 1.1))
             continue
         raw_len = len(df)
         snapshot = _compute_home_snapshot_for_stock(ticker, df, share_base)
         if not snapshot:
-            diagnostic[ticker] = f"有效交易日不足：載入 {raw_len} 列，過濾 NaN/0 後不足 2 列可計算"
+            diagnostic[ticker] = f"有效交易日不足：載入 {raw_len} 列，過濾 NaN/0 後不足 2 列可計算（Yahoo: {yt}，SQLite pre: {prefetched_status.get(str(ticker), 'N/A')}）"
             if not is_cached:
                 time.sleep(random.uniform(0.3, 0.7))
             continue
