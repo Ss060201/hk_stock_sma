@@ -467,11 +467,13 @@ if _A1_BOOTSTRAP_DONE_KEY_D not in st.session_state:
         import threading as _th_d
         st.session_state[_A1_BOOTSTRAP_DONE_KEY_D] = True
         _th_d.Thread(target=_bootstrap_background_init_d, daemon=True).start()
-    except Exception:
-        try:
-            _bootstrap_background_init_d()
-        except Exception:
-            pass
+    except Exception as _e_th_start_d:
+        import logging as _lg_bg_fail_d
+        _lg_bg_fail_d.getLogger(__name__).warning(
+            "Desktop background thread launch failed, SKIP sync fallback (avoid blocking A1/GH API 120s): %s",
+            _e_th_start_d,
+        )
+        globals()["_ARTIFACT_LAST_ERROR"] = f"bg_thread_launch: {type(_e_th_start_d).__name__}"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1087,8 +1089,21 @@ def get_secrets_dict() -> Dict[str, Any]:
     except Exception:
         return {}
 
-@st.cache_resource
+_FIREBASE_DB_CACHE_D: Dict[str, Any] = {}
+_FIREBASE_DB_CACHE_TS_D: float = 0.0
+_FIREBASE_DB_CACHE_TTL_D: float = 900.0
+
+@st.cache_resource(ttl=900, show_spinner=False)
 def get_db():
+    import time as _fb_t
+    global _FIREBASE_DB_CACHE_D, _FIREBASE_DB_CACHE_TS_D
+    cache_key = "_fb_db_singleton_v1"
+    now = _fb_t.time()
+    if (now - _FIREBASE_DB_CACHE_TS_D) < _FIREBASE_DB_CACHE_TTL_D and _FIREBASE_DB_CACHE_D.get(cache_key) is not None:
+        return _FIREBASE_DB_CACHE_D[cache_key]
+    db_out = None
+    start = now
+    deadline = start + 12.0
     try:
         if not firebase_admin._apps:
             secrets = get_secrets_dict()
@@ -1096,6 +1111,8 @@ def get_db():
                 firebase_cfg = secrets.get("firebase", {})
                 if "json_content" in firebase_cfg:
                     try:
+                        if _fb_t.time() >= deadline:
+                            return None
                         key_dict = json.loads(firebase_cfg["json_content"])
                         cred = credentials.Certificate(key_dict)
                         firebase_admin.initialize_app(cred)
@@ -1103,6 +1120,8 @@ def get_db():
                         return None
                 elif "private_key" in firebase_cfg:
                     try:
+                        if _fb_t.time() >= deadline:
+                            return None
                         key_dict = dict(firebase_cfg)
                         if "\\n" in key_dict["private_key"]:
                             key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
@@ -1113,14 +1132,37 @@ def get_db():
                 else:
                     return None
             elif os.path.exists("service_account.json"):
+                if _fb_t.time() >= deadline:
+                    return None
                 cred = credentials.Certificate("service_account.json")
                 firebase_admin.initialize_app(cred)
             else:
                 return None
-        db = firestore.client()
-        return db
+        if _fb_t.time() >= deadline:
+            return None
+        db_out = firestore.client()
     except Exception as e:
-        return None
+        db_out = None
+    if db_out is not None:
+        _FIREBASE_DB_CACHE_D[cache_key] = db_out
+        _FIREBASE_DB_CACHE_TS_D = _fb_t.time()
+    return db_out
+
+
+def get_watchlist_local_sqlite_fallback_d() -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    try:
+        if _CACHE_LAYER_OK and _list_watchlist_symbols is not None:
+            rows = _list_watchlist_symbols(limit=5000, include_params=True) or []
+            for r in rows:
+                sym = str(r.get("symbol") or "").strip().upper()
+                if not sym:
+                    continue
+                out[sym] = dict(r.get("params") or {}) if isinstance(r.get("params"), dict) else {}
+    except Exception:
+        pass
+    return out
+
 
 def get_watchlist_from_db():
     try:
@@ -1131,21 +1173,46 @@ def get_watchlist_from_db():
         cache_ts = st.session_state.get(cache_ts_key, 0.0)
         if cache_val is not None and isinstance(cache_val, dict) and (now - cache_ts) < 60.0:
             return dict(cache_val)
-        db = get_db()
-        if not db:
-            return {}
+        wl = get_watchlist_local_sqlite_fallback_d()
+        db = None
         try:
-            wl = get_watchlist_from_firestore(db)
-        except Exception as e:
-            try:
-                doc_ref = db.collection('stock_app').document('watchlist')
-                doc = doc_ref.get()
-                if doc.exists:
-                    wl = doc.to_dict() or {}
-                else:
-                    wl = {}
-            except Exception:
-                wl = {}
+            _fb_future = [None]
+            import threading as _th_fb
+            def _fb_fetch_bg():
+                try:
+                    _fb_future[0] = get_watchlist_from_firestore(db) if db is not None else None
+                except Exception:
+                    try:
+                        if db is not None:
+                            doc_ref = db.collection('stock_app').document('watchlist')
+                            doc = doc_ref.get(timeout=8)
+                            if doc.exists:
+                                _fb_future[0] = doc.to_dict() or {}
+                    except Exception:
+                        _fb_future[0] = None
+            db = get_db()
+            if db is not None:
+                t = _th_fb.Thread(target=_fb_fetch_bg, daemon=True)
+                t.start()
+                t.join(timeout=10.0)
+            fb_wl = _fb_future[0] if isinstance(_fb_future[0], dict) else None
+            if fb_wl:
+                for k, v in fb_wl.items():
+                    kk = str(k).strip().upper()
+                    if not kk:
+                        continue
+                    wl[kk] = dict(v) if isinstance(v, dict) else wl.get(kk, {})
+                if _CACHE_LAYER_OK and _upsert_watchlist_symbol is not None:
+                    for k, v in fb_wl.items():
+                        kk = str(k).strip().upper()
+                        if not kk:
+                            continue
+                        try:
+                            _upsert_watchlist_symbol(kk, params=dict(v) if isinstance(v, dict) else None, source="firestore_sync_bg")
+                        except Exception:
+                            pass
+        except Exception:
+            pass
         try:
             st.session_state[cache_key] = dict(wl) if isinstance(wl, dict) else {}
             st.session_state[cache_ts_key] = now
@@ -1153,7 +1220,7 @@ def get_watchlist_from_db():
             pass
         return dict(wl) if isinstance(wl, dict) else {}
     except Exception:
-        return {}
+        return get_watchlist_local_sqlite_fallback_d()
 
 
 def update_stock_in_db(symbol, params=None):
@@ -6162,31 +6229,45 @@ _ss_init_items = [
     ("sma1", 20),
     ("sma2", 50),
 ]
+_ss_init_err_count = 0
 try:
     for _k_i, _v_i in _ss_init_items:
         try:
             if _k_i not in st.session_state:
                 try:
                     st.session_state[_k_i] = _v_i
-                except Exception:
+                except Exception as _e1:
+                    _ss_init_err_count += 1
                     try:
                         setattr(st.session_state, _k_i, _v_i)
-                    except Exception:
-                        pass
-        except Exception:
+                    except Exception as _e2:
+                        LOGGER.warning(
+                            "[session init #1] cannot set %s via dict/setattr: %s / %s",
+                            _k_i, type(_e1).__name__, type(_e2).__name__,
+                        )
+        except Exception as _e3:
+            _ss_init_err_count += 1
             try:
                 st.session_state[_k_i] = _v_i
-            except Exception:
-                pass
-except Exception:
+            except Exception as _e4:
+                LOGGER.warning(
+                    "[session init #2] cannot set %s retry: %s / %s",
+                    _k_i, type(_e3).__name__, type(_e4).__name__,
+                )
+except Exception as _e_outer:
+    LOGGER.warning("[session init outer] fall back to _SS_REQUIRED_DEFAULTS_D: %s", type(_e_outer).__name__)
     try:
         for _k2, _v2 in _SS_REQUIRED_DEFAULTS_D.items():
             try:
                 st.session_state[_k2] = _v2
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as _e5:
+                _ss_init_err_count += 1
+                LOGGER.warning(
+                    "[session init #3 fallback] cannot set %s: %s",
+                    _k2, type(_e5).__name__,
+                )
+    except Exception as _e_final:
+        LOGGER.error("[session init CRITICAL] final fallback block failed: %s", type(_e_final).__name__)
 
 def handle_sidebar_search():
     search_input = st.session_state.get("search_bar", "")

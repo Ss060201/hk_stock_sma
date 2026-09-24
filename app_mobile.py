@@ -834,8 +834,20 @@ def get_secrets_dict() -> Dict[str, Any]:
     except Exception:
         return {}
 
-@st.cache_resource
+_FIREBASE_DB_CACHE_M: Dict[str, Any] = {}
+_FIREBASE_DB_CACHE_TS_M: float = 0.0
+_FIREBASE_DB_CACHE_TTL_M: float = 900.0
+
+@st.cache_resource(ttl=900, show_spinner=False)
 def get_db():
+    import time as _fb_t_m
+    global _FIREBASE_DB_CACHE_M, _FIREBASE_DB_CACHE_TS_M
+    cache_key = "_fb_db_singleton_v1_m"
+    now = _fb_t_m.time()
+    if (now - _FIREBASE_DB_CACHE_TS_M) < _FIREBASE_DB_CACHE_TTL_M and _FIREBASE_DB_CACHE_M.get(cache_key) is not None:
+        return _FIREBASE_DB_CACHE_M[cache_key]
+    db_out = None
+    deadline = now + 12.0
     try:
         if not firebase_admin._apps:
             secrets = get_secrets_dict()
@@ -843,6 +855,8 @@ def get_db():
                 firebase_cfg = secrets.get("firebase", {})
                 if "json_content" in firebase_cfg:
                     try:
+                        if _fb_t_m.time() >= deadline:
+                            return None
                         key_dict = json.loads(firebase_cfg["json_content"])
                         cred = credentials.Certificate(key_dict)
                         firebase_admin.initialize_app(cred)
@@ -850,6 +864,8 @@ def get_db():
                         return None
                 elif "private_key" in firebase_cfg:
                     try:
+                        if _fb_t_m.time() >= deadline:
+                            return None
                         key_dict = dict(firebase_cfg)
                         if "\\n" in key_dict["private_key"]:
                             key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
@@ -860,14 +876,37 @@ def get_db():
                 else:
                     return None
             elif os.path.exists("service_account.json"):
+                if _fb_t_m.time() >= deadline:
+                    return None
                 cred = credentials.Certificate("service_account.json")
                 firebase_admin.initialize_app(cred)
             else:
                 return None
-        db = firestore.client()
-        return db
-    except Exception as e:
-        return None
+        if _fb_t_m.time() >= deadline:
+            return None
+        db_out = firestore.client()
+    except Exception:
+        db_out = None
+    if db_out is not None:
+        _FIREBASE_DB_CACHE_M[cache_key] = db_out
+        _FIREBASE_DB_CACHE_TS_M = _fb_t_m.time()
+    return db_out
+
+
+def get_watchlist_local_sqlite_fallback_m() -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    try:
+        if _CACHE_LAYER_OK_M and _list_watchlist_symbols_m is not None:
+            rows = _list_watchlist_symbols_m(limit=5000, include_params=True) or []
+            for r in rows:
+                sym = str(r.get("symbol") or "").strip().upper()
+                if not sym:
+                    continue
+                out[sym] = dict(r.get("params") or {}) if isinstance(r.get("params"), dict) else {}
+    except Exception:
+        pass
+    return out
+
 
 def get_watchlist_from_db():
     try:
@@ -878,21 +917,46 @@ def get_watchlist_from_db():
         cache_ts = st.session_state.get(cache_ts_key, 0.0)
         if cache_val is not None and isinstance(cache_val, dict) and (now - cache_ts) < 60.0:
             return dict(cache_val)
-        db = get_db()
-        if not db:
-            return {}
+        wl = get_watchlist_local_sqlite_fallback_m()
+        db = None
         try:
-            wl = get_watchlist_from_firestore(db)
-        except Exception as e:
-            try:
-                doc_ref = db.collection('stock_app').document('watchlist')
-                doc = doc_ref.get()
-                if doc.exists:
-                    wl = doc.to_dict() or {}
-                else:
-                    wl = {}
-            except Exception:
-                wl = {}
+            _fb_future_m = [None]
+            import threading as _th_fb_m
+            def _fb_fetch_bg_m():
+                try:
+                    _fb_future_m[0] = get_watchlist_from_firestore(db) if db is not None else None
+                except Exception:
+                    try:
+                        if db is not None:
+                            doc_ref = db.collection('stock_app').document('watchlist')
+                            doc = doc_ref.get(timeout=8)
+                            if doc.exists:
+                                _fb_future_m[0] = doc.to_dict() or {}
+                    except Exception:
+                        _fb_future_m[0] = None
+            db = get_db()
+            if db is not None:
+                t = _th_fb_m.Thread(target=_fb_fetch_bg_m, daemon=True)
+                t.start()
+                t.join(timeout=10.0)
+            fb_wl = _fb_future_m[0] if isinstance(_fb_future_m[0], dict) else None
+            if fb_wl:
+                for k, v in fb_wl.items():
+                    kk = str(k).strip().upper()
+                    if not kk:
+                        continue
+                    wl[kk] = dict(v) if isinstance(v, dict) else wl.get(kk, {})
+                if _CACHE_LAYER_OK_M and _upsert_watchlist_symbol_m is not None:
+                    for k, v in fb_wl.items():
+                        kk = str(k).strip().upper()
+                        if not kk:
+                            continue
+                        try:
+                            _upsert_watchlist_symbol_m(kk, params=dict(v) if isinstance(v, dict) else None, source="firestore_sync_bg")
+                        except Exception:
+                            pass
+        except Exception:
+            pass
         try:
             st.session_state[cache_key] = dict(wl) if isinstance(wl, dict) else {}
             st.session_state[cache_ts_key] = now
@@ -900,7 +964,7 @@ def get_watchlist_from_db():
             pass
         return dict(wl) if isinstance(wl, dict) else {}
     except Exception:
-        return {}
+        return get_watchlist_local_sqlite_fallback_m()
 
 
 def update_stock_in_db(symbol, params=None):
