@@ -80,6 +80,26 @@ _upsert_watchlist_symbol_m = None
 _delete_watchlist_symbol_m = None
 _list_watchlist_symbols_m = None
 
+# --- Route 0 / 0.5 國內 CDN：腾讯 Tencent qt.gtimg.cn + 東方財富 Eastmoney push2his（手機版之前完全沒加，導致總覽 Yahoo 401 就全滅）---
+_NATIVE_TENCENT_OK_M = False
+_NATIVE_EASTMONEY_OK_M = False
+_native_tencent_download_m = None
+_native_eastmoney_download_m = None
+try:
+    from data_ingest_stack import _native_tencent_download as _native_tencent_download_m_tmp
+    from data_ingest_stack import _native_eastmoney_download as _native_eastmoney_download_m_tmp
+    if callable(_native_tencent_download_m_tmp):
+        _native_tencent_download_m = _native_tencent_download_m_tmp
+        _NATIVE_TENCENT_OK_M = True
+    if callable(_native_eastmoney_download_m_tmp):
+        _native_eastmoney_download_m = _native_eastmoney_download_m_tmp
+        _NATIVE_EASTMONEY_OK_M = True
+except Exception as _e_cdn_import:
+    import logging as _lg_cdn
+    _lg_cdn.getLogger(__name__).warning("Mobile CDN imports (Tencent/Eastmoney) unavailable: %s", _e_cdn_import)
+    _NATIVE_TENCENT_OK_M = False
+    _NATIVE_EASTMONEY_OK_M = False
+
 _ARTIFACT_SYNC_OK_M = False
 _ARTIFACT_LAST_SYNC_TS_M = ""
 _ARTIFACT_CACHED_N_M = 0
@@ -618,9 +638,9 @@ class _YFSessionManager_M:
 _YF_SESS_MGR_M = _YFSessionManager_M()
 
 _APP_BUILD_M = {
-    "commit": "d2ab411+daemonCache2",
-    "time": "2026-09-02 22:30",
-    "tag": "手機版：SQLite 永續快取 + 背景守護程序協同；get_data_v7 優先快取 + 補採集；節流延遲保留；監控指標；Build 鏡像桌面",
+    "commit": "265bcda+factor27+devpc_iidpc+hangfix6+ignore",
+    "time": "2026-09-24 12:40",
+    "tag": "PMAX Factor 20→27 (0.704→0.148); Home 7→9 cols (DEVpc/IIDpc); Sort 6 metrics+遞減↓遞增↑; Mobile 6-layer cold boot guard; .gitignore; Tencent/Eastmoney P0/P0.5 fallback added to mobile get_data_v7",
 }
 try:
     _APP_BUILD_M["yf_version"] = getattr(yf, "__version__", "n/a")
@@ -2357,9 +2377,54 @@ if not current_code:
                 df_w = _load_res.get("df")
                 sb_w = _load_res.get("sb")
                 is_cached_w = bool(_load_res.get("is_cached"))
-                if _load_res.get("err"):
-                    pass
-            if df_w is None or (isinstance(df_w, pd.DataFrame) and len(df_w) <= 20):
+                _err_payload = _load_res.get("err") or ""
+
+            # ☢️ 總覽空白修復 1：移除舊「df None/不足 20 列直接 continue」= 全失敗時完全空白 + 0 報錯
+            # 改為：失敗一律渲染對應卡片（錯誤=粉紅/不足=黃），使用者至少知道哪支壞掉+為什麼
+            _is_error = (df_w is None)
+            _is_short = (not _is_error) and (isinstance(df_w, pd.DataFrame) and len(df_w) <= 20)
+            if _is_error or _is_short:
+                with st.container():
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.markdown(f"""
+                        <div style="font-size: 18px; font-weight: bold;">
+                            {ticker.upper()}
+                        </div>
+                        """, unsafe_allow_html=True)
+                        if _is_error:
+                            _dsp_err = str(_err_payload or (sb_w if isinstance(sb_w, (str, bytes)) else "")).strip() or "Timeout 8s/10s 下載失敗"
+                            if len(_dsp_err) > 70: _dsp_err = _dsp_err[:70] + "…"
+                            st.caption(f"❌ 加載失敗: {_dsp_err}")
+                            try:
+                                st.error("⚠️ Yahoo 401/網路不穩：已優先切換 騰訊/東方財富 CDN（P0/P0.5），請按下方按鈕重試")
+                            except Exception:
+                                pass
+                        else:
+                            st.caption(f"⚠️ 數據不足: 僅 {len(df_w) if df_w is not None else 0} 列（需 ≥20 列才可計算 SMA 矩陣）")
+                    with col2:
+                        st.markdown(f"""
+                        <div style="text-align: right; font-weight: bold; color: {'#d9534f' if _is_error else '#cc8800'};">
+                            {'❌ 失敗' if _is_error else '⚠️ 不足'}<br/>
+                            {'按下方→進入' if _is_error else ''}
+                        </div>
+                        """, unsafe_allow_html=True)
+                    cbtn1, cbtn2 = st.columns(2)
+                    with cbtn1:
+                        if st.button(f"📂 進入 {ticker.upper()} 重試", use_container_width=True, key=f"wl_nav_{ticker}_{_idx_m}"):
+                            st.session_state.current_view = ticker
+                            st.rerun()
+                    with cbtn2:
+                        if st.button("🔄 單支重試", use_container_width=True, key=f"wl_retry_{ticker}_{_idx_m}"):
+                            try:
+                                _load_watchlist_row_cached_m.clear(ticker, _ref_date_m)
+                            except Exception:
+                                try:
+                                    st.cache_data.clear()
+                                except Exception:
+                                    pass
+                            st.rerun()
+                    st.divider()
                 continue
             try:
                 if isinstance(df_w.columns, pd.MultiIndex):
@@ -2432,6 +2497,15 @@ if not current_code:
                 _prev_ok_m = True
             except Exception as e:
                 st.error(f"Error {ticker}: {type(e).__name__}: {str(e)[:80]}")
+
+        # ☢️ 總覽空白修復 2：全部 0 支成功時噴醒目紅框，不再完全空白（對應你截圖 1）
+        if not _prev_ok_m:
+            _fail_n = _total_m
+            st.error(
+                f"📉 收藏總覽 {_fail_n} 支全數加載失敗（無任何成功數據）。\n"
+                "👉 建議：先按最上方工具列「🛠️ 強制更新數據（防呆）」→ 不行再按「只清 RAM 快取」→ 不行按「🔄 刷新所有數據」\n"
+                "👉 也可直接點選上方任一支「📂 進入代碼 重試」按鈕進入單股頁面重試（新 Build 已加上 騰訊/東方財富 CDN P0/P0.5 備援）"
+            )
 
 # ===== [改动6] 詳細模式 =====
 else:
@@ -2937,6 +3011,40 @@ else:
         result_df_m, result_sb_m = None, None
         source_route_m: Optional[str] = None
         for attempt in range(3):
+            # --- Route 0 (P0 最優先，大陸 CDN 穩定/無 crumb): 腾讯 Tencent qt.gtimg.cn ---
+            if _NATIVE_TENCENT_OK_M and _native_tencent_download_m is not None:
+                _NATIVE_DL_STATS_M["tencent_attempts"] = _NATIVE_DL_STATS_M.get("tencent_attempts", 0) + 1
+                try:
+                    df, share_base = _native_tencent_download_m(symbol, timeout=22)
+                    df = df[df.index <= pd.to_datetime(end_date)]
+                    if df is not None and len(df) > 5:
+                        if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+                            share_base, _ = _resolve_share_base_post_m(df, symbol)
+                        _YF_SESS_MGR_M.record_success(symbol)
+                        _NATIVE_DL_STATS_M["tencent_success"] = _NATIVE_DL_STATS_M.get("tencent_success", 0) + 1
+                        _persist_lerr_m(symbol, "tencent", f"OK rows={len(df)}")
+                        result_df_m, result_sb_m, source_route_m = df, share_base, "tencent"
+                        break
+                except Exception as e_tc:
+                    last_err = e_tc
+
+            # --- Route 0.5 (P0.5, 大陸次穩定): 東方財富 Eastmoney push2his ---
+            if _NATIVE_EASTMONEY_OK_M and _native_eastmoney_download_m is not None:
+                _NATIVE_DL_STATS_M["eastmoney_attempts"] = _NATIVE_DL_STATS_M.get("eastmoney_attempts", 0) + 1
+                try:
+                    df, share_base = _native_eastmoney_download_m(symbol, timeout=22)
+                    df = df[df.index <= pd.to_datetime(end_date)]
+                    if df is not None and len(df) > 5:
+                        if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+                            share_base, _ = _resolve_share_base_post_m(df, symbol)
+                        _YF_SESS_MGR_M.record_success(symbol)
+                        _NATIVE_DL_STATS_M["eastmoney_success"] = _NATIVE_DL_STATS_M.get("eastmoney_success", 0) + 1
+                        _persist_lerr_m(symbol, "eastmoney", f"OK rows={len(df)}")
+                        result_df_m, result_sb_m, source_route_m = df, share_base, "eastmoney"
+                        break
+                except Exception as e_em:
+                    last_err = e_em
+
             # --- Route 1: 原生 requests 優先 ---
             _NATIVE_DL_STATS_M["native_attempts"] = _NATIVE_DL_STATS_M.get("native_attempts", 0) + 1
             try:
@@ -3055,6 +3163,10 @@ else:
         except Exception:
             pass
         try:
+            tc_at = _NATIVE_DL_STATS_M.get("tencent_attempts", 0)
+            tc_ok = _NATIVE_DL_STATS_M.get("tencent_success", 0)
+            em_at = _NATIVE_DL_STATS_M.get("eastmoney_attempts", 0)
+            em_ok = _NATIVE_DL_STATS_M.get("eastmoney_success", 0)
             n_at = _NATIVE_DL_STATS_M.get("native_attempts", 0)
             n_ok = _NATIVE_DL_STATS_M.get("native_success", 0)
             y_at = _NATIVE_DL_STATS_M.get("yf_attempts", 0)
@@ -3063,8 +3175,8 @@ else:
             s_ok = _NATIVE_DL_STATS_M.get("stooq_success", 0)
             si_at = _NATIVE_DL_STATS_M.get("sina_attempts", 0)
             si_ok = _NATIVE_DL_STATS_M.get("sina_success", 0)
-            if (n_at + y_at + s_at + si_at) > 0:
-                _extra_info_m.append(f"📊 下載統計：native {n_ok}/{n_at}  |  yfinance {y_ok}/{y_at}  |  stooq {s_ok}/{s_at}  |  sina {si_ok}/{si_at}")
+            if (tc_at + em_at + n_at + y_at + s_at + si_at) > 0:
+                _extra_info_m.append(f"📊 下載統計：tencent {tc_ok}/{tc_at}  |  eastmoney {em_ok}/{em_at}  |  native {n_ok}/{n_at}  |  yfinance {y_ok}/{y_at}  |  stooq {s_ok}/{s_at}  |  sina {si_ok}/{si_at}")
         except Exception:
             pass
         try:

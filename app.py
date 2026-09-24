@@ -492,9 +492,9 @@ class _YFSessionManager:
 _YF_SESS_MGR = _YFSessionManager()
 
 _APP_BUILD = {
-    "commit": "d2ab411+daemonCache2",
-    "time": "2026-09-02 22:30",
-    "tag": "新增 SQLite 永續快取 + 背景守護程序 (data_fetcher_daemon.py)；首頁/單股 get_data_v7 優先讀快取，miss 則後台補採集 + 前台同步回填；節流延遲節奏嚴格保留；Build 雙端鏡像；監控指標(hit/miss/429)",
+    "commit": "265bcda+factor27+devpc_iidpc+hangfix6+ignore",
+    "time": "2026-09-24 12:40",
+    "tag": "PMAX Factor 20→27 (0.704→0.148); Home 7→9 cols (DEVpc/IIDpc); Sort 6 metrics (DEVpc/IIDpc/3/7/14/28)+遞減↓遞增↑; Mobile 6-layer cold boot hang guard; .gitignore + SQLite un-track",
 }
 try:
     _APP_BUILD["yf_version"] = getattr(yf, "__version__", "n/a")
