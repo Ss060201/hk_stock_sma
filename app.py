@@ -159,6 +159,29 @@ _upsert_watchlist_symbol = None
 _delete_watchlist_symbol = None
 _list_watchlist_symbols = None
 
+# ===== 桌面版背景全域 Route 0/0.5 CDN：Tencent + Eastmoney（手機版已加但桌面版忘記 → 導致 Yahoo 401 全 20 支股票全滾 3 attempts 卡主頁）=====
+_NATIVE_TENCENT_OK_D = False
+_NATIVE_EASTMONEY_OK_D = False
+_native_tencent_download_d = None
+_native_eastmoney_download_d = None
+_NATIVE_DL_STATS_D: Dict[str, int] = {}
+try:
+    from data_ingest_stack import _native_tencent_download as _native_tencent_download_d_tmp
+    from data_ingest_stack import _native_eastmoney_download as _native_eastmoney_download_d_tmp
+    if callable(_native_tencent_download_d_tmp):
+        _native_tencent_download_d = _native_tencent_download_d_tmp
+        _NATIVE_TENCENT_OK_D = True
+    if callable(_native_eastmoney_download_d_tmp):
+        _native_eastmoney_download_d = _native_eastmoney_download_d_tmp
+        _NATIVE_EASTMONEY_OK_D = True
+except Exception as _e_cdn_import_d:
+    import logging as _lg_cdn_d
+    _lg_cdn_d.getLogger(__name__).warning(
+        "Desktop CDN imports (Tencent/Eastmoney) unavailable: %s", _e_cdn_import_d
+    )
+    _NATIVE_TENCENT_OK_D = False
+    _NATIVE_EASTMONEY_OK_D = False
+
 _ARTIFACT_SYNC_OK = False
 _ARTIFACT_LAST_SYNC_TS = ""
 _ARTIFACT_CACHED_N = 0
@@ -1281,8 +1304,13 @@ def clean_ticker_input(symbol):
     return str(symbol).strip().replace(" ", "").replace(".HK", "").replace(".hk", "")
 
 def get_yahoo_ticker(symbol):
-    if symbol.isdigit(): return f"{symbol.zfill(4)}.HK"
-    return symbol
+    s = str(symbol or "").strip()
+    digits_only = "".join(ch for ch in s if ch.isdigit())
+    if digits_only:
+        if len(digits_only) >= 5:
+            return f"{digits_only.zfill(5)}.HK"
+        return f"{digits_only.zfill(4)}.HK"
+    return s if s else symbol
 
 def send_telegram_msg(token, chat_id, message):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -3936,7 +3964,7 @@ def _try_yfinance_download(symbol, period: str = "5y", timeout: int = 30):
 def _native_sina_download(symbol: str, timeout: int = 25):
     """
     Route 4（Yahoo+Stooq 全失敗的最終備援）：新浪財經 HK 歷史 K 線 JSON API。
-    完全不需要 crumb / cookie；HK 股 symbol: hk{4位數字}，例如 hk00290 → 00290.HK。
+    完全不需要 crumb / cookie；HK 股 symbol: hk{4/5位數字}，例如 hk00290 → 00290.HK，hk02586 → 02586.HK。
     接口：https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=hk00290&scale=240&ma=no&datalen=1500
     """
     import json as _json
@@ -3946,7 +3974,22 @@ def _native_sina_download(symbol: str, timeout: int = 25):
         digits = re.sub(r"\D", "", symbol)
         if not digits:
             raise RuntimeError(f"sina: symbol {symbol} 沒數字")
-        hk_code = f"hk{digits.zfill(5)}" if len(digits) <= 5 else f"hk{digits}"
+        pad_variants = []
+        if len(digits) <= 4:
+            pad_variants.append(digits.zfill(4))
+            pad_variants.append(digits.zfill(5))
+        elif len(digits) == 5:
+            pad_variants.append(digits.zfill(5))
+            pad_variants.append(digits.zfill(4))
+        else:
+            pad_variants.append(digits)
+        pad_variants.append(digits)
+        seen_hk = set()
+        hk_codes = []
+        for p in pad_variants:
+            hk = f"hk{p}"
+            if hk not in seen_hk:
+                seen_hk.add(hk); hk_codes.append(hk)
         hdrs = {
             "User-Agent": random.choice([
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -3956,21 +3999,25 @@ def _native_sina_download(symbol: str, timeout: int = 25):
             "Accept-Language": "zh-CN,zh-TW;q=0.9,zh;q=0.8,en;q=0.7",
             "Referer": "https://finance.sina.com.cn/",
         }
-        urls = [
-            f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={hk_code}&scale=240&ma=no&datalen=1500",
-            f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={hk_code}&scale=240&ma=no&datalen=1500",
+        base_hosts = [
+            "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData",
+            "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData",
         ]
-        _yf_log_step(symbol, "sina.urls", f"hk_code={hk_code} count={len(urls)}")
+        urls = []
+        for hk in hk_codes:
+            for host in base_hosts:
+                urls.append((hk, f"{host}?symbol={hk}&scale=240&ma=no&datalen=1500"))
+        _yf_log_step(symbol, "sina.urls", f"hk_codes={hk_codes} total_urls={len(urls)}")
         last_err = None
-        for idx, url in enumerate(urls):
+        for idx, (_hk_ref, url) in enumerate(urls):
             try:
                 time.sleep(random.uniform(0.3, 0.9))
-                _yf_log_step(symbol, f"sina.req[{idx}]", f"GET {url.split('//')[1].split('?')[0]}")
+                _yf_log_step(symbol, f"sina.req[{idx}]", f"hk={_hk_ref} GET {url.split('//')[1].split('?')[0]}")
                 r = requests.get(url, headers=hdrs, timeout=timeout, allow_redirects=True)
                 raw = (r.text or "").strip()
-                _yf_log_step(symbol, f"sina.req[{idx}]", f"status={r.status_code} len={len(raw)} snip={raw[:140]}")
+                _yf_log_step(symbol, f"sina.req[{idx}]", f"hk={_hk_ref} status={r.status_code} len={len(raw)} snip={raw[:140]}")
                 if r.status_code != 200 or not raw:
-                    last_err = RuntimeError(f"sina[{idx}] empty/status={r.status_code} | head={raw[:100]}")
+                    last_err = RuntimeError(f"sina[{idx}] hk={_hk_ref} empty/status={r.status_code} | head={raw[:100]}")
                     _persist_last_error(symbol, f"sina[{idx}]", str(last_err))
                     continue
                 if raw.startswith("(") and raw.endswith(")"):
@@ -3978,11 +4025,11 @@ def _native_sina_download(symbol: str, timeout: int = 25):
                 try:
                     arr = _json.loads(raw)
                 except Exception as je:
-                    last_err = RuntimeError(f"sina[{idx}] JSON parse: {je} | head={raw[:120]}")
+                    last_err = RuntimeError(f"sina[{idx}] hk={_hk_ref} JSON parse: {je} | head={raw[:120]}")
                     _persist_last_error(symbol, f"sina[{idx}]", str(last_err))
                     continue
                 if not isinstance(arr, list) or len(arr) < 20:
-                    last_err = RuntimeError(f"sina[{idx}] rows too few ({len(arr) if isinstance(arr, list) else type(arr)})")
+                    last_err = RuntimeError(f"sina[{idx}] hk={_hk_ref} rows too few ({len(arr) if isinstance(arr, list) else type(arr)})")
                     _persist_last_error(symbol, f"sina[{idx}]", str(last_err))
                     continue
                 dates, opens, highs, lows, closes, volumes = [], [], [], [], [], []
@@ -4042,13 +4089,13 @@ def get_data_v7(symbol, end_date):
     is_cached = False
     if (not _force_live) and _CACHE_LAYER_OK and _get_cached_ohlcv is not None:
         try:
-            df_cache, sb_cache, cache_status = _get_cached_ohlcv(sym_upper, end_date=end_date, max_age_sec=10*60, bump_stats=True)
+            df_cache, sb_cache, cache_status = _get_cached_ohlcv(sym_upper, end_date=end_date, max_age_sec=3*60*60, bump_stats=True)
             if df_cache is not None and len(df_cache) > 10 and (cache_status in ("HIT", "STALE")):
                 use_cache = True
                 try:
                     idx = pd.to_datetime(df_cache.index) if not isinstance(df_cache.index, pd.DatetimeIndex) else df_cache.index
                     last_trade_date = pd.to_datetime(idx.max()).date()
-                    if _should_force_live_by_clock(last_trade_date):
+                    if _should_force_live_by_clock(last_trade_date) and cache_status == "HIT":
                         use_cache = False
                 except Exception:
                     use_cache = True
@@ -4071,6 +4118,42 @@ def get_data_v7(symbol, end_date):
     result_df, result_share_base = None, None
     source_route_guess: Optional[str] = None
     for attempt in range(3):
+        # --- Route 0 (P0 最優先，國內 CDN 無 crumb 穩定): 腾讯 Tencent qt.gtimg.cn（桌面版之前沒加，Yahoo 401 就全 20 支滾） ---
+        if _NATIVE_TENCENT_OK_D and _native_tencent_download_d is not None:
+            _NATIVE_DL_STATS_D["tencent_attempts"] = _NATIVE_DL_STATS_D.get("tencent_attempts", 0) + 1
+            try:
+                df, share_base = _native_tencent_download_d(symbol, timeout=22)
+                df = df[df.index <= pd.to_datetime(end_date)]
+                if df is not None and len(df) > 5:
+                    if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+                        share_base, _ = _resolve_share_base_post(df, symbol)
+                    _YF_SESS_MGR.record_success(symbol)
+                    _NATIVE_DL_STATS_D["tencent_success"] = _NATIVE_DL_STATS_D.get("tencent_success", 0) + 1
+                    _persist_last_error(symbol, "tencent", f"OK rows={len(df)}")
+                    result_df, result_share_base = df, share_base
+                    source_route_guess = "tencent"
+                    break
+            except Exception as exc_tencent:
+                last_err = exc_tencent
+
+        # --- Route 0.5 (P0.5): 東方財富 Eastmoney push2his.eastmoney.com（桌面版未加，Yahoo/Sina 雙敗時救 02xxx 小盤股）---
+        if _NATIVE_EASTMONEY_OK_D and _native_eastmoney_download_d is not None:
+            _NATIVE_DL_STATS_D["eastmoney_attempts"] = _NATIVE_DL_STATS_D.get("eastmoney_attempts", 0) + 1
+            try:
+                df, share_base = _native_eastmoney_download_d(symbol, timeout=22)
+                df = df[df.index <= pd.to_datetime(end_date)]
+                if df is not None and len(df) > 5:
+                    if share_base is None or not (pd.notna(share_base) and float(share_base) > 0):
+                        share_base, _ = _resolve_share_base_post(df, symbol)
+                    _YF_SESS_MGR.record_success(symbol)
+                    _NATIVE_DL_STATS_D["eastmoney_success"] = _NATIVE_DL_STATS_D.get("eastmoney_success", 0) + 1
+                    _persist_last_error(symbol, "eastmoney", f"OK rows={len(df)}")
+                    result_df, result_share_base = df, share_base
+                    source_route_guess = "eastmoney"
+                    break
+            except Exception as exc_eastmoney:
+                last_err = exc_eastmoney
+
         # --- Route 1: 優先走原生 requests（不需要 crumb，最穩定） ---
         _NATIVE_DOWNLOAD_STATS["native_attempts"] = _NATIVE_DOWNLOAD_STATS.get("native_attempts", 0) + 1
         try:

@@ -157,9 +157,12 @@ def clean_ticker_input(symbol):
 
 def get_yahoo_ticker(symbol):
     s = str(symbol or "").strip()
-    if s.isdigit():
-        return f"{s.zfill(4)}.HK"
-    return s
+    digits_only = "".join(ch for ch in s if ch.isdigit())
+    if digits_only:
+        if len(digits_only) >= 5:
+            return f"{digits_only.zfill(5)}.HK"
+        return f"{digits_only.zfill(4)}.HK"
+    return s if s else symbol
 
 
 # ---------------------------------------------------------------------------

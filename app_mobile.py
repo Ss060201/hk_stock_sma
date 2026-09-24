@@ -1025,8 +1025,13 @@ def clean_ticker_input(symbol):
     return str(symbol).strip().replace(" ", "").replace(".HK", "").replace(".hk", "")
 
 def get_yahoo_ticker(symbol):
-    if symbol.isdigit(): return f"{symbol.zfill(4)}.HK"
-    return symbol
+    s = str(symbol or "").strip()
+    digits_only = "".join(ch for ch in s if ch.isdigit())
+    if digits_only:
+        if len(digits_only) >= 5:
+            return f"{digits_only.zfill(5)}.HK"
+        return f"{digits_only.zfill(4)}.HK"
+    return s if s else symbol
 
 
 @st.cache_resource(show_spinner=False)
@@ -3066,7 +3071,22 @@ else:
             digits = _re_m.sub(r"\D", "", symbol)
             if not digits:
                 raise RuntimeError(f"sina: symbol {symbol} 沒數字")
-            hk_code = f"hk{digits.zfill(5)}" if len(digits) <= 5 else f"hk{digits}"
+            pad_variants = []
+            if len(digits) <= 4:
+                pad_variants.append(digits.zfill(4))
+                pad_variants.append(digits.zfill(5))
+            elif len(digits) == 5:
+                pad_variants.append(digits.zfill(5))
+                pad_variants.append(digits.zfill(4))
+            else:
+                pad_variants.append(digits)
+            pad_variants.append(digits)
+            seen_hk_m = set()
+            hk_codes_m = []
+            for p in pad_variants:
+                hk = f"hk{p}"
+                if hk not in seen_hk_m:
+                    seen_hk_m.add(hk); hk_codes_m.append(hk)
             hdrs = {
                 "User-Agent": _rand_mod.choice([
                     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
@@ -3076,21 +3096,25 @@ else:
                 "Accept-Language": "zh-CN,zh-TW;q=0.9,zh;q=0.8,en;q=0.7",
                 "Referer": "https://finance.sina.com.cn/",
             }
-            urls = [
-                f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={hk_code}&scale=240&ma=no&datalen=1500",
-                f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={hk_code}&scale=240&ma=no&datalen=1500",
+            base_hosts_m = [
+                "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData",
+                "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData",
             ]
-            _yf_log_step_m(symbol, "sina.urls", f"hk_code={hk_code} count={len(urls)}")
+            urls = []
+            for hk in hk_codes_m:
+                for host in base_hosts_m:
+                    urls.append((hk, f"{host}?symbol={hk}&scale=240&ma=no&datalen=1500"))
+            _yf_log_step_m(symbol, "sina.urls", f"hk_codes={hk_codes_m} total_urls={len(urls)}")
             last_err = None
-            for idx, url in enumerate(urls):
+            for idx, (_hk_ref, url) in enumerate(urls):
                 try:
                     _time_mod.sleep(_rand_mod.uniform(0.3, 0.9))
-                    _yf_log_step_m(symbol, f"sina.req[{idx}]", f"GET {url.split('//')[1].split('?')[0]}")
+                    _yf_log_step_m(symbol, f"sina.req[{idx}]", f"hk={_hk_ref} GET {url.split('//')[1].split('?')[0]}")
                     r = requests.get(url, headers=hdrs, timeout=timeout, allow_redirects=True)
                     raw = (r.text or "").strip()
-                    _yf_log_step_m(symbol, f"sina.req[{idx}]", f"status={r.status_code} len={len(raw)} snip={raw[:140]}")
+                    _yf_log_step_m(symbol, f"sina.req[{idx}]", f"hk={_hk_ref} status={r.status_code} len={len(raw)} snip={raw[:140]}")
                     if r.status_code != 200 or not raw:
-                        last_err = RuntimeError(f"sina[{idx}] empty/status={r.status_code} | head={raw[:100]}")
+                        last_err = RuntimeError(f"sina[{idx}] hk={_hk_ref} empty/status={r.status_code} | head={raw[:100]}")
                         _persist_lerr_m(symbol, f"sina[{idx}]", str(last_err))
                         continue
                     if raw.startswith("(") and raw.endswith(")"):
@@ -3098,11 +3122,11 @@ else:
                     try:
                         arr = _json_m.loads(raw)
                     except Exception as je:
-                        last_err = RuntimeError(f"sina[{idx}] JSON parse: {je} | head={raw[:120]}")
+                        last_err = RuntimeError(f"sina[{idx}] hk={_hk_ref} JSON parse: {je} | head={raw[:120]}")
                         _persist_lerr_m(symbol, f"sina[{idx}]", str(last_err))
                         continue
                     if not isinstance(arr, list) or len(arr) < 20:
-                        last_err = RuntimeError(f"sina[{idx}] rows too few ({len(arr) if isinstance(arr, list) else type(arr)})")
+                        last_err = RuntimeError(f"sina[{idx}] hk={_hk_ref} rows too few ({len(arr) if isinstance(arr, list) else type(arr)})")
                         _persist_lerr_m(symbol, f"sina[{idx}]", str(last_err))
                         continue
                     dates, opens, highs, lows, closes, volumes = [], [], [], [], [], []
@@ -3159,13 +3183,13 @@ else:
         is_cached = False
         if (not _force_live_m) and _CACHE_LAYER_OK_M and _get_cached_ohlcv_m is not None:
             try:
-                df_cache_m, sb_cache_m, cs_m = _get_cached_ohlcv_m(sym_upper_m, end_date=end_date, max_age_sec=10*60, bump_stats=True)
+                df_cache_m, sb_cache_m, cs_m = _get_cached_ohlcv_m(sym_upper_m, end_date=end_date, max_age_sec=3*60*60, bump_stats=True)
                 if df_cache_m is not None and len(df_cache_m) > 10 and (cs_m in ("HIT", "STALE")):
                     use_cache = True
                     try:
                         idx = pd.to_datetime(df_cache_m.index) if not isinstance(df_cache_m.index, pd.DatetimeIndex) else df_cache_m.index
                         last_td = pd.to_datetime(idx.max()).date()
-                        if _should_force_live_by_clock_m(last_td):
+                        if _should_force_live_by_clock_m(last_td) and cs_m == "HIT":
                             use_cache = False
                     except Exception:
                         use_cache = True
