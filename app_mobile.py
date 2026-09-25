@@ -1465,7 +1465,7 @@ def calc_pmax_index6_matrix_m(df: pd.DataFrame,
                               pmax_window: int = 212,
                               avg_window: int = 3,
                               dev_offsets: list = None,
-                              recent_rows: int = 25):
+                              recent_rows: int = 26):
     """2026-08-29 性能優化：Pandas/numpy 向量化計算，與桌面 calc 邏輯一致。
     M1 向歷史 t−k / M2 20 Index 硬編碼（桌面與手機相同常量）。"""
     dev_offsets = dev_offsets if dev_offsets is not None else [0, 1, 2, 3, 4, 5]
@@ -3641,7 +3641,7 @@ else:
         # ---- L4 第 1 塊（批准 APP-20260829-001）手機版 Pmax20 固定格點 × Dev0~5 六視角
         try:
             pm6m = calc_pmax_index6_matrix_m(df, pmax_window=212, avg_window=3,
-                                             dev_offsets=[0,1,2,3,4,5], recent_rows=25)
+                                             dev_offsets=[0,1,2,3,4,5], recent_rows=26)
             st.markdown("##### 🟩 Pmax 20×6 Dev 矩陣（批准版）")
             render_pmax_index6_panel_m(pm6m, prefix=f"p6m_{current_code.replace('.','_')}_")
         except Exception as exc_p6:

@@ -4987,7 +4987,7 @@ def calc_pmax_index6_matrix(df: pd.DataFrame,
                             pmax_window: int = 212,
                             avg_window: int = 3,
                             dev_offsets: list = None,
-                            recent_rows: int = 25):
+                            recent_rows: int = 26):
     """
     Approved APP-20260829-001-PMAX6DEV M1 + M2.
 
@@ -7407,7 +7407,7 @@ elif current_page == "stock":
                 # ---- L4 第 1 塊（批准 APP-20260829-001-PMAX6DEV）：Pmax(212) 20 固定格點 × Dev0~5 六欄 12 日時序雙層並排
                 try:
                     pm6_matrix = calc_pmax_index6_matrix(df, pmax_window=212, avg_window=3,
-                                                          dev_offsets=[0,1,2,3,4,5], recent_rows=25)
+                                                          dev_offsets=[0,1,2,3,4,5], recent_rows=26)
                     st.markdown("##### 🟩 Pmax 20 固定格點 × Dev0~5 六視角（D-2 · 批准版）")
                     render_pmax_index6_panel(pm6_matrix, prefix=f"p6desk_{current_code.replace('.','_')}_")
                 except Exception as exc_p6:
