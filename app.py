@@ -4844,12 +4844,14 @@ def render_pmax_dev_table(matrix, prefix: str = ""):
     st.markdown("".join(parts), unsafe_allow_html=True)
 
 
-PMAX_20_FIXED_INDICES: list = [
+PMAX_26_FIXED_INDICES: list = [
     0.704, 0.667, 0.630, 0.593, 0.556, 0.519, 0.500, 0.481, 0.463, 0.444,
     0.426, 0.407, 0.389, 0.370, 0.352, 0.333, 0.317, 0.302, 0.286, 0.270,
+    0.238, 0.198, 0.185, 0.173, 0.160, 0.148,
 ]
-
-PMAX_23_FIXED_INDICES: list = PMAX_20_FIXED_INDICES + [0.254, 0.238, 0.198, 0.185, 0.173, 0.160, 0.148]
+PMAX_20_FIXED_INDICES: list = PMAX_26_FIXED_INDICES[:20]
+PMAX_23_FIXED_INDICES: list = PMAX_26_FIXED_INDICES[:23]
+PMAX_27_FIXED_INDICES: list = list(PMAX_26_FIXED_INDICES)
 
 _F2_CSS_TABLE_INJECTED_KEY = "__f2_23x6_table_css_injected_20260907__"
 _F2_GLOBAL_CSS = """
