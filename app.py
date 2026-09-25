@@ -4303,7 +4303,7 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
             return float("nan")
         return (cv / bv - 1) * 100
 
-    Pm_window = min(len(work_df), 106)
+    Pm_window = min(len(work_df), 212)
     if Pm_window < 30:
         Pm = None
         Pm_date = None
@@ -4343,7 +4343,7 @@ def _compute_home_snapshot_for_stock(ticker: str, df: pd.DataFrame, share_base) 
         except Exception:
             devpc = None
 
-    dev_periods = [3, 7, 14, 28, 57, 106]
+    dev_periods = [3, 7, 14, 28, 57, 212]
     dev_values = {"Dev 0": pct_change(current_close, prev_close)}
     for p in dev_periods:
         if len(close) > p:
@@ -4590,7 +4590,7 @@ def _home_green_style(df: pd.DataFrame, fmt_map: Dict[str, str]):
 
 
 def calc_pmax_dev_matrix(df: pd.DataFrame,
-                         pmax_window: int = 106,
+                         pmax_window: int = 212,
                          s_divisor: int = 24,
                          s_min_num: int = 3,
                          s_max_num: int = 9,
@@ -4598,7 +4598,7 @@ def calc_pmax_dev_matrix(df: pd.DataFrame,
                          num_rows: int = 3):
     """
     對應圖片 D-2 綠色表格：
-      Pm        = 最近 pmax_window 日 (High+Close 先取再 max) 的最高值 (= Pmax(106))
+      Pm        = 最近 pmax_window 日 (High+Close 先取再 max) 的最高值 (= Pmax(212))
       S1..S7    = Pm × k/s_divisor，k = s_min_num..s_max_num
       Avg3[t]   = close[t-avg_window+1 : t+1] 滾動平均（含 t 當日）
       Sn[t]     = S1..S7 中與 Avg3[t] 絕對差最小者
@@ -4794,7 +4794,7 @@ def render_pmax_dev_table(matrix, prefix: str = ""):
     # 小節資訊：Pm / S 候選值（一行說明）
     s_show = "、".join([f"{n}={float(s_vals.get(n, 0)):.2f}" for n in s_cols])
     parts.append(f'<div class="{prefix}pm-dev-wrap">')
-    parts.append(f'<div class="{prefix}small-note">Pm=Pmax({matrix.get("pm_window") or 106})={float(Pm):.2f}；候選 {s_show}；三元組=Sn 前1/Sn/Sn 後1（S1/S7 時 fallback）。</div>')
+    parts.append(f'<div class="{prefix}small-note">Pm=Pmax({matrix.get("pm_window") or 212})={float(Pm):.2f}；候選 {s_show}；三元組=Sn 前1/Sn/Sn 後1（S1/S7 時 fallback）。</div>')
     parts.append(f'<table class="{prefix}pm-dev">')
     # 表頭：Pm/日期合併格 + S1..S7
     parts.append("<thead><tr>")
@@ -4867,6 +4867,7 @@ _F2_GLOBAL_CSS = """
 .f2_tbl .idx-cell { text-align: center; background: #fafafa; width: 40px; }
 .f2_tbl .factor-cell { text-align: right; background: #f7f7f7; width: 60px; }
 .f2_tbl .pmf-cell { text-align: right; background: #fdf6e3; font-weight: 600; width: 86px; }
+.f2_tbl .dev-cell, .f2_tbl .dev-col { text-align: right; background: #eef6ff; font-weight: 600; width: 76px; }
 .f2_tbl .date-cell, .f2_tbl .date-col { text-align: center; width: 120px; }
 .f2_tbl .cp-cell, .f2_tbl .cp-col { text-align: right; width: 80px; }
 .f2_tbl .tur-cell, .f2_tbl .tur-col { text-align: right; width: 76px; }
@@ -4981,7 +4982,7 @@ def _ensure_global_css_pmax_index6_desktop():
 
 
 def calc_pmax_index6_matrix(df: pd.DataFrame,
-                            pmax_window: int = 106,
+                            pmax_window: int = 212,
                             avg_window: int = 3,
                             dev_offsets: list = None,
                             recent_rows: int = 25):
@@ -5330,7 +5331,7 @@ def render_f2_23x6_matrix(matrix, expand_rows: int = 23, expand_cols: int = 20,
         note = ""
         if pm_v is not None:
             try:
-                note += f"Pmax(106)={float(pm_v):.2f} · Index/Pm×Index 固定不變"
+                note += f"Pmax(212)={float(pm_v):.2f} · Index/Pm×Index 固定不變"
             except Exception:
                 pass
         if note:
@@ -5343,6 +5344,7 @@ def render_f2_23x6_matrix(matrix, expand_rows: int = 23, expand_cols: int = 20,
         "<th class='idx-cell'>#</th>",
         "<th class='factor-cell'>Factor</th>",
         "<th class='pmf-cell'>Pm×Factor</th>",
+        "<th class='dev-col'>Dev</th>",
         "<th class='date-col'>Date</th>",
         "<th class='cp-col'>CP</th>",
         "<th class='tur-col'>TUR</th>",
@@ -5355,13 +5357,30 @@ def render_f2_23x6_matrix(matrix, expand_rows: int = 23, expand_cols: int = 20,
         if r is None:
             cells = [f"<td class='idx-cell'>{i + 1}</td>",
                      "<td class='factor-cell'>-</td>",
-                     "<td class='pmf-cell'>-</td>"]
+                     "<td class='pmf-cell'>-</td>",
+                     "<td class='dev-cell'>-</td>"]
         else:
             cells = [
                 f"<td class='idx-cell'>{i + 1}</td>",
                 f"<td class='factor-cell'>{_f2_fmt_num(r.get('index'), 3)}</td>",
                 f"<td class='pmf-cell'>{_f2_fmt_num(r.get('pm_x_index'), 2)}</td>",
             ]
+            try:
+                _pm_val = float(matrix.get("pm") or 0.0)
+            except Exception:
+                _pm_val = 0.0
+            _dev_val = None
+            d_cp = date_cols[i] if i < len(date_cols) else None
+            if d_cp is not None and _pm_val > 0:
+                try:
+                    _cp_raw = d_cp.get("cp")
+                    if _cp_raw is not None:
+                        _x = float(_cp_raw)
+                        if np.isfinite(_x) and np.isfinite(_pm_val):
+                            _dev_val = round(_x / _pm_val, 3)
+                except Exception:
+                    _dev_val = None
+            cells.append(f"<td class='dev-cell'>{_f2_fmt_num(_dev_val, 3)}</td>")
         # 右側四欄：每一行都顯示「第 i 個時序行」（依日期 ASC：最末列 i=20 → 最新/今日）
         d = date_cols[i] if i < len(date_cols) else None
         if d is not None:
@@ -5408,7 +5427,7 @@ def render_pmax_index6_panel(matrix, prefix: str = "p6d_"):
     parts.append(f'<div class="{prefix}wrap">')
     parts.append(f'<div class="{prefix}left">')
     parts.append(f'<div class="{prefix}title">🟩 20 固定格點 (Pmax × Index)</div>')
-    parts.append(f'<div class="{prefix}note">Pmax(106)={float(Pm):.2f}；Index 硬編碼 20 階 (M2 約束)</div>')
+    parts.append(f'<div class="{prefix}note">Pmax(212)={float(Pm):.2f}；Index 硬編碼 20 階 (M2 約束)</div>')
     parts.append(f'<table class="{prefix}tbl">')
     parts.append("<thead><tr><th>#</th><th>Index</th><th>Pm×Index</th></tr></thead><tbody>")
     for r in idx_rows:
@@ -7381,9 +7400,9 @@ elif current_page == "stock":
             st.write("---")
             tab_data, tab_backtest = st.tabs(["📋 數據列表", "🧪 歷史回測"])
             with tab_data:
-                # ---- L4 第 1 塊（批准 APP-20260829-001-PMAX6DEV）：Pmax(106) 20 固定格點 × Dev0~5 六欄 12 日時序雙層並排
+                # ---- L4 第 1 塊（批准 APP-20260829-001-PMAX6DEV）：Pmax(212) 20 固定格點 × Dev0~5 六欄 12 日時序雙層並排
                 try:
-                    pm6_matrix = calc_pmax_index6_matrix(df, pmax_window=106, avg_window=3,
+                    pm6_matrix = calc_pmax_index6_matrix(df, pmax_window=212, avg_window=3,
                                                           dev_offsets=[0,1,2,3,4,5], recent_rows=25)
                     st.markdown("##### 🟩 Pmax 20 固定格點 × Dev0~5 六視角（D-2 · 批准版）")
                     render_pmax_index6_panel(pm6_matrix, prefix=f"p6desk_{current_code.replace('.','_')}_")
@@ -7403,7 +7422,7 @@ elif current_page == "stock":
                 # ---- L4 第 2 塊：舊版 Sn 三元組 Dev 矩陣（可摺疊，避免資訊過載）
                 with st.expander("🟩 Pmax / Sn 三元組偏差矩陣（舊版，可選查看）", expanded=False):
                     try:
-                        pmax_dev_matrix = calc_pmax_dev_matrix(df, pmax_window=106, s_divisor=24,
+                        pmax_dev_matrix = calc_pmax_dev_matrix(df, pmax_window=212, s_divisor=24,
                                                                 s_min_num=3, s_max_num=9,
                                                                 avg_window=3, num_rows=3)
                         render_pmax_dev_table(pmax_dev_matrix, prefix=f"d2desk_old_{current_code}_")

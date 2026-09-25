@@ -1137,7 +1137,7 @@ def simulate_bs_data(df, tsi):
 
 
 def calc_pmax_dev_matrix_m(df: pd.DataFrame,
-                           pmax_window: int = 106,
+                           pmax_window: int = 212,
                            s_divisor: int = 24,
                            s_min_num: int = 3,
                            s_max_num: int = 9,
@@ -1311,7 +1311,7 @@ def render_pmax_dev_table_m(matrix, prefix: str = "md2_"):
     s_show = "、".join([f"{n}={float(s_vals.get(n, 0)):.2f}" for n in s_cols])
     parts = []
     parts.append(f'<div class="{prefix}wrap">')
-    parts.append(f'<div class="{prefix}note">Pm=Pmax({matrix.get("pm_window") or 106})={float(Pm):.2f}；候選 {s_show}；三元組=前1/Sn/後1。</div>')
+    parts.append(f'<div class="{prefix}note">Pm=Pmax({matrix.get("pm_window") or 212})={float(Pm):.2f}；候選 {s_show}；三元組=前1/Sn/後1。</div>')
     parts.append(f'<table class="{prefix}tbl">')
     parts.append("<thead><tr>")
     parts.append('<th rowspan="2">Date / Avg3</th>')
@@ -1375,6 +1375,7 @@ _F2_GLOBAL_CSS_M = """
 .f2m_tbl .idx-cell { text-align: center; background: #f5f6f7; width: 32px; }
 .f2m_tbl .factor-cell { text-align: right; background: #f2f5f4; width: 48px; }
 .f2m_tbl .pmf-cell { text-align: right; background: #fff6df; font-weight: 700; width: 60px; }
+.f2m_tbl .dev-cell, .f2m_tbl th.dev-col { text-align: right; background: #eef6ff; font-weight: 700; width: 60px; }
 .f2m_tbl .date-cell, .f2m_tbl th.date-col { text-align: center; width: 96px; }
 .f2m_tbl .cp-cell, .f2m_tbl th.cp-col { width: 64px; }
 .f2m_tbl .tur-cell, .f2m_tbl th.tur-col { width: 60px; }
@@ -1458,7 +1459,7 @@ def _ensure_global_css_pmax_index6_mobile():
 
 
 def calc_pmax_index6_matrix_m(df: pd.DataFrame,
-                              pmax_window: int = 106,
+                              pmax_window: int = 212,
                               avg_window: int = 3,
                               dev_offsets: list = None,
                               recent_rows: int = 25):
@@ -2020,7 +2021,7 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20
     try:
         if pm_v is not None:
             try:
-                st.markdown(f'<div class="{prefix}note">Pmax(106)={float(pm_v):.2f} · Index/Pm×Index 固定不變</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="{prefix}note">Pmax(212)={float(pm_v):.2f} · Index/Pm×Index 固定不變</div>', unsafe_allow_html=True)
             except Exception:
                 pass
     except Exception:
@@ -2031,6 +2032,7 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20
         "<th class='idx-cell'>#</th>",
         "<th class='factor-cell'>Factor</th>",
         "<th class='pmf-cell'>Pm×Factor</th>",
+        "<th class='dev-col'>Dev</th>",
         "<th class='date-col'>Date</th>",
         "<th class='cp-col'>CP</th>",
         "<th class='tur-col'>TUR</th>",
@@ -2043,13 +2045,30 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20
         if r is None:
             cells = [f"<td class='idx-cell'>{i + 1}</td>",
                      "<td class='factor-cell'>-</td>",
-                     "<td class='pmf-cell'>-</td>"]
+                     "<td class='pmf-cell'>-</td>",
+                     "<td class='dev-cell'>-</td>"]
         else:
             cells = [
                 f"<td class='idx-cell'>{i + 1}</td>",
                 f"<td class='factor-cell'>{_f2_fmt_num_m(r.get('index'), 3)}</td>",
                 f"<td class='pmf-cell'>{_f2_fmt_num_m(r.get('pm_x_index'), 2)}</td>",
             ]
+            try:
+                _pm_val_m = float(matrix.get("pm") or 0.0)
+            except Exception:
+                _pm_val_m = 0.0
+            _dev_val_m = None
+            d_cp_m = date_cols[i] if i < len(date_cols) else None
+            if d_cp_m is not None and _pm_val_m > 0:
+                try:
+                    _cp_raw_m = d_cp_m.get("cp")
+                    if _cp_raw_m is not None:
+                        _x_m = float(_cp_raw_m)
+                        if np.isfinite(_x_m) and np.isfinite(_pm_val_m):
+                            _dev_val_m = round(_x_m / _pm_val_m, 3)
+                except Exception:
+                    _dev_val_m = None
+            cells.append(f"<td class='dev-cell'>{_f2_fmt_num_m(_dev_val_m, 3)}</td>")
         # 右側四欄：依日期 ASC，最末列 i=20 → 最新/今日
         d = date_cols[i] if i < len(date_cols) else None
         if d is not None:
@@ -2151,7 +2170,7 @@ def render_pmax_index6_panel_m(matrix, prefix: str = "p6m_"):
                   f"<td>{float(r['pm_x_index']):.2f}</td></tr>")
     p2.append("</tbody></table>")
     grid_html = "".join(p2)
-    with st.expander(f"🟩 20 固定格點 (Pmax(106)={float(Pm):.2f}) — 永久展開 20 行", expanded=True):
+    with st.expander(f"🟩 20 固定格點 (Pmax(212)={float(Pm):.2f}) — 永久展開 20 行", expanded=True):
         st.markdown(grid_html, unsafe_allow_html=True)
 
 
@@ -3616,7 +3635,7 @@ else:
         st.divider()
         # ---- L4 第 1 塊（批准 APP-20260829-001）手機版 Pmax20 固定格點 × Dev0~5 六視角
         try:
-            pm6m = calc_pmax_index6_matrix_m(df, pmax_window=106, avg_window=3,
+            pm6m = calc_pmax_index6_matrix_m(df, pmax_window=212, avg_window=3,
                                              dev_offsets=[0,1,2,3,4,5], recent_rows=25)
             st.markdown("##### 🟩 Pmax 20×6 Dev 矩陣（批准版）")
             render_pmax_index6_panel_m(pm6m, prefix=f"p6m_{current_code.replace('.','_')}_")
