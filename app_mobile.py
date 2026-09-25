@@ -1481,6 +1481,7 @@ def calc_pmax_index6_matrix_m(df: pd.DataFrame,
         "dev_offsets": list(dev_offsets),
         "cal_match": {"date": None, "k": None, "value": None, "abs_err": None},
         "index_rows_23": [],
+        "index_rows_26": [],
         "cp_rows": [],
     }
     if df is None or df.empty:
@@ -1546,15 +1547,16 @@ def calc_pmax_index6_matrix_m(df: pd.DataFrame,
             idx_rows.append({"idx": i, "index": float(v), "pm_x_index": float(Pm * float(v))})
         res["index_rows"] = idx_rows
 
-        idx_23 = []
-        for i, v in enumerate(PMAX_23_FIXED_INDICES_M):
+        idx_26 = []
+        for i, v in enumerate(PMAX_26_FIXED_INDICES_M):
             fv = float(v)
-            idx_23.append({
+            idx_26.append({
                 "idx": i,
                 "index": fv,
                 "pm_x_index": float(Pm * fv),
             })
-        res["index_rows_23"] = idx_23
+        res["index_rows_26"] = idx_26
+        res["index_rows_23"] = idx_26[:len(PMAX_23_FIXED_INDICES_M)]
 
         avg3 = close_s.rolling(window=avg_window, min_periods=avg_window).mean()
         dates_idx = pd.to_datetime(df.index)
@@ -1954,28 +1956,28 @@ def _f2_short_date_m(ds, fallback: str = "") -> str:
         return fallback or str(ds or "")
 
 
-def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20,
+def render_f2_23x6_matrix_m(matrix, expand_rows: int = 26, expand_cols: int = 20,
                             prefix: str = "f2m_", title_extra: str = ""):
     if matrix is None:
-        st.info("F2 23×6 矩陣：未產生數據")
+        st.info("F2 26×6 矩陣：未產生數據")
         return
     if not matrix.get("ok"):
-        st.info(f"F2 23×6 矩陣未產生：{matrix.get('reason') or ''}")
+        st.info(f"F2 26×6 矩陣未產生：{matrix.get('reason') or ''}")
         return
-    idx_rows = list(matrix.get("index_rows_23") or [])
+    idx_rows = list(matrix.get("index_rows_26") or matrix.get("index_rows_23") or [])
     cp_rows = list(matrix.get("cp_rows") or [])
     if not idx_rows:
-        st.info("F2 23×6 矩陣：缺少 Index 列")
+        st.info("F2 26×6 矩陣：缺少 Factor 列")
         return
     try:
-        expand_rows_i = max(1, min(int(expand_rows or 23), 100))
+        expand_rows_i = max(1, min(int(expand_rows or 26), 100))
     except Exception:
-        expand_rows_i = 23
+        expand_rows_i = 26
     try:
         expand_cols_i = max(1, min(int(expand_cols or 20), 40))
     except Exception:
         expand_cols_i = 20
-    render_rows_i = 23
+    render_rows_i = 26
     if len(idx_rows) < expand_rows_i:
         pad = expand_rows_i - len(idx_rows)
         last_idx = list(idx_rows)
@@ -1993,10 +1995,10 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20
         idx_rows = last_idx + extra
     elif len(idx_rows) > expand_rows_i:
         idx_rows = list(idx_rows[:expand_rows_i])
-    # 右側 4 欄 × 23 列：依日期 DESC（新→舊），#1 = 最新/今日（搭配 Factor 遞降最上方 = 最大 Factor）
-    date_cols_asc = list(cp_rows[-23:]) if len(cp_rows) > 23 else list(cp_rows)
+    # 右側 4 欄 × 26 列：依日期 DESC（新→舊），#1 = 最新/今日（搭配 Factor 遞降最上方 = 最大 Factor）
+    date_cols_asc = list(cp_rows[-26:]) if len(cp_rows) > 26 else list(cp_rows)
     date_cols = list(reversed(date_cols_asc))
-    # Factor 遞降排列：#1 最大 Factor → #23 最小 Factor，搭配 date_cols DESC 一對一對齊
+    # Factor 遞降排列：#1 最大 Factor → #26 最小 Factor，搭配 date_cols DESC 一對一對齊
     idx_disp = list(idx_rows[:render_rows_i])
     _f2_ensure_global_css_m()
     pm_v = matrix.get("pm")
@@ -2012,9 +2014,9 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 23, expand_cols: int = 20
     else:
         last_dm = ""
     title = (
-        f"📋 F2 23×6 矩陣（最近 {len(date_cols)} 交易日；"
-        f"Factor 遞降排列（#1 最大 → #23 最小）；"
-        f"右側 4 欄 23 列依日期 DESC（新→舊）；最上列 #1 = 最大 Factor + 當日最新參數；"
+        f"📋 F2 26×6 矩陣（最近 {len(date_cols)} 交易日；"
+        f"Factor 遞降排列（#1 最大 → #26 最小）；"
+        f"右側 4 欄 26 列依日期 DESC（新→舊）；最上列 #1 = 最大 Factor + 當日最新參數；"
         f"今日={today_dm} / 資料最後日期={last_dm}；"
         f"含表頭共 {render_rows_i+1} 列；8 欄完整橫向）"
     )
@@ -3666,14 +3668,14 @@ else:
                 st.info(f"Sn 三元組無法計算：{type(exc_d2).__name__}: {str(exc_d2)[:120]}")
         st.write("")
 
-        # ---- L4 第 2.5 塊：F2 23×6 矩陣（左 23 行固定 Factor/Pm×Factor；右 Date/CP/TUR/Amp 依日期滾動）
+        # ---- L4 第 2.5 塊：F2 26×6 矩陣（左 26 行固定 Factor/Pm×Factor；右 Date/CP/TUR/Amp 依日期滾動）
         try:
             _ttl_extra = str(current_code or "").strip() or ""
-            render_f2_23x6_matrix_m(pm6m, expand_rows=23, expand_cols=20,
+            render_f2_23x6_matrix_m(pm6m, expand_rows=26, expand_cols=20,
                                     prefix=f"f2m_{current_code.replace('.','_')}_",
                                     title_extra=_ttl_extra)
         except Exception as exc_f2:
-            st.info(f"F2 23×6 矩陣暫時無法渲染：{type(exc_f2).__name__}: {str(exc_f2)[:160]}")
+            st.info(f"F2 26×6 矩陣暫時無法渲染：{type(exc_f2).__name__}: {str(exc_f2)[:160]}")
         st.write("")
 
         # ---- L4 第 3 塊：最近 40 日數據列表（2026-09-02 格式校準：YYMMDD；Close→CP；TUR3；Amp2）
