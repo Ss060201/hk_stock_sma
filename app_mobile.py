@@ -1360,6 +1360,15 @@ PMAX_26_FIXED_INDICES_M: list = [
 PMAX_20_FIXED_INDICES_M: list = PMAX_26_FIXED_INDICES_M[:20]
 PMAX_23_FIXED_INDICES_M: list = PMAX_26_FIXED_INDICES_M[:23]
 PMAX_27_FIXED_INDICES_M: list = list(PMAX_26_FIXED_INDICES_M)
+
+BUY_POINT_26_FACTORS_M: list = [
+    1.296, 1.411, 1.680, 1.828, 2.177, 2.369, 2.821, 3.070, 3.656, 3.979,
+    4.738, 5.157, 5.613, 6.141, 6.684, 7.275, 7.959, 8.662, 10.314, 11.226,
+    13.367, 14.549, 17.324, 22.452, 29.098, 37.711,
+]
+BUY_POINT_20_FACTORS_M: list = BUY_POINT_26_FACTORS_M[:20]
+BUY_POINT_23_FACTORS_M: list = BUY_POINT_26_FACTORS_M[:23]
+
 CAL_TARGET_RED_VALUE_M: float = 3.5197
 
 _F2_CSS_TABLE_INJECTED_KEY_M = "__f2_23x6_table_css_injected_m_20260907__"
@@ -1658,6 +1667,120 @@ def calc_pmax_index6_matrix_m(df: pd.DataFrame,
                 "amp": tr.get("amp"),
             })
         res["cp_rows"] = cp_rows_out
+        res["ok"] = True
+        return res
+    except Exception as exc:
+        res["ok"] = False
+        res["reason"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        return res
+
+
+def calc_buy_point_matrix_m(df: pd.DataFrame,
+                            pb_value: float,
+                            recent_rows: int = 26):
+    """手機版：上升趨勢買點參數矩陣（搭配 BUY_POINT_26_FACTORS_M 26 階上升係數）。
+    Dev = round(CP / Pb, 3)；Pb*F = Pb × Factor；FactorDev = DatePb * FCPTORAmp"""
+    res = {
+        "ok": False,
+        "reason": "",
+        "pb": None,
+        "index_rows_26": [],
+        "index_rows_23": [],
+        "cp_rows": [],
+        "factor_dev_rows": [],
+    }
+    if df is None or df.empty:
+        res["reason"] = "df empty"
+        return res
+    try:
+        pb_v = float(pb_value) if pb_value is not None else 0.0
+        if not np.isfinite(pb_v) or pb_v <= 0:
+            res["reason"] = f"Pb={pb_v} 非合理正數，請至 CDM 參數設定輸入股價最低值"
+            return res
+        res["pb"] = pb_v
+
+        df = df.copy()
+        try:
+            df.index = pd.to_datetime(df.index, errors="coerce")
+            df = df.sort_index(ascending=True)
+            df = df[df.index.notna()]
+        except Exception:
+            pass
+        if "Close" not in df.columns:
+            res["reason"] = "missing Close column"
+            return res
+        close_s = pd.to_numeric(df["Close"], errors="coerce")
+        if "Turnover_Rate" in df.columns:
+            tur_s = pd.to_numeric(df["Turnover_Rate"], errors="coerce")
+        else:
+            tur_s = pd.Series(np.nan, index=df.index)
+        if "AMP" in df.columns:
+            amp_s = pd.to_numeric(df["AMP"], errors="coerce")
+        elif "High" in df.columns and "Low" in df.columns and "Close" in df.columns:
+            amp_s = compute_safe_amplitude(df)
+        else:
+            amp_s = pd.Series(np.nan, index=df.index)
+
+        idx_26 = []
+        for i, v in enumerate(BUY_POINT_26_FACTORS_M):
+            fv = float(v)
+            idx_26.append({"idx": i, "index": fv, "pb_x_factor": float(pb_v * fv)})
+        res["index_rows_26"] = idx_26
+        res["index_rows_23"] = idx_26[:len(BUY_POINT_23_FACTORS_M)]
+
+        T = len(df)
+        pick_start = max(0, T - recent_rows)
+        n_pick = T - pick_start
+        if n_pick <= 0:
+            res["ok"] = True
+            return res
+        pick_close_arr = close_s.values[pick_start:T]
+        pick_tur_arr = tur_s.values[pick_start:T]
+        pick_amp_arr = amp_s.values[pick_start:T]
+        pick_dates_arr = pd.to_datetime(df.index).values[pick_start:T]
+        cp_rows_cols = []
+        factor_dev_rows = []
+        close_finite = np.isfinite(pick_close_arr)
+        for i in range(n_pick):
+            ts = pick_dates_arr[i]
+            try:
+                date_s = pd.Timestamp(ts).strftime("%Y-%m-%d")
+            except Exception:
+                date_s = ""
+            cp_v = float(pick_close_arr[i]) if close_finite[i] else None
+            tur_raw = pick_tur_arr[i]
+            tur_v = float(tur_raw) if np.isfinite(tur_raw) else None
+            amp_raw = pick_amp_arr[i]
+            amp_v = float(amp_raw) if np.isfinite(amp_raw) else None
+            cp_rows_cols.append({"date": date_s, "cp": cp_v, "tur": tur_v, "amp": amp_v})
+
+            f_idx = i if i < len(BUY_POINT_26_FACTORS_M) else (len(BUY_POINT_26_FACTORS_M) - 1)
+            f_i = float(BUY_POINT_26_FACTORS_M[f_idx])
+            date_pb_i = float(pb_v * f_i)
+
+            fcpt = float("nan")
+            if cp_v is not None and tur_v is not None and amp_v is not None:
+                try:
+                    fcpt = f_i * float(cp_v) * float(tur_v) * float(amp_v)
+                    if not np.isfinite(fcpt):
+                        fcpt = float("nan")
+                except Exception:
+                    fcpt = float("nan")
+            fdev = float("nan")
+            if np.isfinite(fcpt):
+                try:
+                    x = float(date_pb_i) * float(fcpt)
+                    fdev = x if np.isfinite(x) else float("nan")
+                except Exception:
+                    fdev = float("nan")
+            factor_dev_rows.append({
+                "date": date_s, "factor_index": f_idx, "factor": f_i,
+                "date_pb": date_pb_i,
+                "fcpt_amp": fcpt if np.isfinite(fcpt) else None,
+                "factor_dev": fdev if np.isfinite(fdev) else None,
+            })
+        res["cp_rows"] = cp_rows_cols
+        res["factor_dev_rows"] = factor_dev_rows
         res["ok"] = True
         return res
     except Exception as exc:
@@ -2088,6 +2211,175 @@ def render_f2_23x6_matrix_m(matrix, expand_rows: int = 26, expand_cols: int = 20
                       "<td class='cp-cell'></td>",
                       "<td class='tur-cell'></td>",
                       "<td class='amp-cell'></td>"]
+        row_cls = "" if (i % 2 == 0) else "row-alt"
+        parts.append(f"<tr class='{row_cls}'>{''.join(cells)}</tr>")
+    parts.append("</tbody></table>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+_BUY_CSS_MOBILE_INJECTED_KEY = "__buy_point_26x7_table_css_injected_m_20261008__"
+_BUY_GLOBAL_CSS_MOBILE = """
+<style>
+.buym_wrap { width: 100%; margin: 4px 0 8px 0; }
+.buym_title { font-weight: 700; margin: 2px 0 4px 0; font-size: 13px; }
+.buym_note { color: #666; font-size: 11px; margin: 2px 0 4px 0; }
+.buym_tbl { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 11px; line-height: 1.15; }
+.buym_tbl th, .buym_tbl td {
+    border: 1px solid #cdd6d5; padding: 3px 4px; text-align: right; vertical-align: middle;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    height: 22px; line-height: 15px;
+}
+.buym_tbl th { background: #c7e9c0; text-align: center; font-weight: 700; height: 24px; }
+.buym_tbl .factor-cell { text-align: right; background: #f7fff5; width: 48px; }
+.buym_tbl .dev-col { text-align: right; background: #f7fff5; width: 56px; }
+.buym_tbl .date-col { text-align: center; width: 96px; }
+.buym_tbl .pbf-col { text-align: right; background: #eafbe2; font-weight: 700; width: 60px; }
+.buym_tbl .cp-col { width: 60px; }
+.buym_tbl .tur-col { width: 58px; }
+.buym_tbl .amp-col { width: 56px; }
+.buym_tbl tr.row-alt td { background: #fafff8; }
+.buym_tbl tr.row-alt td.factor-cell { background: #eefbe8; }
+.buym_tbl tr.row-alt td.pbf-col { background: #dff7d4; }
+.buym_tbl tr.row-alt td.dev-col { background: #eefbe8; }
+</style>
+"""
+
+
+def _buy_ensure_global_css_mobile():
+    try:
+        if st.session_state.get(_BUY_CSS_MOBILE_INJECTED_KEY):
+            return
+    except Exception:
+        pass
+    try:
+        st.markdown(_BUY_GLOBAL_CSS_MOBILE, unsafe_allow_html=True)
+    except Exception:
+        pass
+    try:
+        st.session_state[_BUY_CSS_MOBILE_INJECTED_KEY] = True
+    except Exception:
+        pass
+
+
+def render_buy_point_matrix_m(matrix, expand_rows: int = 26,
+                              prefix: str = "buym_", title_extra: str = ""):
+    """手機版：26 行 × 7 欄上升買點矩陣。Factor/Dev/Date/Pb*F/CP/TOR/Amp。
+    Dev=round(CP/Pb,3)；Pb*F=Pb×Factor；FactorDev=DatePb*FCPTORAmp 供後續判斷。"""
+    if matrix is None:
+        st.info("買點 26×7 矩陣：未產生數據")
+        return
+    if not matrix.get("ok"):
+        st.info(f"買點 26×7 矩陣未產生：{matrix.get('reason') or ''}")
+        return
+    idx_rows = list(matrix.get("index_rows_26") or matrix.get("index_rows_23") or [])
+    cp_rows = list(matrix.get("cp_rows") or [])
+    if not idx_rows:
+        st.info("買點 26×7 矩陣：缺少 Factor 列")
+        return
+    try:
+        expand_rows_i = max(1, min(int(expand_rows or 26), 100))
+    except Exception:
+        expand_rows_i = 26
+    render_rows_i = min(expand_rows_i, 26)
+    if len(idx_rows) < render_rows_i:
+        last_idx = idx_rows[-1] if idx_rows else {"index": 0.0, "pb_x_factor": 0.0}
+        extra = []
+        for k in range(render_rows_i - len(idx_rows)):
+            extra.append({"idx": len(idx_rows) + k,
+                          "index": last_idx.get("index", 0.0),
+                          "pb_x_factor": last_idx.get("pb_x_factor", 0.0)})
+        idx_rows = idx_rows + extra
+    elif len(idx_rows) > expand_rows_i:
+        idx_rows = list(idx_rows[:expand_rows_i])
+    date_cols_asc = list(cp_rows[-26:]) if len(cp_rows) > 26 else list(cp_rows)
+    date_cols = list(reversed(date_cols_asc))
+    idx_disp = list(idx_rows[:render_rows_i])
+
+    _buy_ensure_global_css_mobile()
+    pb_v = matrix.get("pb")
+    try:
+        today_d = pd.Timestamp.today().strftime("%y/%m/%d")
+    except Exception:
+        today_d = ""
+    if len(date_cols) > 0:
+        try:
+            last_d = pd.Timestamp(date_cols[0].get("date")).strftime("%y/%m/%d")
+        except Exception:
+            last_d = ""
+    else:
+        last_d = ""
+    title = f"🟢 買點 26×7 矩陣（{len(date_cols)}日；Factor↑；今日={today_d}，最後={last_d}）"
+    if title_extra:
+        title += f" · {title_extra}"
+    st.markdown(f'<div class="{prefix}wrap"><div class="{prefix}title">{title}</div>', unsafe_allow_html=True)
+    try:
+        note = ""
+        if pb_v is not None:
+            try:
+                note += f"Pb(股價最低值)={float(pb_v):.2f} · Pb×Factor 固定 · Dev=CP/Pb round 3"
+            except Exception:
+                pass
+        if note:
+            st.markdown(f'<div class="{prefix}note">{note}</div>', unsafe_allow_html=True)
+    except Exception:
+        pass
+    parts = []
+    parts.append(f'<table class="{prefix}tbl">')
+    head = [
+        "<th class='factor-cell'>Factor</th>",
+        "<th class='dev-col'>Dev</th>",
+        "<th class='date-col'>Date</th>",
+        "<th class='pbf-col'>Pb*F</th>",
+        "<th class='cp-col'>CP</th>",
+        "<th class='tur-col'>TOR</th>",
+        "<th class='amp-col'>Amp</th>",
+    ]
+    parts.append(f"<thead><tr>{''.join(head)}</tr></thead><tbody>")
+    n = render_rows_i
+    for i in range(n):
+        r = idx_disp[i] if i < len(idx_disp) else None
+        if r is None:
+            cells = ["<td class='factor-cell'>-</td>", "<td class='dev-col'>-</td>"]
+        else:
+            cells = [f"<td class='factor-cell'>{_f2_fmt_num_m(r.get('index'), 3)}</td>"]
+            try:
+                _pb_val = float(matrix.get("pb") or 0.0)
+            except Exception:
+                _pb_val = 0.0
+            _dev_val = None
+            d_cp = date_cols[i] if i < len(date_cols) else None
+            if d_cp is not None and _pb_val > 0:
+                try:
+                    _cp_raw = d_cp.get("cp")
+                    if _cp_raw is not None:
+                        _x = float(_cp_raw)
+                        if np.isfinite(_x) and np.isfinite(_pb_val) and _pb_val > 0:
+                            _dev_val = round(_x / _pb_val, 3)
+                except Exception:
+                    _dev_val = None
+            cells.append(f"<td class='dev-col'>{_f2_fmt_num_m(_dev_val, 3)}</td>")
+        d = date_cols[i] if i < len(date_cols) else None
+        if d is not None:
+            cells += [f"<td class='date-col'>{_f2_short_date_m(d.get('date') or '')}</td>"]
+            if r is not None:
+                cells.append(f"<td class='pbf-col'>{_f2_fmt_num_m(r.get('pb_x_factor'), 2)}</td>")
+            else:
+                cells.append("<td class='pbf-col'>-</td>")
+            cells += [
+                f"<td class='cp-col'>{_f2_fmt_num_m(d.get('cp'), 2)}</td>",
+                f"<td class='tur-col'>{_f2_fmt_num_m(d.get('tur'), 4)}</td>",
+                f"<td class='amp-col'>{_f2_fmt_num_m(d.get('amp'), 2)}</td>",
+            ]
+        else:
+            cells += ["<td class='date-col'></td>"]
+            if r is not None:
+                cells.append(f"<td class='pbf-col'>{_f2_fmt_num_m(r.get('pb_x_factor'), 2)}</td>")
+            else:
+                cells.append("<td class='pbf-col'>-</td>")
+            cells += ["<td class='cp-col'></td>",
+                      "<td class='tur-col'></td>",
+                      "<td class='amp-col'></td>"]
         row_cls = "" if (i % 2 == 0) else "row-alt"
         parts.append(f"<tr class='{row_cls}'>{''.join(cells)}</tr>")
     parts.append("</tbody></table>")
@@ -3676,6 +3968,55 @@ else:
                                     title_extra=_ttl_extra)
         except Exception as exc_f2:
             st.info(f"F2 26×6 矩陣暫時無法渲染：{type(exc_f2).__name__}: {str(exc_f2)[:160]}")
+        st.write("")
+
+        # ---- L4 第 2.6 塊：買點 26×7 矩陣（上升趨勢；Factor 1.296→37.711；Dev=CP/Pb；Pb*F=Pb×Factor；FactorDev=DatePb*FCPTORAmp）
+        try:
+            _curr_params_buy_m = (watchlist_data or {}).get(current_code, {}) or {}
+            _pb_val_buy_m = None
+            try:
+                _raw_pb_m = _curr_params_buy_m.get("buy_point_pb")
+                if _raw_pb_m is not None:
+                    _x = float(_raw_pb_m)
+                    if np.isfinite(_x) and _x > 0:
+                        _pb_val_buy_m = _x
+            except Exception:
+                _pb_val_buy_m = None
+            if _pb_val_buy_m is None and "Low" in df.columns and not df.empty:
+                try:
+                    _auto_min_m = float(df.tail(212)["Low"].min())
+                    if np.isfinite(_auto_min_m) and _auto_min_m > 0:
+                        _pb_val_buy_m = _auto_min_m
+                except Exception:
+                    _pb_val_buy_m = None
+            buy_matrix_m = None
+            if _pb_val_buy_m is not None and _pb_val_buy_m > 0:
+                buy_matrix_m = calc_buy_point_matrix_m(df, pb_value=_pb_val_buy_m, recent_rows=26)
+            if buy_matrix_m is None:
+                st.info("買點 26×7 矩陣：Pb 未設定，請至桌面版 CDM 參數設定 Pb 股價最低值。")
+            else:
+                st.markdown("##### 🟢 買點 26×7 矩陣（上升趨勢；Dev=CP/Pb；Pb*F=Pb×Factor）")
+                render_buy_point_matrix_m(buy_matrix_m, expand_rows=26,
+                                         prefix=f"buym_{current_code.replace('.','_')}_",
+                                         title_extra=str(current_code or "").strip())
+                try:
+                    if buy_matrix_m.get("ok"):
+                        _fd_rows_m = buy_matrix_m.get("factor_dev_rows") or []
+                        if _fd_rows_m:
+                            last_fd_m = _fd_rows_m[-1]
+                            with st.expander("📐 FactorDev 診斷（最新）", expanded=False):
+                                st.json({
+                                    "date": last_fd_m.get("date"),
+                                    "Factor(#)": last_fd_m.get("factor_index") + 1,
+                                    "Factor": last_fd_m.get("factor"),
+                                    "DatePb (=Pb×Factor)": last_fd_m.get("date_pb"),
+                                    "FCPTORAmp (=F×CP×TOR×Amp)": last_fd_m.get("fcpt_amp"),
+                                    "FactorDev (=DatePb×FCPTORAmp)": last_fd_m.get("factor_dev"),
+                                })
+                except Exception:
+                    pass
+        except Exception as exc_buy:
+            st.info(f"買點 26×7 矩陣暫時無法渲染：{type(exc_buy).__name__}: {str(exc_buy)[:160]}")
         st.write("")
 
         # ---- L4 第 3 塊：最近 40 日數據列表（2026-09-02 格式校準：YYMMDD；Close→CP；TUR3；Amp2）
