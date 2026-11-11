@@ -1116,7 +1116,6 @@ _FIREBASE_DB_CACHE_D: Dict[str, Any] = {}
 _FIREBASE_DB_CACHE_TS_D: float = 0.0
 _FIREBASE_DB_CACHE_TTL_D: float = 900.0
 
-@st.cache_resource(ttl=900, show_spinner=False)
 def get_db():
     import time as _fb_t
     global _FIREBASE_DB_CACHE_D, _FIREBASE_DB_CACHE_TS_D
@@ -6913,6 +6912,30 @@ with st.sidebar:
     st.session_state.sma2 = int(st.number_input("SMA 2", value=int(st.session_state.get("sma2", 50)), key="sidebar_sma2"))
 
     st.divider()
+    try:
+        _fb_db_check = get_db()
+        if _fb_db_check is not None:
+            _fb_html = """
+            <details>
+              <summary style="cursor:pointer;color:#16a34a;">🟢 Firebase: 已連線</summary>
+              <div style="margin-top:8px;font-size:12px;color:#374151;">
+                收藏資料已同步至 Firestore，重新部署後可自動恢復。
+              </div>
+            </details>
+            """
+        else:
+            _fb_html = """
+            <details>
+              <summary style="cursor:pointer;color:#ca8a04;">🟡 Firebase: 未連線（僅本機快取）</summary>
+              <div style="margin-top:8px;font-size:12px;color:#6b7280;">
+                Cloud 端請至 Streamlit Secrets 設定 <code>firebase.json_content</code>；
+                本機請放置 <code>service_account.json</code>。未連線時收藏僅存於本機 SQLite，重新部署後會遺失。
+              </div>
+            </details>
+            """
+        st.markdown(_fb_html, unsafe_allow_html=True)
+    except Exception:
+        pass
     try:
         _a1_token = _a1_read_gh_token()
         if not _a1_token:
